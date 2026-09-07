@@ -92,7 +92,7 @@ _monitor_dry_bypass = False
 # See check_signal_quality: throttles the ad-hoc sd.rec() probe it falls
 # back to whenever nothing is actively monitoring/recording yet.
 _SIGNAL_PROBE_INTERVAL_SEC = 1.5
-_signal_probe_cache: dict = {"at": 0.0, "device": object(), "result": None}
+_signal_probe_cache: dict = {"at": 0.0, "device": object(), "gain": None, "result": None}
 _MONITOR_START_TIMEOUT_SECONDS = 12.0
 logger = logging.getLogger(__name__)
 _monitor_control = MonitorControl(execution_lock=hardware_lock)
@@ -179,16 +179,18 @@ def _low_latency_equivalent(
     return best[1] if best else source_id
 
 
-def _matching_output_for_input(input_id: int, output_id: int | None, devices=None) -> int:
+def _matching_output_for_input(
+    input_id: int, output_id: int | None, devices=None, *, preferred_name: str | None = None
+) -> int:
     devices = sd.query_devices() if devices is None else devices
-    selected_output = _low_latency_equivalent(output_id, "output", devices)
+    selected_output = _low_latency_equivalent(output_id, "output", devices, preferred_name=preferred_name)
     input_info = devices[input_id]
     input_host_api = int(input_info["hostapi"])
     if output_id is not None:
         output_info = devices[selected_output]
         if int(output_info["hostapi"]) == input_host_api:
             return selected_output
-        selected_output = _resolved_device_index(output_id, "output", devices)
+        selected_output = _resolved_device_index(output_id, "output", devices, preferred_name=preferred_name)
         if int(devices[selected_output]["hostapi"]) == input_host_api:
             return selected_output
     input_name = str(input_info.get("name", "")).casefold().strip()
@@ -386,6 +388,8 @@ def preferred_output_device(
     output_device_id: int | None = None,
     asio_driver_name: str | None = None,
     devices=None,
+    *,
+    device_name: str | None = None,
 ) -> int | None:
     if not _AUDIO_BACKEND_AVAILABLE:
         return output_device_id
@@ -409,7 +413,9 @@ def preferred_output_device(
     resolved_input = _low_latency_equivalent(
         input_device_id, "input", devices, preferred_host_api="mme" if driver == "mme" else "wasapi"
     )
-    return _matching_output_for_input(resolved_input, output_device_id, devices)
+    return _matching_output_for_input(
+        resolved_input, output_device_id, devices, preferred_name=device_name
+    )
 
 
 def preferred_sample_rate(input_device_id: int | None = None, driver: str = "auto") -> int:
@@ -527,6 +533,12 @@ def _input_device_name(device_id: int | None) -> str | None:
     )
 
 
+# Mirrors _input_device_name -- output_device_id is just as much a
+# PortAudio index (not a stable identity) as input_device_id, but had no
+# saved name at all to recover it by after a USB reconnect/reorder.
+_output_device_name = _input_device_name
+
+
 def _normalized_settings_patch(
     settings: models.AudioSettings, patch: dict, *, resolve_devices: bool = True
 ) -> tuple[dict, set[str]]:
@@ -539,6 +551,8 @@ def _normalized_settings_patch(
                 changed_fields.add(field)
             if field == "input_device_id":
                 updates["input_device_name"] = None
+            elif field == "output_device_id":
+                updates["output_device_name"] = None
             continue
         if value is None:
             continue
@@ -547,6 +561,8 @@ def _normalized_settings_patch(
             changed_fields.add(field)
         if field == "input_device_id":
             updates["input_device_name"] = _input_device_name(value) if resolve_devices else (_known_device_names.get(value) or None)
+        elif field == "output_device_id":
+            updates["output_device_name"] = _output_device_name(value) if resolve_devices else (_known_device_names.get(value) or None)
 
     driver, asio_name = (
         updates.get("audio_driver", settings.audio_driver),
@@ -922,6 +938,7 @@ def _start_shared_monitor(settings, *, driver: str, relay_needed: bool = False) 
             settings.output_device_id,
             settings.asio_driver_name,
             devices=devices,
+            device_name=getattr(settings, "output_device_name", None),
         ),
         _resolved_device_index(input_device_id, "input", devices),
     )
@@ -1187,11 +1204,18 @@ def _launch_monitor_process(
                     message.get("sample_rate"),
                     message.get("latency", message.get("latency_source")),
                 )
+                # The driver is already up and running at this point -- the
+                # parent must learn that (ready.set()) before this does any
+                # SQLite work, not after. on_buffer_negotiated commits a
+                # write (see _persist_negotiated_buffer_size); a slow/locked
+                # database previously delayed ready being set at all, and a
+                # startup timeout waiting on it could kill an otherwise
+                # perfectly healthy ASIO stream.
+                ready.set()
                 if on_buffer_negotiated is not None:
                     negotiated = message.get("buffer_size")
                     if isinstance(negotiated, (int, float)) and not isinstance(negotiated, bool) and negotiated > 0:
                         on_buffer_negotiated(int(negotiated))
-                ready.set()
             elif event == "fallback":
                 logger.warning(
                     "Audio monitor selected a safer fallback: %s (blocksize=%s latency=%s)",
@@ -1313,10 +1337,10 @@ def check_signal_quality(
     # itself, or ASIO opening exclusively) and kept the device busy almost
     # continuously. A cached result between real probes keeps the preview
     # responsive without hammering the device the whole time the page is open.
-    now = time.monotonic()
     if (
-        now - _signal_probe_cache["at"] < _SIGNAL_PROBE_INTERVAL_SEC
+        time.monotonic() - _signal_probe_cache["at"] < _SIGNAL_PROBE_INTERVAL_SEC
         and _signal_probe_cache["device"] == device_id
+        and _signal_probe_cache["gain"] == gain
         and _signal_probe_cache["result"] is not None
     ):
         return dict(_signal_probe_cache["result"])
@@ -1369,5 +1393,10 @@ def check_signal_quality(
         "clipping": peak >= 0.99,
         "silent": rms_db < -50.0,
     }
-    _signal_probe_cache.update(at=now, device=device_id, result=result)
+    # Timestamped now, after the probe actually completed -- not before it
+    # (sd.rec()+sd.wait(), possibly retried across several sample rates)
+    # started. Stamping it early meant the cache window was already partly
+    # spent by the time this result existed, and a slow probe could make it
+    # stale before it was ever even cached.
+    _signal_probe_cache.update(at=time.monotonic(), device=device_id, gain=gain, result=result)
     return result

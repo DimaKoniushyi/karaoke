@@ -56,6 +56,45 @@ def test_push_accumulates_and_flushes_a_full_chunk_once_the_threshold_is_reached
         server.close()
 
 
+def test_close_flushes_a_partial_chunk_instead_of_dropping_it():
+    # push() only ever enqueues once a stream's accumulator fills to a full
+    # chunk -- whatever's left over (up to _CHUNK_SECONDS worth) was silently
+    # lost on every stop/restart instead of being sent as one final short
+    # frame.
+    server, port = make_server()
+    link = None
+    client = None
+    try:
+        server.settimeout(2.0)
+        link = RelayLink(port, sample_rate=1000.0)  # chunk = 5 samples
+        client, _ = server.accept()
+        client.settimeout(2.0)
+        assert wait_until(lambda: link.connected)
+
+        link.push(STREAM_DRY, 1000.0, np.ones(3, dtype=np.float32))  # short of a full chunk
+        link.close()
+
+        reader = FrameReader()
+        frames: list = []
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not frames:
+            chunk = client.recv(4096)
+            if not chunk:
+                break
+            reader.feed(chunk)
+            frames.extend(reader.pop_frames())
+        assert len(frames) == 1
+        stream_id, sample_rate, decoded = frames[0]
+        assert stream_id == STREAM_DRY and sample_rate == 1000.0
+        assert len(decoded) == 3
+    finally:
+        if link is not None:
+            link.close()
+        if client is not None:
+            client.close()
+        server.close()
+
+
 def test_push_is_a_silent_no_op_before_the_connection_completes():
     link = RelayLink(port=1, sample_rate=1000.0, connect_timeout=0.05)
     try:

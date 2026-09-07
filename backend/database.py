@@ -86,6 +86,10 @@ _AUDIO_COLUMN_MIGRATIONS = {
     "octave": "ALTER TABLE audio_settings ADD COLUMN octave FLOAT DEFAULT 0",
 }
 
+_AUDIO_OUTPUT_NAME_MIGRATION = {
+    "output_device_name": "ALTER TABLE audio_settings ADD COLUMN output_device_name VARCHAR",
+}
+
 _INDEX_MIGRATIONS = {
     "ix_songs_created_at": "CREATE INDEX IF NOT EXISTS ix_songs_created_at ON songs (created_at)",
     "ix_songs_updated_at": "CREATE INDEX IF NOT EXISTS ix_songs_updated_at ON songs (updated_at)",
@@ -95,7 +99,7 @@ _INDEX_MIGRATIONS = {
     ),
 }
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -132,6 +136,20 @@ def _apply_baseline_schema(connection) -> None:
         _apply_additive_migrations(connection, existing, migrations)
 
 
+def _apply_audio_output_name_migration(connection) -> None:
+    # A saved output_device_id is a PortAudio index, not a stable identity --
+    # it can silently start meaning a different device after a USB
+    # reconnect/reorder. input_device_name already lets the input side
+    # recover its device by name in that case (see
+    # audio_service._resolved_device_index); the output side had no
+    # equivalent at all.
+    inspector = inspect(connection)
+    if "audio_settings" not in set(inspector.get_table_names()):
+        return
+    existing = {column["name"] for column in inspect(connection).get_columns("audio_settings")}
+    _apply_additive_migrations(connection, existing, _AUDIO_OUTPUT_NAME_MIGRATION)
+
+
 def _apply_index_migrations(connection) -> None:
     # GET /history (see application.py) is polled every few seconds and joins
     # Recording<->Song by song_id, sorted by created_at/updated_at -- without
@@ -163,10 +181,16 @@ def _schema_migrations() -> tuple[SchemaMigration, ...]:
     name = "baseline-additive-columns"
     index_name = "history-lookup-indexes"
     index_statements = list(_INDEX_MIGRATIONS.values())
+    output_name = "audio-output-device-name"
+    output_statements = list(_AUDIO_OUTPUT_NAME_MIGRATION.values())
     return (
         SchemaMigration(1, name, _migration_checksum(name, statements), _apply_baseline_schema),
         SchemaMigration(
             2, index_name, _migration_checksum(index_name, index_statements), _apply_index_migrations
+        ),
+        SchemaMigration(
+            3, output_name, _migration_checksum(output_name, output_statements),
+            _apply_audio_output_name_migration,
         ),
     )
 

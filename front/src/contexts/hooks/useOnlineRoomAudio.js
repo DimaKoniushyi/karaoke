@@ -34,6 +34,22 @@ export default function useOnlineRoomAudio({
   const remoteEffectVersionsRef = useRef(new Map());
   const localMonitorRef = useRef(null);
   const outputDeviceIdRef = useRef("");
+  // One shared AudioContext for every remote participant's effects graph,
+  // not one each -- a room with several participants who all have effects
+  // enabled used to open a separate AudioContext (its own render thread)
+  // per participant. Lazily created, reused across participants, and never
+  // closed on a single participant leaving (see removeRemoteAudio) since
+  // others may still be using it.
+  const sharedEffectsContextRef = useRef(null);
+  const getSharedEffectsContext = useCallback(() => {
+    if (sharedEffectsContextRef.current?.state !== "closed" && sharedEffectsContextRef.current) {
+      return sharedEffectsContextRef.current;
+    }
+    const AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext;
+    if (!AudioContextClass) return null;
+    sharedEffectsContextRef.current = new AudioContextClass({ latencyHint: 0 });
+    return sharedEffectsContextRef.current;
+  }, []);
 
   const applyOutputRoute = useCallback(
     (deviceId) => {
@@ -98,7 +114,11 @@ export default function useOnlineRoomAudio({
       stopSpeakingMeter(participantId);
       const effectGraph = remoteEffectsRef.current.get(participantId);
       remoteEffectsRef.current.delete(participantId);
-      closeContext(effectGraph?.context);
+      // The effects context is shared across every participant now (see
+      // sharedEffectsContextRef) -- only this participant's own nodes are
+      // torn down, never the context itself, since others may still be
+      // using it.
+      effectGraph?.dispose?.();
       const audio = remoteAudioRef.current.get(participantId);
       if (!audio) return;
       audio.pause();
@@ -151,49 +171,61 @@ export default function useOnlineRoomAudio({
       remoteEffectVersionsRef.current.set(participantId, effectVersion);
       const previous = remoteEffectsRef.current.get(participantId);
       remoteEffectsRef.current.delete(participantId);
-      closeContext(previous?.context);
+      previous?.dispose?.();
       const audio = remoteAudioRef.current.get(participantId);
       const stream = audio?.srcObject;
       if (!enabled || !stream) {
         applyRemoteAudioMute();
         return;
       }
-      const AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext;
-      if (!AudioContextClass) {
+      const context = getSharedEffectsContext();
+      if (!context) {
         applyRemoteAudioMute();
         return;
       }
       const effects = roomUiRef.current.effectsByParticipant?.[participantId] || {};
-      const context = new AudioContextClass({ latencyHint: 0 });
       routeMediaOutput(context, outputDeviceIdRef.current);
       const source = context.createMediaStreamSource(stream);
       const master = context.createGain();
       master.gain.value = 1;
       source.connect(master);
 
-      connectVoiceEffects(context, source, master, effects);
+      const voiceEffects = connectVoiceEffects(context, source, master, effects);
       master.connect(context.destination);
+      const dispose = () => {
+        try {
+          source.disconnect();
+        } catch {
+          // Already detached.
+        }
+        try {
+          master.disconnect();
+        } catch {
+          // Already detached.
+        }
+        voiceEffects.close();
+      };
       const activate = () => {
         if (
           remoteEffectVersionsRef.current.get(participantId) !== effectVersion ||
           remoteAudioRef.current.get(participantId)?.srcObject !== stream
         ) {
-          closeContext(context);
+          dispose();
           return;
         }
-        remoteEffectsRef.current.set(participantId, { context, master });
+        remoteEffectsRef.current.set(participantId, { context, master, dispose });
         applyRemoteAudioMute();
       };
       if (typeof context.resume === "function") {
         Promise.resolve(context.resume())
           .then(activate)
           .catch(() => {
-            closeContext(context);
+            dispose();
             applyRemoteAudioMute();
           });
       } else activate();
     },
-    [applyRemoteAudioMute, roomUiRef]
+    [applyRemoteAudioMute, getSharedEffectsContext, roomUiRef]
   );
 
   const stopLocalMonitoring = useCallback(() => {

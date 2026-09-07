@@ -3093,9 +3093,24 @@ test("uses the Python monitor relay instead of local capture when it is availabl
   });
   const graph = fakeRelayGraph();
   relayMocks.createRelayVoiceGraph.mockReset().mockResolvedValue(graph);
+  // start() must ask the backend to open the relay (prepareRoomVoiceRelay)
+  // before attempting to connect to it -- see tryRelay's comment on why.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ relay_available: true })
+    })
+  );
 
   const mesh = makeMesh();
-  const outgoing = await mesh.start();
+  let outgoing;
+  try {
+    outgoing = await mesh.start();
+  } finally {
+    vi.unstubAllGlobals();
+  }
 
   expect(relayMocks.createRelayVoiceGraph).toHaveBeenCalledWith({ connectTimeoutMs: 1500 });
   expect(capture).not.toHaveBeenCalled();
@@ -3146,21 +3161,33 @@ test("falls back to local capture and re-syncs peers when the relay drops mid-ca
     .mockReset()
     .mockResolvedValueOnce(graph)
     .mockRejectedValue(new Error("relay gone after dropping"));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ relay_available: true })
+    })
+  );
 
-  const mesh = makeMesh();
-  await mesh.start();
-  expect(mesh.usingRelay).toBe(true);
+  try {
+    const mesh = makeMesh();
+    await mesh.start();
+    expect(mesh.usingRelay).toBe(true);
 
-  const peer = mesh.createPeer("guest");
-  const sender = peer.getSenders()[0];
-  sender.replaceTrack = vi.fn(async (nextTrack) => {
-    sender.track = nextTrack;
-  });
+    const peer = mesh.createPeer("guest");
+    const sender = peer.getSenders()[0];
+    sender.replaceTrack = vi.fn(async (nextTrack) => {
+      sender.track = nextTrack;
+    });
 
-  await graph.triggerUnavailable();
+    await graph.triggerUnavailable();
 
-  expect(mesh.usingRelay).toBe(false);
-  expect(capture).toHaveBeenCalled();
-  expect(graph.close).toHaveBeenCalled();
-  expect(sender.replaceTrack).toHaveBeenCalledWith(localStream.getAudioTracks()[0]);
+    expect(mesh.usingRelay).toBe(false);
+    expect(capture).toHaveBeenCalled();
+    expect(graph.close).toHaveBeenCalled();
+    expect(sender.replaceTrack).toHaveBeenCalledWith(localStream.getAudioTracks()[0]);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

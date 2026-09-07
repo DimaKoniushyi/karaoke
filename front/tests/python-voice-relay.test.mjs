@@ -3,16 +3,18 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 const STREAM_DRY = 0;
 const STREAM_WET = 1;
 
+// Matches audio_relay_protocol.py's _HEADER = struct.Struct("<IfI"): three
+// 4-byte fields (12 bytes total), so the PCM payload starts 4-byte aligned.
 function encodeFrame(streamId, sampleRate, samples) {
-  const header = new ArrayBuffer(9);
+  const header = new ArrayBuffer(12);
   const view = new DataView(header);
-  view.setUint8(0, streamId);
-  view.setFloat32(1, sampleRate, true);
-  view.setUint32(5, samples.length, true);
+  view.setUint32(0, streamId, true);
+  view.setFloat32(4, sampleRate, true);
+  view.setUint32(8, samples.length, true);
   const payload = new Float32Array(samples).buffer;
-  const combined = new Uint8Array(9 + payload.byteLength);
+  const combined = new Uint8Array(12 + payload.byteLength);
   combined.set(new Uint8Array(header), 0);
-  combined.set(new Uint8Array(payload), 9);
+  combined.set(new Uint8Array(payload), 12);
   return combined.buffer;
 }
 

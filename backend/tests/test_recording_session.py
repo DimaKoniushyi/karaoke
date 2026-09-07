@@ -163,8 +163,30 @@ def test_audio_callbacks_expose_dsp_failures_and_silence_monitor_output(monkeypa
 
     output = np.full((4, 2), 1.0, dtype=np.float32)
     session._monitoring_callback(input_data, output, 4, None, None)
-    assert session._capture_error is failure
+    # A self-monitoring DSP failure must never discard the raw take -- only
+    # _capture_error does that (see stop_and_save).
+    assert session._capture_error is None
+    assert session._monitor_error is failure
     assert not output.any()
+
+
+def test_stop_writer_marks_overflow_for_the_block_it_drops_to_make_room(monkeypatch):
+    # _stop_writer() drops one real, never-written chunk of audio to make
+    # room for its terminal marker when the queue is already full -- that
+    # used to happen silently, so the take was reported as complete and
+    # correct despite actually being missing whatever that block held
+    # (often the very last moment of the take).
+    session, _stream = make_session(monkeypatch)
+    session._writer_thread = Mock(is_alive=Mock(return_value=True))
+    session._queue = recording_service.queue.Queue(maxsize=1)
+    dropped_chunk = np.zeros((7, 1), dtype=np.float32)
+    session._queue.put_nowait(dropped_chunk)
+
+    session._stop_writer()
+
+    assert session.overflow_stats == {"dropped_blocks": 1, "dropped_frames": 7}
+    assert isinstance(session._overflow_error, recording_service.RecordingOverflowError)
+    assert session._queue.get_nowait() is recording_service.RecordingSession._WRITER_STOP
 
 
 def test_queue_overflow_is_bounded_and_marks_the_recording_incomplete(monkeypatch, caplog):
@@ -478,27 +500,68 @@ def test_stop_and_save_publishes_atomic_recording(monkeypatch, tmp_path):
     raises(RuntimeError, lambda: session.stop_and_save(destination), match='already closed')
 
 
-@pytest.mark.parametrize(("failure", "message"), [("stream", "stop"), ("writer", "write")])
-def test_stop_and_save_reports_stream_or_writer_failure(monkeypatch, tmp_path, failure, message, caplog):
+def test_stop_and_save_reports_writer_failure(monkeypatch, tmp_path, caplog):
+    session, _stream = make_session(monkeypatch)
+    temporary = tmp_path / "temporary.wav"
+    temporary.write_bytes(b"audio")
+    session._temporary_path = temporary
+    session._writer_error = RuntimeError("disk full")
+
+    with caplog.at_level("ERROR"):
+        raises(RuntimeError, lambda: session.stop_and_save(tmp_path / 'take.wav'), match='write')
+    assert not temporary.exists()
+
+
+def test_stop_and_save_still_succeeds_when_only_the_teardown_fails(monkeypatch, tmp_path, caplog):
+    # Every sample is already captured and enqueued before the stream is
+    # even asked to stop (the callback simply stops firing once it is) --
+    # the device raising while closing must not discard an already-complete,
+    # valid take. Logged as a warning instead of discarding it.
     session, stream = make_session(monkeypatch)
     temporary = tmp_path / "temporary.wav"
     temporary.write_bytes(b"audio")
     session._temporary_path = temporary
-    if failure == "stream":
-        stream.stop.side_effect = RuntimeError("device lost")
-    else:
-        session._writer_error = RuntimeError("disk full")
+    stream.stop.side_effect = RuntimeError("device lost")
 
-    with caplog.at_level("ERROR"):
-        raises(RuntimeError, lambda: session.stop_and_save(tmp_path / 'take.wav'), match=message)
-    assert not temporary.exists()
-    if failure == "stream":  # a writer failure was already logged at its own source, in _write_audio
-        assert any(session.session_id in record.getMessage() for record in caplog.records)
+    with caplog.at_level("WARNING"):
+        duration_sec, sample_rate = session.stop_and_save(tmp_path / "take.wav")
+
+    assert (tmp_path / "take.wav").exists() and not temporary.exists()
+    assert sample_rate == session.sample_rate and duration_sec >= 0
+    assert any("device lost" in record.getMessage() for record in caplog.records)
 
 
 def test_stop_and_save_requires_initialized_file(monkeypatch, tmp_path):
     session, _stream = make_session(monkeypatch)
     raises(RuntimeError, lambda: session.stop_and_save(tmp_path / 'take.wav'), match='not initialized')
+
+
+def test_stop_recording_calls_on_capture_released_before_the_performance_mix(monkeypatch, tmp_path):
+    # The input/output device is already fully released by
+    # session.stop_capture() at the very top of stop_recording() -- the
+    # caller's on_capture_released hook (the router restoring monitoring)
+    # must fire there, not only after the WAV write and ffmpeg performance
+    # mix further below have also finished.
+    session = Mock(
+        song_id="song", playback_offset_sec=0.0, music_gain=1.0, gain=1.0,
+        effects={}, playback_segments=[],
+    )
+    session.stop_and_save.return_value = (1.0, 48_000)
+    monkeypatch.setattr(recording_service, "_sessions", {"session": session})
+    current_song = make_song()
+    database, _ = mock_song_lookup(monkeypatch, recording_service, current_song)
+    patch_attrs(monkeypatch, recording_service.song_service, resolve_output_dir=Mock(return_value=tmp_path / 'song'))
+    order = []
+    commit = Mock(side_effect=lambda _db, item: item)
+    mix = Mock(side_effect=lambda *_args, **_kwargs: order.append("mix"))
+    patch_attrs(monkeypatch, recording_service, commit_refresh=commit, _create_performance_mix_safely=mix)
+
+    recording_service.stop_recording(
+        "session", on_capture_released=lambda: order.append("released")
+    )
+
+    assert order == ["released", "mix"]
+    session.stop_capture.assert_called_once_with()
 
 
 def test_stop_recording_persists_take_and_always_closes_resources(monkeypatch, tmp_path):
@@ -665,7 +728,7 @@ def test_stop_recording_waits_for_concurrent_finalization(monkeypatch):
     completed = {}
 
     def finish_first_request(*, timeout):
-        assert timeout == 120.0
+        assert timeout == 240.0
         completed["active"] = "recording"
         return True
 
@@ -680,7 +743,7 @@ def test_stop_recording_waits_for_concurrent_finalization(monkeypatch):
     )
 
     assert recording_service.stop_recording("active") is saved
-    event.wait.assert_called_once_with(timeout=120.0)
+    event.wait.assert_called_once_with(timeout=240.0)
 
 
 def test_create_performance_mix_runs_ffmpeg_and_cleans_failure(monkeypatch, tmp_path):

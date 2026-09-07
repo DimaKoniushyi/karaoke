@@ -80,7 +80,12 @@ export default function useKaraokeRoomTransport({
       command.action === "play" && Number.isFinite(executeAt) && Number.isFinite(serverNow)
         ? Math.max(0, (serverNow - executeAt) / 1000)
         : delivery;
-    const target = position + late;
+    // `late` is real wall-clock seconds; the song timeline only advances by
+    // that much at speed=1. At speed=1.5 the song actually moved late*1.5
+    // song-seconds during that same real time -- adding `late` unscaled
+    // undercounted it (and overcounted it below 1x), leaving guests
+    // systematically behind/ahead of the host whenever speed != 1.
+    const target = position + late * speed;
 
     if (Number.isFinite(target)) {
       if (command.action === "sync") {

@@ -26,6 +26,26 @@ function useQueue() {
   return [run, flush];
 }
 
+// Like useQueue, but a task queued while an earlier one is still waiting its
+// turn supersedes it instead of running behind it -- only the most recently
+// queued state as of when the chain actually gets to it is ever sent. Used
+// for control-slider updates (volume/reverb/echo/delay/octave): dragging a
+// slider from 50 to 90 used to send every intermediate value in order, even
+// though only 90 is ever needed, and Stop had to wait out that whole queue.
+function useCoalescingQueue() {
+  const queue = useRef(Promise.resolve());
+  const latestToken = useRef(0);
+  const run = useCallback((task) => {
+    const token = ++latestToken.current;
+    const runIfCurrent = () => (token === latestToken.current ? task() : undefined);
+    const next = queue.current.then(runIfCurrent, runIfCurrent);
+    queue.current = next.catch(noop);
+    return next;
+  }, []);
+  const flush = useCallback(() => queue.current.catch(noop), []);
+  return [run, flush];
+}
+
 export default function useKaraokeRecording({
   song,
   onlineRoom,
@@ -46,7 +66,7 @@ export default function useKaraokeRecording({
   const pendingStartRef = useRef(null);
   const previousSpeed = useRef(speed);
   const [queueRequest, flushRequests] = useQueue();
-  const [queueControls, flushControls] = useQueue();
+  const [queueControls, flushControls] = useCoalescingQueue();
 
   const setSession = useCallback(
     (id) => {
@@ -168,7 +188,7 @@ export default function useKaraokeRecording({
       Promise.resolve().then(() => capture?.stop?.()).catch(noop);
 
       const pending = pendingStartRef.current;
-      if (pending?.songId === song?.id) pending.settle = "stop";
+      if (pending && pending.songId === song?.id) pending.settle = "stop";
 
       const id = sessionRef.current;
       setSession(null);

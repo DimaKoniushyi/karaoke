@@ -129,6 +129,34 @@ def test_interrupted_jobs_are_cancelled():
     engine.dispose()
 
 
+def test_audio_output_name_migration_adds_the_column_to_an_existing_table():
+    # output_device_id is a PortAudio index, not a stable identity -- it can
+    # silently start meaning a different device after a USB reconnect. This
+    # column lets the output side recover by name the same way
+    # input_device_name already lets the input side.
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE audio_settings (id INTEGER, output_device_id INTEGER)"))
+        database._apply_audio_output_name_migration(connection)
+        columns = {row[1] for row in connection.execute(text("PRAGMA table_info(audio_settings)"))}
+        assert "output_device_name" in columns
+
+        # Idempotent: running it again against a table that already has the
+        # column must not raise "duplicate column name".
+        database._apply_audio_output_name_migration(connection)
+    engine.dispose()
+
+
+def test_audio_output_name_migration_skips_an_absent_table(monkeypatch):
+    connection, inspector = Mock(), Mock()
+    monkeypatch.setattr(database, "inspect", Mock(return_value=inspector))
+    inspector.get_table_names.return_value = []
+
+    database._apply_audio_output_name_migration(connection)
+
+    connection.execute.assert_not_called()
+
+
 def test_init_db_orchestrates_schema_migrations_and_repairs(monkeypatch):
     engine = MagicMock()
     connection = engine.begin.return_value.__enter__.return_value
@@ -203,7 +231,11 @@ def test_init_db_upgrades_a_real_pre_migration_database_in_place(monkeypatch):
         history = connection.execute(
             text("SELECT version, name FROM schema_migrations ORDER BY version")
         ).all()
-        assert history == [(1, "baseline-additive-columns"), (2, "history-lookup-indexes")]
+        assert history == [
+            (1, "baseline-additive-columns"),
+            (2, "history-lookup-indexes"),
+            (3, "audio-output-device-name"),
+        ]
         # GET /history's join/sort columns (see database._apply_index_migrations)
         # must actually get indexed on an upgraded pre-existing database, not
         # just on a fresh one created through Base.metadata.create_all.
@@ -217,7 +249,7 @@ def test_init_db_upgrades_a_real_pre_migration_database_in_place(monkeypatch):
     status = database.schema_status()
     assert status["current"] == status["target"] == database.CURRENT_SCHEMA_VERSION
     assert [row["name"] for row in status["history"]] == [
-        "baseline-additive-columns", "history-lookup-indexes"
+        "baseline-additive-columns", "history-lookup-indexes", "audio-output-device-name"
     ]
     engine.dispose()
 

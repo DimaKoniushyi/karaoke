@@ -51,6 +51,26 @@ def test_acquire_processing_slot_allows_up_to_the_configured_limit_at_once(monke
     assert pipeline_service._processing_active == set()
 
 
+def test_release_processing_slot_restores_priority_only_once_the_queue_is_idle(monkeypatch):
+    # _configure_ai_runtime() lowers the whole backend process's priority
+    # (there's no separate AI worker process) -- it must not be restored
+    # while another queued/active song is still relying on that background
+    # throttling, only once nothing is left processing.
+    _reset_processing_slots(monkeypatch, limit=1)
+    restore = Mock()
+    monkeypatch.setattr(pipeline_service, "_restore_process_priority", restore)
+
+    assert pipeline_service._acquire_processing_slot("a") is True
+    pipeline_service._processing_queue.append("b")
+
+    pipeline_service._release_processing_slot("a")
+    restore.assert_not_called()
+
+    pipeline_service._processing_queue.remove("b")
+    pipeline_service._release_processing_slot("b")
+    restore.assert_called_once()
+
+
 def test_acquire_processing_slot_admits_queued_waiters_in_fifo_order(monkeypatch):
     _reset_processing_slots(monkeypatch, limit=1)
     assert pipeline_service._acquire_processing_slot("a") is True

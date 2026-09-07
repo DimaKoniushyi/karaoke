@@ -127,6 +127,7 @@ class AudioSettings(Base):
     input_device_id: Mapped[int | None] = mapped_column(Integer)
     input_device_name: Mapped[str | None] = mapped_column(String)
     output_device_id: Mapped[int | None] = mapped_column(Integer)
+    output_device_name: Mapped[str | None] = mapped_column(String)
     volume: Mapped[float] = mapped_column(Float, default=1.0)
     sensitivity: Mapped[float] = mapped_column(Float, default=0.5)
     latency_ms: Mapped[int] = mapped_column(Integer, default=50)

@@ -172,6 +172,11 @@ def _audio_callback(gain: float, sample_rate: float = 44_100, statistics=None, r
     level_state = {"reported_at": 0.0}
     _LEVEL_INTERVAL_SEC = 0.08
     def callback(indata, outdata, _frames, time_info, status):
+        # First, unconditionally -- if anything below raises, the caller's
+        # wrapper (see `callback` in main()) still reports failure and the
+        # exception still propagates, but this specific output block is left
+        # safely silent instead of playing back a stale/garbage buffer.
+        outdata.fill(0)
         compute_started = time.perf_counter()
         statistics["callback_frames"] = int(_frames)
         statistics["callback_count"] = statistics.get("callback_count", 0) + 1
@@ -193,7 +198,6 @@ def _audio_callback(gain: float, sample_rate: float = 44_100, statistics=None, r
         if relay is not None:
             relay.push(STREAM_DRY, sample_rate, dry)
             relay.push(STREAM_WET, sample_rate, processed)
-        outdata.fill(0)
         # A momentary "listen to the raw voice" check bypasses the whole
         # gate/compressor/tone-shaping/effects chain for what the singer
         # hears locally -- the relay above still carries the normally
@@ -335,7 +339,28 @@ def main() -> int:
                 reported = time.monotonic()
             elif failed.wait(.1):
                 break
-            _queue_report({"event": "level", **_level, **statistics})
+            # The native raw pass-through (see above) skips this module's own
+            # Python callback entirely -- _level (rms_db/clipping/silent/
+            # real_latency_ms) and dsp_compute_ms are only ever updated
+            # inside that callback, so while raw is engaged they would
+            # otherwise silently keep reporting whatever they last were
+            # before raw turned on, misleading (a frozen, plausible-looking
+            # number) rather than merely unavailable.
+            raw_engaged = (
+                _native_stream_target["raw_eligible"] and _live_params.get("dry_monitor", 0.0) >= 0.5
+            )
+            # rms_db/clipping/silent feed a strict response schema
+            # (SignalQualityOut: non-nullable float/bool) elsewhere, so this
+            # reuses the project's own existing "no real signal data yet"
+            # sentinel (see audio_service._EMPTY_MONITOR_SIGNAL) rather than
+            # None -- real_latency_ms/dsp_compute_ms aren't schema-bound and
+            # can just be None.
+            level_report = (
+                {"rms_db": -120.0, "clipping": False, "silent": True, "real_latency_ms": None}
+                if raw_engaged else _level
+            )
+            reported_statistics = {**statistics, "dsp_compute_ms": None} if raw_engaged else statistics
+            _queue_report({"event": "level", **level_report, **reported_statistics})
         if failed.is_set():
             raise RuntimeError(statistics.get("callback_error", "Monitoring callback failed; selected settings were not changed"))
     except Exception as exc:  # The parent converts this into a friendly API error.

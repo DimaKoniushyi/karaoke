@@ -41,6 +41,7 @@ class _StreamAccumulator:
 class RelayLink:
     def __init__(self, port: int, sample_rate: float, connect_timeout: float = 1.0) -> None:
         self._queue: queue.Queue[bytes | None] = queue.Queue(maxsize=_QUEUE_MAXSIZE)
+        self._sample_rate = sample_rate
         self._chunk_samples = max(1, round(sample_rate * _CHUNK_SECONDS))
         self._accumulators: dict[int, _StreamAccumulator] = {}
         self._closed = False
@@ -55,7 +56,8 @@ class RelayLink:
         # reads the sentinel close() already queued and returns without ever
         # closing the socket it just opened.
         self._state_lock = threading.Lock()
-        threading.Thread(target=self._connect_and_run, args=(port,), daemon=True).start()
+        self._thread = threading.Thread(target=self._connect_and_run, args=(port,), daemon=True)
+        self._thread.start()
 
     @property
     def connected(self) -> bool:
@@ -128,8 +130,26 @@ class RelayLink:
         with self._state_lock:
             self._closed = True
             sock = self._socket
+        # Whatever's still sitting in each stream's accumulator (up to
+        # _CHUNK_SECONDS worth) never reaches a full chunk otherwise -- push()
+        # only ever enqueues once the buffer fills -- and was silently lost
+        # on every stop/restart instead of being sent as one final short frame.
+        for stream_id, accumulator in self._accumulators.items():
+            if accumulator.position:
+                self._enqueue(
+                    encode_frame(stream_id, self._sample_rate, accumulator.buffer[: accumulator.position])
+                )
+                accumulator.position = 0
         with contextlib.suppress(queue.Full):
             self._queue.put_nowait(None)
-        if sock is not None:
-            with contextlib.suppress(OSError):
-                sock.close()
+        if sock is None:
+            return
+        # Give the sender thread a bounded chance to actually write the
+        # flush frame (and anything else already queued) before force-
+        # closing the socket out from under it -- closing it here
+        # immediately, as this used to, could abort that data before
+        # sendall() for it ever ran, silently dropping it anyway despite
+        # the flush above.
+        self._thread.join(timeout=1.0)
+        with contextlib.suppress(OSError):
+            sock.close()

@@ -330,7 +330,16 @@ def test_asio_matching_rejects_empty_or_unrelated_names(monkeypatch):
     )
     monkeypatch.setattr(audio_service, "_matching_output_for_input", Mock(return_value=7))
     assert audio_service.preferred_output_device(0, "auto", 2) == 7
-    audio_service._matching_output_for_input.assert_called_once_with(3, 2, None)
+    audio_service._matching_output_for_input.assert_called_once_with(3, 2, None, preferred_name=None)
+
+    # A saved output_device_id is a PortAudio index, not a stable identity --
+    # its saved name (device_name) must reach the name-recovery path the
+    # same way it already does for input (see preferred_input_device).
+    audio_service._matching_output_for_input.reset_mock()
+    assert audio_service.preferred_output_device(0, "auto", 2, device_name="Old Speakers") == 7
+    audio_service._matching_output_for_input.assert_called_once_with(
+        3, 2, None, preferred_name="Old Speakers"
+    )
 
 
 def test_monitor_sample_rate_prefers_common_48khz_and_falls_back_to_input(monkeypatch):

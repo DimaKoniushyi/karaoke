@@ -124,6 +124,48 @@ def test_room_recording_does_not_open_a_second_live_monitor(monkeypatch):
     assert start.call_args.kwargs["monitoring_enabled"] is False
 
 
+def test_prepare_room_voice_relay_opens_the_relay_when_monitoring_is_on(monkeypatch):
+    # Breaks the cold-start cycle: the frontend used to only ever send
+    # voice_relay=true once it already knew the relay worked, but the relay
+    # only ever opened as a side effect of receiving voice_relay=true.
+    database, settings = Mock(), audio_settings(monitoring_enabled=True)
+    configure = Mock()
+    patch_many(
+        monkeypatch,
+        (recording.audio_service, "get_settings", Mock(return_value=settings)),
+        (recording.audio_service, "configure_monitoring", configure),
+    )
+
+    assert recording.prepare_room_voice_relay(database) == {"relay_available": True}
+    configure.assert_called_once_with(settings, relay_needed=True)
+
+
+def test_prepare_room_voice_relay_reports_unavailable_when_monitoring_is_off(monkeypatch):
+    database, settings = Mock(), audio_settings(monitoring_enabled=False)
+    stop_monitoring = Mock()
+    patch_many(
+        monkeypatch,
+        (recording.audio_service, "get_settings", Mock(return_value=settings)),
+        (recording.audio_service, "stop_monitoring", stop_monitoring),
+    )
+
+    assert recording.prepare_room_voice_relay(database) == {"relay_available": False}
+    stop_monitoring.assert_called_once_with()
+
+
+def test_release_room_voice_relay_restores_ordinary_monitoring(monkeypatch):
+    database, settings = Mock(), audio_settings(monitoring_enabled=True)
+    configure = Mock()
+    patch_many(
+        monkeypatch,
+        (recording.audio_service, "get_settings", Mock(return_value=settings)),
+        (recording.audio_service, "configure_monitoring", configure),
+    )
+
+    assert recording.release_room_voice_relay(database) == {"status": "released"}
+    configure.assert_called_once_with(settings, relay_needed=False)
+
+
 def test_room_relay_recording_keeps_the_shared_monitor_running(monkeypatch):
     database, body, song, settings = Mock(), start_body(), SimpleNamespace(id="song"), audio_settings(monitoring_enabled=True)
     body.room_mode = True
@@ -261,6 +303,31 @@ def test_recording_actions_and_stop_error_mapping(monkeypatch):
         assert mapped.value.status_code == status
         assert str(error) in str(mapped.value.detail)
         restore.assert_called_once_with(database)
+
+
+def test_stop_recording_restores_monitoring_as_soon_as_capture_is_released(monkeypatch):
+    # recording_service.stop_recording() releases the input/output device
+    # (via on_capture_released) well before it returns -- WAV write and the
+    # ffmpeg performance mix still run after. Monitoring must come back at
+    # that earlier point, not only once the whole call (and that extra
+    # work) finishes, or the singer goes without self-monitoring for however
+    # long ffmpeg happens to take on top.
+    database, saved, order = Mock(), object(), []
+    restore = Mock(side_effect=lambda _db: order.append("restore"))
+    monkeypatch.setattr(recording, "_restore_monitoring", restore)
+
+    def fake_stop_recording(_session_id, *, on_capture_released=None):
+        order.append("capture_released")
+        if on_capture_released is not None:
+            on_capture_released()
+        order.append("ffmpeg_mix")
+        return saved
+
+    monkeypatch.setattr(recording.recording_service, "stop_recording", fake_stop_recording)
+
+    assert recording.stop_recording("session", database) is saved
+    restore.assert_called_once_with(database)
+    assert order == ["capture_released", "restore", "ffmpeg_mix"]
 
 
 def test_recording_controls_are_applied_to_the_named_active_session(monkeypatch):

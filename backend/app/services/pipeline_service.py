@@ -535,10 +535,19 @@ def _job_entrypoint(song_id: str, target, storage_reservation=None) -> None:
                 ai_bridge.release_ai_resources()
         with _active_jobs_lock: _cancelled_jobs.discard(song_id)
         _release_active_job(song_id)
-        gc.collect()
-        torch = sys.modules.get("torch")
-        with contextlib.suppress(AttributeError, RuntimeError):
-            if torch is not None and torch.cuda.is_available(): torch.cuda.empty_cache()
+        # gc.collect() walks every Python object and holds the GIL for the
+        # duration -- on a machine actively recording, that blocks the
+        # realtime capture callback (also plain Python) right when a
+        # background song just finished processing, a real source of
+        # overflow/glitches. CPython's normal generational GC still runs on
+        # its own; this only skips the extra, non-essential explicit sweep.
+        from app.services import recording_service
+
+        if not recording_service.has_live_capture():
+            gc.collect()
+            torch = sys.modules.get("torch")
+            with contextlib.suppress(AttributeError, RuntimeError):
+                if torch is not None and torch.cuda.is_available(): torch.cuda.empty_cache()
         if storage_reservation is not None:
             storage_reservation.release()
 
@@ -809,10 +818,33 @@ def _acquire_processing_slot(song_id: str) -> bool:
             raise
 
 
+def _restore_process_priority() -> None:
+    # _configure_ai_runtime() lowers THIS WHOLE PROCESS's priority class
+    # (there is no separate AI worker process -- pipeline jobs run as plain
+    # threading.Thread inside the same backend process that also owns
+    # recording/PortAudio/the API), and nothing previously ever restored it.
+    # Once processing was lowered once, every realtime audio callback for
+    # the rest of the app's lifetime -- including songs sung long after --
+    # kept running at BELOW_NORMAL/niced priority too.
+    try:
+        import psutil
+
+        process = psutil.Process()
+        if os.name == "nt":
+            process.nice(psutil.NORMAL_PRIORITY_CLASS)
+        else:
+            process.nice(0)
+    except (ImportError, OSError, ValueError, TypeError):
+        pass
+
+
 def _release_processing_slot(song_id: str) -> None:
     with _processing_condition:
         _processing_active.discard(song_id)
+        idle = not _processing_active and not _processing_queue
         _processing_condition.notify_all()
+    if idle:
+        _restore_process_priority()
 
 
 def _invoke_ai_pipeline(
@@ -1144,10 +1176,14 @@ def _run_job(song_id: str, processing_mode: str = "auto", *, reuse_vocals: bool 
             )
         else:
             _ensure_cover_extracted(source_path, out_dir)
+            # Lower this process's priority/thread count BEFORE the disk- and
+            # CPU-heavy model download/unpack below, not after -- previously
+            # the very first processing run (the common case needing an
+            # install at all) did that work fully unthrottled, the one time
+            # it was heaviest.
+            runtime_plan = _configure_ai_runtime()
             _update_progress(song_id, step_label="Проверка AI-моделей", percent=1.0)
             model_install_service.ensure_ready_sync(cancelled=lambda: _is_cancelled(song_id))
-
-            runtime_plan = _configure_ai_runtime()
             capture.write(
                 f"[backend] AI build={AI_BUILD_ID} pipeline={AudioPipelineV2.VERSION} "
                 f"decoder={NOTE_DECODER_VERSION} pitch={PITCH_STABILIZER_VERSION}\n"

@@ -146,6 +146,13 @@ class RecordingSession:
         self._monitor_dry_bypass = False
         self._capture_stopped = False
         self._capture_error = None
+        # Separate from _capture_error: neither of these means the raw take
+        # itself is corrupt (the singer's self-monitoring can fail, or the
+        # device can raise while closing, after every sample has already
+        # been safely written) -- only _capture_error discards the take, see
+        # stop_and_save.
+        self._monitor_error = None
+        self._teardown_error = None
         self._storage_reservations = storage_reservations or []
         self._signal = {"rms_db": -120.0, "clipping": False, "silent": True}
         self._signal_reported_at = 0.0
@@ -293,6 +300,13 @@ class RecordingSession:
             # Effects below are only for what the singer hears; the performance
             # mix applies the chosen settings offline to this lossless source.
             if not self._paused: self._enqueue(indata.copy(), time_info)
+        except BaseException as exc:
+            self._capture_error = exc
+            return
+        # A separate try/except: a failure in the singer's own self-monitoring
+        # DSP below must never discard an already-successfully-saved raw
+        # take (see stop_and_save, which only checks _capture_error).
+        try:
             if self._monitoring_enabled:
                 if self._monitor_dry_bypass:
                     # A momentary "listen to the raw voice" check -- skip the
@@ -314,7 +328,7 @@ class RecordingSession:
                 for channel in range(outdata.shape[1]):
                     outdata[:, channel] = monitored
         except BaseException as exc:
-            self._capture_error = exc
+            self._monitor_error = exc
 
     def _update_signal(self, samples):
         now = time.perf_counter()
@@ -339,15 +353,19 @@ class RecordingSession:
                 return
             self._capture_stopped = True
             self._monitoring_enabled = False
+            # _teardown_error, not _capture_error: every sample has already
+            # been captured and enqueued by this point (the callback simply
+            # stops firing once the stream is stopped) -- a device raising
+            # while closing must not discard an already-complete, valid take.
             try:
                 self._stream.stop()
             except BaseException as exc:
-                self._capture_error = exc
+                self._teardown_error = exc
             finally:
                 try:
                     self._stream.close()
                 except BaseException as exc:
-                    self._capture_error = self._capture_error or exc
+                    self._teardown_error = self._teardown_error or exc
 
     def _write_audio(self) -> None:
         assert self._temporary_path is not None
@@ -397,7 +415,12 @@ class RecordingSession:
             daemon=True,
         )
         self._writer_thread.start()
-        self._writer_ready.wait()
+        # Bounded: opening the output file is normally near-instant, but a
+        # writer that hangs before ever calling _writer_ready.set() (e.g. a
+        # wedged filesystem) previously left /recording/start waiting
+        # forever.
+        if not self._writer_ready.wait(timeout=10.0) and self._writer_error is None:
+            self._writer_error = RuntimeError("Timed out preparing the recording writer")
         if self._writer_error is not None:
             self._cleanup_temporary_file()
             raise RuntimeError(f"Could not prepare recording file: {self._writer_error}")
@@ -411,8 +434,15 @@ class RecordingSession:
             except queue.Full:
                 # Capture is already stopped. Make room for the terminal marker
                 # without ever blocking the realtime/API thread on a stalled disk.
+                # The discarded item is a real, never-written chunk of audio --
+                # without marking it, the take was silently missing whatever
+                # that block held (often the very last moment of the take)
+                # while still being reported as complete and correct.
+                dropped = None
                 with contextlib.suppress(queue.Empty):
-                    self._queue.get_nowait()
+                    dropped = self._queue.get_nowait()
+                if dropped is not None and dropped is not self._WRITER_STOP:
+                    self._mark_overflow(len(dropped))
                 self._queue.put_nowait(self._WRITER_STOP)
             # Bounded: a stuck writer (e.g. a slow/failing disk) must not hang
             # app shutdown indefinitely -- see close_all_sessions() below.
@@ -513,7 +543,18 @@ class RecordingSession:
             # elsewhere can't treat this space as free while it's still being
             # written to.
             def release_when_done() -> None:
-                writer_thread.join()
+                # Bounded even here: a writer truly wedged forever (not just
+                # slow) previously meant this thread -- and the reserved
+                # disk budget it's waiting to release -- never came back
+                # either, for the rest of the app's lifetime. Releasing
+                # late risks a rare double-booking of that space; leaking it
+                # forever is strictly worse for a long-lived desktop app.
+                writer_thread.join(timeout=300.0)
+                if writer_thread.is_alive():
+                    logger.error(
+                        "Recording writer for session_id=%s never exited; releasing its "
+                        "storage reservation anyway", self.session_id,
+                    )
                 storage_budget_service.release_all(reservations)
 
             threading.Thread(
@@ -532,6 +573,21 @@ class RecordingSession:
         self._close_playback_segment()
         stream_error = self._capture_error
         self._stop_writer()
+
+        # Logged, not raised: the take itself is intact either way (every
+        # sample was already captured before either of these could happen).
+        if self._monitor_error is not None:
+            logger.warning(
+                "Self-monitoring failed during recording (take unaffected): "
+                "session_id=%s song_id=%s error=%s",
+                self.session_id, self.song_id, self._monitor_error,
+            )
+        if self._teardown_error is not None:
+            logger.warning(
+                "Recording device raised while closing (take unaffected): "
+                "session_id=%s song_id=%s error=%s",
+                self.session_id, self.song_id, self._teardown_error,
+            )
 
         if self._overflow_error is not None:
             error = self._overflow_error
@@ -831,7 +887,7 @@ def sync_recording(session_id: str, position_sec: float, playback_rate: float = 
     _require_session(session_id).sync_playback(position_sec, playback_rate)
 
 
-def stop_recording(session_id: str) -> models.Recording:
+def stop_recording(session_id: str, *, on_capture_released=None) -> models.Recording:
     # No hardware_lock here: popping the session and stopping ITS OWN stream
     # (see the comment on RecordingSession.stop_capture) never needs to wait
     # behind an unrelated monitor-process (re)start elsewhere.
@@ -841,15 +897,37 @@ def stop_recording(session_id: str) -> models.Recording:
         finalizing = _finalizing_recordings.get(session_id)
         if session is not None:
             session.stop_capture()
+            # Wakes _finalize_on_duration_limit's watcher thread, which
+            # otherwise blocks on this same Event forever whenever the user
+            # stops before ever hitting the duration cap (the normal case)
+            # -- one leaked daemon thread per recording for the rest of the
+            # app's lifetime. The watcher already re-checks _sessions before
+            # acting, so waking it early here (session is already popped) is
+            # a pure no-op for it, not a duplicate finalize.
+            session.limit_reached.set()
             finalizing = threading.Event()
             _finalizing_recordings[session_id] = finalizing
+    if session is not None and on_capture_released is not None:
+        # The input/output device is already fully released by
+        # session.stop_capture() above -- restoring monitoring here, instead
+        # of after the caller's whole stop_recording() call returns, means
+        # the singer stops hearing themselves for only as long as that
+        # actually took, not for however long the WAV write + ffmpeg
+        # performance mix further below happens to take on top of it (which
+        # could be several more seconds).
+        with contextlib.suppress(Exception):
+            on_capture_released()
     if session is None:
         # Two UI lifecycle paths may ask to stop the same recording at nearly
         # the same time. The first request owns finalization; the second waits
         # for its result instead of returning a misleading 404 while the WAV
         # and performance mix are still being committed.
         if completed_id is None and finalizing is not None:
-            finalizing.wait(timeout=120.0)
+            # _create_performance_mix_safely can try more than one output
+            # destination, each with its own 90s ffmpeg timeout -- 120s here
+            # could give up and report "not found" while the first Stop is
+            # still completely normally finishing a second attempt.
+            finalizing.wait(timeout=240.0)
             with _sessions_lock:
                 completed_id = _completed_recordings.get(session_id)
         if completed_id is None:

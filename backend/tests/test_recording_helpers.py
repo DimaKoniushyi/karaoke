@@ -1,3 +1,5 @@
+import contextlib
+import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -106,6 +108,37 @@ def test_close_sessions_for_song_keeps_unrelated_recordings(monkeypatch):
     other.stop_capture.assert_not_called()
     other.close.assert_not_called()
     assert recording_service._sessions == {"other": other}
+
+
+def test_stop_recording_wakes_the_duration_limit_watcher_before_the_cap(monkeypatch):
+    # A recording stopped by the user before it ever reaches its duration
+    # cap must not leave _finalize_on_duration_limit's daemon thread blocked
+    # on session.limit_reached forever -- one leaked thread per recording,
+    # for the rest of the app's lifetime, since nothing else ever set it.
+    session = SimpleNamespace(
+        song_id="song", limit_reached=threading.Event(), stop_capture=Mock(), close=Mock()
+    )
+    patch_attrs(
+        monkeypatch, recording_service,
+        _sessions={"id": session}, _finalizing_recordings={}, _completed_recordings={},
+    )
+    watcher = threading.Thread(
+        target=recording_service._finalize_on_duration_limit, args=("id", session), daemon=True
+    )
+    watcher.start()
+    assert watcher.is_alive()
+
+    # stop_recording does real DB/ffmpeg work past the session pop, which
+    # this test has no need to set up -- only the pop + wake matters here.
+    monkeypatch.setattr(
+        recording_service, "SessionLocal", Mock(side_effect=RuntimeError("stop early for this test"))
+    )
+    with contextlib.suppress(Exception):
+        recording_service.stop_recording("id")
+
+    watcher.join(timeout=2)
+    assert not watcher.is_alive()
+    session.stop_capture.assert_called_once_with()
 
 
 def test_start_recording_does_not_hide_driver_failure_with_fallback(monkeypatch):

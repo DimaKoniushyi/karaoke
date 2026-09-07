@@ -18,12 +18,18 @@ class FakeAudioContext {
     this.resumeDeferred = createDeferred();
     this.resume = vi.fn(() => this.resumeDeferred.promise);
     this.close = vi.fn().mockResolvedValue(undefined);
+    this.sources = [];
+    this.gains = [];
   }
   createMediaStreamSource() {
-    return { connect: vi.fn() };
+    const source = { connect: vi.fn(), disconnect: vi.fn() };
+    this.sources.push(source);
+    return source;
   }
   createGain() {
-    return { gain: { value: 0 }, connect: vi.fn() };
+    const gain = { gain: { value: 0 }, connect: vi.fn(), disconnect: vi.fn() };
+    this.gains.push(gain);
+    return gain;
   }
   createDelay() {
     return { delayTime: { value: 0 }, connect: vi.fn() };
@@ -126,7 +132,7 @@ test("a pending effect activation is discarded, not attached, once the participa
   // The participant disconnects (or their effects get toggled again) while
   // this context's resume() is still pending -- deleting the version entry
   // (instead of just bumping it) must still make the eventual activation
-  // recognize it's stale and close the context rather than attach it.
+  // recognize it's stale and dispose its own nodes rather than attach them.
   act(() => result.current.removeRemoteAudio("peer"));
 
   await act(async () => {
@@ -135,7 +141,14 @@ test("a pending effect activation is discarded, not attached, once the participa
     await Promise.resolve();
   });
 
-  expect(contexts[0].close).toHaveBeenCalled();
+  // The effects context is shared across every participant (see
+  // sharedEffectsContextRef in useOnlineRoomAudio.js) and is never closed
+  // just because one participant's activation turned out stale -- only that
+  // participant's own source/gain nodes are torn down.
+  expect(contexts).toHaveLength(1);
+  expect(contexts[0].close).not.toHaveBeenCalled();
+  expect(contexts[0].sources[0].disconnect).toHaveBeenCalled();
+  expect(contexts[0].gains[0].disconnect).toHaveBeenCalled();
 });
 
 test("a fresh activation for the same participant after removal still attaches normally", async () => {

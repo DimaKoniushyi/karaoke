@@ -17,7 +17,11 @@ describe("central microphone capture", () => {
     const processedStream = {
       getAudioTracks: () => [{ readyState: "live" }]
     };
-    const rawStream = { id: "raw" };
+    // Liveness is checked against the raw physical capture (see
+    // microphoneCapture.js's resolve()), not the graph's processed output --
+    // a MediaStreamDestination stays "live" even after the real microphone
+    // is unplugged, so it can't be used to detect that.
+    const rawStream = { id: "raw", getAudioTracks: () => [{ readyState: "live" }] };
     graph = {
       stream: processedStream,
       rawStream,

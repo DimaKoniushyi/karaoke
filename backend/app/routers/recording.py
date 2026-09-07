@@ -92,6 +92,37 @@ def get_recording_settings(db: Session = Depends(get_db)):
     return audio_service.get_settings(db)
 
 
+@router.post("/room/prepare-voice-relay")
+@serialized
+def prepare_room_voice_relay(db: DatabaseSession):
+    """Opens the Python monitor's audio relay for the room to connect to,
+    ahead of the room actually recording anything.
+
+    Without this, the relay only ever opened as a side effect of /start
+    receiving voice_relay=true -- but the frontend only ever sent that once
+    it already knew the relay worked (OnlineVoiceMesh.usingRelay), which was
+    only ever set by successfully connecting to a relay that first requires
+    this same voice_relay=true to exist. On a cold room join, that self-
+    referential requirement meant the relay could never open at all, and the
+    room silently fell back to the local JS DSP graph every time. The
+    frontend now calls this explicitly before attempting to connect (see
+    onlineVoiceMesh.js's tryRelay), breaking the cycle.
+    """
+    settings = audio_service.get_settings(db)
+    return {"relay_available": _configure_room_relay_monitor(settings)}
+
+
+@router.post("/room/release-voice-relay")
+@serialized
+def release_room_voice_relay(db: DatabaseSession):
+    """Counterpart to prepare_room_voice_relay: releases the relay (falls
+    back to ordinary, non-relay monitoring) once the room's local voice
+    capture stops, whether or not a recording ever actually used it.
+    """
+    _restore_monitoring(db)
+    return {"status": "released"}
+
+
 @router.post("/start", response_model=schemas.RecordingStartOut)
 @serialized
 def start_recording(body: schemas.RecordingStartRequest, db: DatabaseSession):
@@ -130,6 +161,7 @@ def start_recording(body: schemas.RecordingStartRequest, db: DatabaseSession):
                 settings.audio_driver,
                 settings.output_device_id,
                 settings.asio_driver_name,
+                device_name=getattr(settings, "output_device_name", None),
             ),
             sample_rate=audio_service.preferred_sample_rate(
                 input_device_id,
@@ -218,9 +250,22 @@ def stop_recording(session_id: str, db: Session = Depends(get_db)):
     # error below, or an unmapped one (e.g. a writer/stream failure surfaces as
     # RuntimeError) — otherwise the user is left without mic monitoring until
     # they notice and start a new recording to trigger another restore.
+    #
+    # restored tracks whether on_capture_released already did it: the
+    # input/output device is released well before stop_recording() returns
+    # (WAV write and the ffmpeg performance mix happen after), so restoring
+    # there instead of only in this finally means the singer isn't left
+    # without self-monitoring for however long that extra work takes on top.
+    restored = False
+
+    def restore_once() -> None:
+        nonlocal restored
+        _restore_monitoring(db)
+        restored = True
+
     try:
         try:
-            recording = recording_service.stop_recording(session_id)
+            recording = recording_service.stop_recording(session_id, on_capture_released=restore_once)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
@@ -228,7 +273,8 @@ def stop_recording(session_id: str, db: Session = Depends(get_db)):
         except (OSError, RuntimeError) as exc:
             raise HTTPException(status_code=500, detail=f"Could not save recording: {exc}") from exc
     finally:
-        _restore_monitoring(db)
+        if not restored:
+            _restore_monitoring(db)
     return recording
 
 

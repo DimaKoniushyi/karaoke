@@ -52,7 +52,7 @@ def test_duplex_output_uses_same_host_api(monkeypatch):
         },
     ]
     monkeypatch.setattr(audio_service.sd, "query_devices", lambda *_args, **_kwargs: devices)
-    patch_attrs(monkeypatch, audio_service, _low_latency_equivalent=lambda *_args: 1, _host_api_name=lambda device: 'Windows WASAPI' if device['hostapi'] == 1 else 'MME')
+    patch_attrs(monkeypatch, audio_service, _low_latency_equivalent=lambda *_args, **_kwargs: 1, _host_api_name=lambda device: 'Windows WASAPI' if device['hostapi'] == 1 else 'MME')
 
     assert audio_service._matching_output_for_input(0, None) == 2
 

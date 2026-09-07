@@ -326,6 +326,42 @@ def test_native_raw_mode_is_armed_at_startup_when_requested_by_config(monkeypatc
     capsys.readouterr()
 
 
+def test_native_raw_mode_reports_sanitized_level_instead_of_stale_python_values(monkeypatch, dll, capsys):
+    # The native raw pass-through skips this module's own Python callback
+    # entirely, which is the only place _level/dsp_compute_ms ever get
+    # updated -- without this, the worker kept reporting whatever they last
+    # were before raw engaged, a frozen but plausible-looking (and
+    # therefore misleading) number instead of visibly unavailable.
+    import json
+    import sys
+    config = {**options(), "sample_rate": 48000, "input_device_id": 1, "output_device_id": 2,
+              "output_channels": 2, "gain": 1, "wasapi_mode": "shared", "native_shared": True,
+              "dry_monitor": 1}
+    monkeypatch.setattr(sys, "argv", ["monitor_worker", "--config", json.dumps(config)])
+    monkeypatch.setattr(monitor_worker, "_running", True)
+    monkeypatch.setattr(monitor_worker.threading, "Thread", Mock())
+    monkeypatch.setattr(monitor_worker, "_audio_callback", Mock(return_value=Mock()))
+    monkeypatch.setattr(monitor_worker.sd, "Stream", Mock(side_effect=AssertionError("must not fall back")))
+    monkeypatch.setattr(
+        monitor_worker, "_level",
+        {"rms_db": -6.0, "clipping": True, "silent": False, "real_latency_ms": 12.3},
+    )
+    monkeypatch.setattr(monitor_worker, "_report_queue", monitor_worker.queue.Queue(maxsize=1))
+
+    def pump(*args):
+        monitor_worker.time.sleep(0.11)  # cross the 0.1s report throttle using real time
+        monitor_worker._running = False
+        return 1
+    dll.wm_pump.side_effect = pump
+    assert monitor_worker.main() == 0
+    report = monitor_worker._report_queue.get_nowait()
+    assert report["event"] == "level"
+    assert (report["rms_db"], report["clipping"], report["silent"], report["real_latency_ms"]) == (
+        -120.0, False, True, None
+    )
+    capsys.readouterr()
+
+
 def test_native_raw_mode_is_never_armed_when_a_relay_is_attached(monkeypatch, dll, capsys):
     import json
     import sys

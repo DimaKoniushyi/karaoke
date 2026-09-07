@@ -79,10 +79,25 @@ def test_normalized_settings_patch_handles_defaults_devices_and_asio(monkeypatch
             "sensitivity": 0.5,
         },
     )
-    assert (updates, changed) == ({'input_device_id': None, 'input_device_name': None, 'output_device_id': None}, {'input_device_id', 'output_device_id'})
+    assert (updates, changed) == (
+        {
+            'input_device_id': None, 'input_device_name': None,
+            'output_device_id': None, 'output_device_name': None,
+        },
+        {'input_device_id', 'output_device_id'},
+    )
 
     updates, changed = audio_service._normalized_settings_patch(current, {"input_device_id": 3})
     assert (updates, changed) == ({'input_device_id': 3, 'input_device_name': 'New'}, {'input_device_id'})
+
+    # output_device_id resolves output_device_name the same way input does --
+    # a saved PortAudio index isn't a stable identity across a USB reconnect,
+    # and only the input side used to be able to recover its device by name.
+    monkeypatch.setattr(audio_service, "_output_device_name", Mock(return_value="New Speakers"))
+    updates, changed = audio_service._normalized_settings_patch(current, {"output_device_id": 5})
+    assert (updates, changed) == (
+        {'output_device_id': 5, 'output_device_name': 'New Speakers'}, {'output_device_id'}
+    )
 
     raises(RuntimeError, lambda: audio_service._normalized_settings_patch(current, {'audio_driver': 'invalid'}), match='Unsupported')
     updates, changed = audio_service._normalized_settings_patch(current, {"audio_driver": "mme"})
@@ -412,6 +427,28 @@ def test_signal_quality_uses_monitor_or_direct_capture(monkeypatch):
 
     audio_service.sd.rec.return_value = np.empty((0, 1), dtype=np.float32)
     assert audio_service.check_signal_quality(None)["rms_db"] == -120
+
+
+def test_signal_quality_cache_is_invalidated_by_a_gain_change(monkeypatch):
+    # The cached result is computed from samples * gain -- reusing it across
+    # a gain change (still within the cache window) silently kept showing
+    # the level for whatever gain was active when the probe last actually
+    # ran, for up to _SIGNAL_PROBE_INTERVAL_SEC.
+    monkeypatch.setattr(audio_service, "_AUDIO_BACKEND_AVAILABLE", True)
+    monkeypatch.setattr(audio_service, "_monitor_process", None)
+    patch_attrs(
+        monkeypatch, audio_service.sd,
+        rec=Mock(return_value=np.array([[0.25], [-0.25]], dtype=np.float32)), wait=Mock(),
+    )
+
+    low = audio_service.check_signal_quality(3, gain=1.0, duration_sec=0.1)
+    high = audio_service.check_signal_quality(3, gain=4.0, duration_sec=0.1)
+    assert low["rms_db"] < high["rms_db"]
+    assert high["clipping"] is True
+
+    # Same device AND gain, still within the cache window: no new probe.
+    audio_service.sd.rec.side_effect = AssertionError("must reuse the cached result")
+    assert audio_service.check_signal_quality(3, gain=4.0, duration_sec=0.1) == high
 
 
 def test_signal_quality_uses_selected_device_native_sample_rate(monkeypatch):

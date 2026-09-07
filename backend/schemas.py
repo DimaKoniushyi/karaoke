@@ -412,6 +412,7 @@ class AudioSettingsOut(ORMModel):
     input_device_id: int | None = None
     input_device_name: str | None = None
     output_device_id: int | None = None
+    output_device_name: str | None = None
     volume: float
     sensitivity: float
     latency_ms: int

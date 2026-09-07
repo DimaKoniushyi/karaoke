@@ -3,6 +3,12 @@ import { normalizeRecording } from "../normalizers";
 
 export const recordingsApi = {
   getRecordingSettings: () => request("/recording/settings"),
+  // Opens the Python monitor's audio relay ahead of the room actually
+  // recording anything -- must be called (and awaited) before attempting to
+  // connect to it (see onlineVoiceMesh.js's tryRelay), or the relay never
+  // has a reason to exist yet.
+  prepareRoomVoiceRelay: () => request("/recording/room/prepare-voice-relay", { method: "POST" }),
+  releaseRoomVoiceRelay: () => request("/recording/room/release-voice-relay", { method: "POST" }),
   startRecording: (
     songId,
     positionSec = 0,

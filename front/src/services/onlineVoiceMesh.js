@@ -171,6 +171,21 @@ export default class OnlineVoiceMesh {
     // no backend monitor running, or a connection timeout.
     const tryRelay = async (settings) => {
       if (settings?.audio_driver === "asio") return null;
+      // The backend only ever opens this relay on request -- previously
+      // that request was voice_relay=true on /recording/start, but the
+      // frontend only ever sent that once it already knew the relay
+      // worked (this.usingRelay), which was only ever set by successfully
+      // connecting to a relay that first required voice_relay=true to
+      // exist. That self-referential requirement meant the relay could
+      // never open on a cold room join. Ask for it explicitly first.
+      let prepared;
+      try {
+        prepared = await api.prepareRoomVoiceRelay();
+      } catch {
+        return null;
+      }
+      if (cancelled()) throw new Error(translateSaved("room.microphoneLaunchCanceled"));
+      if (!prepared?.relay_available) return null;
       let graph;
       try {
         graph = await createRelayVoiceGraph({ connectTimeoutMs: 1500 });
@@ -274,41 +289,43 @@ export default class OnlineVoiceMesh {
 
   async syncPeerAudioTrack(participantId, peer = this.peers.get(participantId)) {
     const selectedStream = this.getOutgoingStream(participantId);
-    const [selectedTrack] = selectedStream?.getAudioTracks?.() || [];
-    if (!peer || !selectedTrack) return false;
+    const selectedTracks = selectedStream?.getAudioTracks?.() || [];
+    if (!peer || !selectedTracks.length) return false;
     const senders = peer.getSenders?.().filter((item) => item.track?.kind === "audio") || [];
-    // Exactly one audio sender per participant. A reconnect/toggle race
-    // could previously leave more than one (e.g. one still carrying the dry
-    // track, one added later for the wet track) -- the old code only ever
-    // added a missing track and never dropped an unwanted extra one, so a
+    if (selectedTracks.length === 1 && senders.length === 1) {
+      const [selectedTrack] = selectedTracks;
+      const [sender] = senders;
+      if (sender.track === selectedTrack) return true;
+      if (typeof sender.replaceTrack === "function") {
+        await sender.replaceTrack(selectedTrack);
+        return true;
+      }
+    }
+    const selectedIds = new Set(selectedTracks.map((track) => track.id));
+    const existingIds = new Set(senders.map((sender) => sender.track?.id).filter(Boolean));
+    let changed = false;
+    // Drop a sender whose track is no longer part of the selected stream
+    // instead of leaving it be -- a reconnect/toggle race could previously
+    // leave more than one sender behind (e.g. one still carrying the dry
+    // track, one added later for the wet track), and the old code only ever
+    // added a missing track, never dropped an unwanted extra one, so a
     // stray sender just kept sending stale audio to the peer indefinitely.
-    const [primary, ...extra] = senders;
-    for (const sender of extra) {
-      if (typeof peer.removeTrack !== "function") continue;
-      try {
-        peer.removeTrack(sender);
-      } catch {
-        // Already removed, or the connection is closing.
+    for (const sender of senders) {
+      if (sender.track && !selectedIds.has(sender.track.id) && typeof peer.removeTrack === "function") {
+        try {
+          peer.removeTrack(sender);
+          changed = true;
+        } catch {
+          // Already removed, or the connection is closing.
+        }
       }
     }
-    if (!primary) {
-      peer.addTrack(selectedTrack, selectedStream);
-      return true;
-    }
-    if (primary.track === selectedTrack) return extra.length > 0;
-    if (typeof primary.replaceTrack === "function") {
-      await primary.replaceTrack(selectedTrack);
-      return true;
-    }
-    if (typeof peer.removeTrack === "function") {
-      try {
-        peer.removeTrack(primary);
-      } catch {
-        // Already removed, or the connection is closing.
-      }
-    }
-    peer.addTrack(selectedTrack, selectedStream);
-    return true;
+    selectedTracks.forEach((track) => {
+      if (existingIds.has(track.id)) return;
+      peer.addTrack(track, selectedStream);
+      changed = true;
+    });
+    return changed;
   }
 
   async setPeerEffectsEnabled(participantId, enabled) {
@@ -720,6 +737,12 @@ export default class OnlineVoiceMesh {
       closeAudioContextQuietly(this.microphoneGraph);
       this.microphoneGraph = null;
     } else this.stream?.getTracks().forEach((track) => track.stop());
+    // Counterpart to tryRelay's prepareRoomVoiceRelay -- releases the
+    // backend relay (falls back to ordinary monitoring) once this room's
+    // local voice capture stops, whether or not a recording ever actually
+    // used it. Best-effort and fire-and-forget: stop() itself stays
+    // synchronous, matching closeAudioContextQuietly just above.
+    if (this.usingRelay) api.releaseRoomVoiceRelay().catch(() => {});
     this.usingRelay = false;
     this.stream = null;
     this.effectsStream = null;
