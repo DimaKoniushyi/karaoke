@@ -1,16 +1,11 @@
-import { useMemo } from "react";
 import { api } from "../../../../api/client";
+import useApiFetchParams from "../../../../hooks/useApiFetchParams";
 import { translateSaved as tr } from "../../../../i18n/runtime";
 import { Button, ProcessingSignal, Stack, Typography } from "../../../../theme/ui";
-import { apiToken } from "../../../../utils/platform";
 import { formatSongKey } from "../../utils";
 
 export default function SongState({ song, transfer, isWorking, onOpenProcessing, openKaraoke }) {
-  const token = apiToken();
-  const fetchParams = useMemo(
-    () => (token ? { headers: { "X-ADVoice-Token": token } } : undefined),
-    [token]
-  );
+  const fetchParams = useApiFetchParams();
 
   if (!isWorking && !transfer) {
     return (

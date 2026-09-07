@@ -37,30 +37,48 @@ def test_portaudio_asio_capture_keeps_the_buffer_selected_in_settings(monkeypatc
 
 
 def test_capture_rejects_negative_buffer_without_probing_other_devices(monkeypatch):
+    patch_attrs(monkeypatch, recording_service, _AUDIO_BACKEND_AVAILABLE=True)
     patch_attrs(monkeypatch, recording_service.sd, query_devices=Mock(side_effect=RuntimeError('device unavailable')))
-    with pytest.raises(RuntimeError, match="non-negative"):
-        recording_service._capture_attempts(None, None, 44_100, -1, False)
+    with pytest.raises(RuntimeError, match="positive requested buffer"):
+        recording_service.start_recording('song', blocksize=-1)
     recording_service.sd.query_devices.assert_not_called()
 
 
-def test_plain_recording_keeps_selected_buffer_without_opening_output():
-    attempts = recording_service._capture_attempts(1, 2, 44_100, 64, False)
-    assert attempts == [(1, None, 44_100, 64, False, 64 / 44100)]
-    assert all(not monitor and output is None for _, output, _, _, monitor, _ in attempts)
+def _started_session_args(monkeypatch, **start_kwargs):
+    patch_many(monkeypatch, (recording_service, "_AUDIO_BACKEND_AVAILABLE", True), (recording_service.uuid, "uuid4", lambda: SimpleNamespace(hex="session")))
+    factory = Mock()
+    patch_attrs(monkeypatch, recording_service, RecordingSession=factory, _sessions={})
+    recording_service.start_recording('song', **start_kwargs)
+    (_session_id, _song_id, input_id, output_id, rate, _channels, _gain, monitoring,
+     _offset, _rate, frames, *_rest, latency) = factory.call_args.args
+    return input_id, output_id, rate, monitoring, frames, latency
 
 
-def test_native_capture_buffer_uses_low_latency_without_forcing_a_tiny_callback():
-    assert recording_service._capture_attempts(1, 2, 44_100, 0, False) == [
-        (1, None, 44_100, 0, False, "low")
-    ]
+def test_plain_recording_keeps_selected_buffer_without_opening_output(monkeypatch):
+    patch_attrs(monkeypatch, recording_service, _capture_blocksize=lambda *_args: 64)
+    input_id, output_id, rate, monitoring, frames, latency = _started_session_args(
+        monkeypatch, device_id=1, output_device_id=2, sample_rate=44_100, blocksize=64, monitoring_enabled=False
+    )
+    assert (input_id, output_id, rate, frames, latency) == (1, None, 44_100, 64, 64 / 44100)
+    assert not monitoring
 
 
-def test_monitoring_never_raises_selected_block_or_retries_without_monitoring():
-    attempts = recording_service._capture_attempts(1, 2, 16_000, 64, True)
-    standard_rate_attempts = recording_service._capture_attempts(1, 2, 48_000, 32, True)
+def test_native_capture_buffer_uses_low_latency_without_forcing_a_tiny_callback(monkeypatch):
+    patch_attrs(monkeypatch, recording_service, _capture_blocksize=lambda *_args: 0)
+    input_id, output_id, rate, monitoring, frames, latency = _started_session_args(
+        monkeypatch, device_id=1, output_device_id=2, sample_rate=44_100, blocksize=0, monitoring_enabled=False
+    )
+    assert (input_id, output_id, rate, frames, latency) == (1, None, 44_100, 0, "low")
+    assert not monitoring
 
-    assert attempts == [(1, 2, 16_000, 64, True, 64 / 16000)]
-    assert standard_rate_attempts == [(1, 2, 48_000, 32, True, 32 / 48000)]
+
+def test_monitoring_never_raises_selected_block_or_retries_without_monitoring(monkeypatch):
+    patch_attrs(monkeypatch, recording_service, _capture_blocksize=lambda *_args: 64)
+    input_id, output_id, rate, monitoring, frames, latency = _started_session_args(
+        monkeypatch, device_id=1, output_device_id=2, sample_rate=16_000, blocksize=64, monitoring_enabled=True
+    )
+    assert (input_id, output_id, rate, frames, latency) == (1, 2, 16_000, 64, 64 / 16000)
+    assert monitoring
 
 
 def test_backend_status_and_session_controls(monkeypatch):
@@ -162,7 +180,7 @@ def test_start_recording_reports_backend_and_final_driver_errors(monkeypatch):
     patch_attrs(monkeypatch, recording_service, _AUDIO_BACKEND_AVAILABLE=False, _AUDIO_BACKEND_ERROR='missing')
     raises(RuntimeError, lambda: recording_service.start_recording('song'), match='missing')
 
-    patch_attrs(monkeypatch, recording_service, _AUDIO_BACKEND_AVAILABLE=True, _capture_attempts=lambda *_args: [(None, None, 44100, 0, False, 'high')], RecordingSession=Mock(side_effect=RuntimeError('driver rejected stream')))
+    patch_attrs(monkeypatch, recording_service, _AUDIO_BACKEND_AVAILABLE=True, _capture_blocksize=lambda *_args: 0, RecordingSession=Mock(side_effect=RuntimeError('driver rejected stream')))
     raises(RuntimeError, lambda: recording_service.start_recording('song'), match='driver rejected stream')
 
 

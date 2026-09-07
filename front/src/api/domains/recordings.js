@@ -1,6 +1,13 @@
 import { createFileUrl, encodePathSegment, request } from "../core";
 import { normalizeRecording } from "../normalizers";
 
+function sessionQuery(sessionId, extra = {}) {
+  const params = { session_id: sessionId ?? "", ...extra };
+  return `?${Object.entries(params)
+    .map(([key, value]) => `${key}=${encodeURIComponent(String(value))}`)
+    .join("&")}`;
+}
+
 export const recordingsApi = {
   getRecordingSettings: () => request("/recording/settings"),
   // Opens the Python monitor's audio relay ahead of the room actually
@@ -39,20 +46,16 @@ export const recordingsApi = {
       })
     }),
   pauseRecording: (sessionId) =>
-    request(`/recording/pause?session_id=${encodeURIComponent(String(sessionId ?? ""))}`, {
-      method: "POST"
-    }),
+    request(`/recording/pause${sessionQuery(sessionId)}`, { method: "POST" }),
   resumeRecording: (sessionId) =>
-    request(`/recording/resume?session_id=${encodeURIComponent(String(sessionId ?? ""))}`, {
-      method: "POST"
-    }),
+    request(`/recording/resume${sessionQuery(sessionId)}`, { method: "POST" }),
   syncRecording: (sessionId, positionSec, playbackRate = 1) =>
     request(
-      `/recording/sync?session_id=${encodeURIComponent(String(sessionId ?? ""))}&position_sec=${encodeURIComponent(String(positionSec ?? 0))}&playback_rate=${encodeURIComponent(String(playbackRate ?? 1))}`,
+      `/recording/sync${sessionQuery(sessionId, { position_sec: positionSec ?? 0, playback_rate: playbackRate ?? 1 })}`,
       { method: "POST" }
     ),
   updateRecordingControls: (sessionId, controls) =>
-    request(`/recording/controls?session_id=${encodeURIComponent(String(sessionId ?? ""))}`, {
+    request(`/recording/controls${sessionQuery(sessionId)}`, {
       method: "PATCH",
       body: JSON.stringify({
         music_volume: controls.musicVolume,
@@ -64,9 +67,7 @@ export const recordingsApi = {
       })
     }),
   stopRecording: (sessionId) =>
-    request(`/recording/stop?session_id=${encodeURIComponent(String(sessionId ?? ""))}`, {
-      method: "POST"
-    }),
+    request(`/recording/stop${sessionQuery(sessionId)}`, { method: "POST" }),
   attachRoomAudio: (recordingId, blob, startPlaybackSec = 0, latencyCompensationSec = 0) => {
     const form = new FormData();
     form.append("file", blob, "room-voices.webm");

@@ -53,13 +53,22 @@ export default function useLibrary() {
     [localSongs, room, roomUi.songs, roomUi.songsByParticipant]
   );
 
-  const view = useMemo(
+  // Split from the filtered/sorted list below: filterOptions and readyCount
+  // only depend on visibleSongs, not on query/filters, so they shouldn't be
+  // recomputed on every keystroke in the search box.
+  const visibleSongsSummary = useMemo(
     () => ({
-      songs: arrangeSongs(visibleSongs, query, filters),
       filterOptions: getLibraryFilterOptions(visibleSongs),
       readyCount: countReadySongs(visibleSongs)
     }),
-    [visibleSongs, query, filters]
+    [visibleSongs]
+  );
+  const view = useMemo(
+    () => ({
+      songs: arrangeSongs(visibleSongs, query, filters),
+      ...visibleSongsSummary
+    }),
+    [visibleSongs, query, filters, visibleSongsSummary]
   );
 
   const karaoke = useLibraryKaraoke({

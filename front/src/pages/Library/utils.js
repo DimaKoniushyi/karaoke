@@ -1,4 +1,6 @@
 import { translateSaved as tr } from "../../i18n/runtime";
+import { clamp } from "../../utils/math";
+import { formatSafeDate } from "../../utils/time-format";
 
 const ACTIVE = new Set(["processing", "queued", "cancelling"]);
 const array = (value) => (Array.isArray(value) ? value : []);
@@ -6,10 +8,13 @@ const text = (value) => String(value ?? "").trim();
 
 export const sameId = (a, b) => a != null && b != null && String(a) === String(b);
 
-export const formatLibraryDate = (value, locale = "ru-RU") => {
-  const date = value && new Date(value);
-  return date && !Number.isNaN(+date) ? date.toLocaleDateString(locale) : "—";
+export const SONG_DROPZONE_ACCEPT = {
+  "audio/*": [".mp3", ".wav", ".flac", ".m4a", ".ogg"],
+  "application/octet-stream": [".kar", ".mid", ".kfn"]
 };
+
+export const formatLibraryDate = (value, locale = "ru-RU") =>
+  formatSafeDate(value, (date) => date.toLocaleDateString(locale));
 
 export const formatEta = (seconds) => {
   const value = Math.round(Number(seconds));
@@ -21,7 +26,7 @@ export const formatEta = (seconds) => {
 };
 
 export const getProcessingProgress = (status, song) =>
-  Math.min(100, Math.max(0, Number(status?.progress_percent ?? song?.progress_percent) || 0));
+  clamp(Number(status?.progress_percent ?? song?.progress_percent) || 0, 0, 100);
 
 export const isProcessingActive = (status) => ACTIVE.has(String(status));
 export const hasActiveSongProcessing = (songs) =>
@@ -41,12 +46,10 @@ export const mergeSongProcessingStatus = (songs, status) =>
         sameId(song?.id, status.song_id)
           ? {
               ...song,
-              ...Object.fromEntries(
-                ["status", "progress_step", "progress_percent", "error_message"].map((key) => [
-                  key,
-                  status[key] ?? song[key]
-                ])
-              )
+              status: status.status ?? song.status,
+              progress_step: status.progress_step ?? song.progress_step,
+              progress_percent: status.progress_percent ?? song.progress_percent,
+              error_message: status.error_message ?? song.error_message
             }
           : song
       );

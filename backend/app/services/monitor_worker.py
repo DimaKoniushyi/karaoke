@@ -58,7 +58,7 @@ _live_params = {
 _native_stream_target: dict[str, Any] = {"stream": None, "raw_eligible": False}
 
 
-def _stream_candidates(options: dict) -> list[dict]:
+def _stream_candidate(options: dict) -> dict:
     """No buffer or rate fallback -- the requested blocksize/sample rate are
     used as-is. Every monitoring path (solo, recording, room) always opens
     the device in shared mode, never exclusive: exclusive mode seizes the
@@ -72,20 +72,20 @@ def _stream_candidates(options: dict) -> list[dict]:
     mode = options.get("wasapi_mode", "shared")
     if mode not in {"shared", "plain"}:
         raise ValueError("Unsupported WASAPI mode")
-    fallback = {
+    candidate = {
         "samplerate": rate, "blocksize": blocksize, "latency": blocksize / rate,
         "channels": (1, int(options["output_channels"])),
         "device": (int(options["input_device_id"]), int(options["output_device_id"])),
         "_mode": mode,
     }
     if mode != "plain":
-        fallback["extra_settings"] = (
+        candidate["extra_settings"] = (
             sd.WasapiSettings(exclusive=False, auto_convert=True),
             sd.WasapiSettings(exclusive=False, auto_convert=True),
         )
         if options.get("native_shared"):
-            fallback["_engine"] = "wasapi-native-shared"
-    return [fallback]
+            candidate["_engine"] = "wasapi-native-shared"
+    return candidate
 
 def _emit(payload: dict) -> None: print(json.dumps(payload), flush=True)
 
@@ -192,25 +192,34 @@ def _audio_callback(gain: float, sample_rate: float = 44_100, statistics=None, r
             params.get("octave", 0.0),
             params.get("dry_monitor", 0.0) >= 0.5,
         )
-        processed = quality.process(indata[:, :1], live_gain, noise_suppression)[:, 0]
-        dry = pitch.process(processed, octave)
-        processed = effects.process(dry, reverb, echo, delay)
-        if relay is not None:
-            relay.push(STREAM_DRY, sample_rate, dry)
-            relay.push(STREAM_WET, sample_rate, processed)
         # A momentary "listen to the raw voice" check bypasses the whole
         # gate/compressor/tone-shaping/effects chain for what the singer
-        # hears locally -- the relay above still carries the normally
-        # processed audio, so a room call in progress is unaffected.
-        monitor_output = (
-            np.clip(indata[:, 0] * live_gain, -1.0, 1.0).astype(np.float32) if dry_monitor else processed
-        )
+        # hears locally. With no relay/room peer listening either, nothing
+        # needs the processed signal at all -- skip the DSP chain entirely
+        # instead of computing it just to discard it. (This function is the
+        # fallback PortAudio engine's callback; the native WASAPI engine
+        # already skips calling it at all for this same case -- see
+        # raw_active in monitor.cpp and _native_stream_target in main().)
+        if dry_monitor and relay is None:
+            monitor_output = np.clip(indata[:, 0] * live_gain, -1.0, 1.0).astype(np.float32)
+            level_source = monitor_output
+        else:
+            processed = quality.process(indata[:, :1], live_gain, noise_suppression)[:, 0]
+            dry = pitch.process(processed, octave)
+            processed = effects.process(dry, reverb, echo, delay)
+            if relay is not None:
+                relay.push(STREAM_DRY, sample_rate, dry)
+                relay.push(STREAM_WET, sample_rate, processed)
+            monitor_output = (
+                np.clip(indata[:, 0] * live_gain, -1.0, 1.0).astype(np.float32) if dry_monitor else processed
+            )
+            level_source = processed
         for channel in range(outdata.shape[1]): outdata[:, channel] = monitor_output
         if compute_started - level_state["reported_at"] >= _LEVEL_INTERVAL_SEC:
             level_state["reported_at"] = compute_started
             rms, peak = (
-                (float(np.sqrt(np.mean(np.square(processed)))), float(np.max(np.abs(processed))))
-                if len(processed) else (0.0, 0.0)
+                (float(np.sqrt(np.mean(np.square(level_source)))), float(np.max(np.abs(level_source))))
+                if len(level_source) else (0.0, 0.0)
             )
             # The real mic-to-speaker round trip, timestamped by the audio
             # driver itself (ADC capture time vs. the DAC time this same
@@ -258,7 +267,7 @@ def main() -> int:
     stream: Any = None
     relay: RelayLink | None = None
     try:
-        candidates = _stream_candidates(options)
+        candidate = _stream_candidate(options)
         _stage("initialize microphone DSP")
         relay_port = options.get("audio_relay_port")
         process = None
@@ -282,40 +291,33 @@ def main() -> int:
                 statistics["callback_error"] = str(error)
                 failed.set()
 
-        chosen_engine, details = "duplex", None
-        for index, raw_candidate in enumerate(candidates):
-            candidate = dict(raw_candidate)
-            mode = candidate.pop("_mode")
-            engine = candidate.pop("_engine", "duplex")
-            last_attempt = index + 1 == len(candidates)
-            try:
-                if engine == "wasapi-native-shared":
-                    _stage("load native WASAPI and open shared endpoints")
-                    from app.services.native_wasapi import NativeWasapiStream
-                    stream = NativeWasapiStream(options, statistics)
-                    if stream.info.sample_rate != float(options["sample_rate"]):
-                        open_relay(stream.info.sample_rate)
-                    _stage("start native shared audio stream")
-                    stream.start(process)
-                    details = stream.diagnostics()
-                else:
-                    _stage("open PortAudio stream")
-                    stream = (WasapiMonitorStream(sd, candidate, callback, statistics, failed)
-                              if engine == "wasapi-split" else sd.Stream(**candidate, callback=callback))
-                    _stage("start PortAudio stream")
-                    stream.start()
-                    details = _stream_diagnostics(stream, candidate, options, mode)
-                chosen_engine = engine
-                break
-            except Exception as error:
-                if stream is not None:
-                    for method in ("abort", "close"):
-                        with contextlib.suppress(Exception):
-                            getattr(stream, method)()
-                    stream = None
-                if last_attempt:
-                    raise
-                _emit({"event": "fallback", "message": str(error)})
+        mode = candidate.pop("_mode")
+        engine = candidate.pop("_engine", "duplex")
+        try:
+            if engine == "wasapi-native-shared":
+                _stage("load native WASAPI and open shared endpoints")
+                from app.services.native_wasapi import NativeWasapiStream
+                stream = NativeWasapiStream(options, statistics)
+                if stream.info.sample_rate != float(options["sample_rate"]):
+                    open_relay(stream.info.sample_rate)
+                _stage("start native shared audio stream")
+                stream.start(process)
+                details = stream.diagnostics()
+            else:
+                _stage("open PortAudio stream")
+                stream = (WasapiMonitorStream(sd, candidate, callback, statistics, failed)
+                          if engine == "wasapi-split" else sd.Stream(**candidate, callback=callback))
+                _stage("start PortAudio stream")
+                stream.start()
+                details = _stream_diagnostics(stream, candidate, options, mode)
+            chosen_engine = engine
+        except Exception:
+            if stream is not None:
+                for method in ("abort", "close"):
+                    with contextlib.suppress(Exception):
+                        getattr(stream, method)()
+                stream = None
+            raise
         # The native-only raw pass-through (Engine::raw_active) skips the
         # Python callback entirely, which also skips this module's own
         # relay.push() calls -- arming it while a room relay is attached

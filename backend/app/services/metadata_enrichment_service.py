@@ -255,6 +255,18 @@ def _youtube_oembed(video_id: str) -> dict | None:
     return payload if isinstance(payload, dict) and payload.get("title") else None
 
 
+def _significant_frame_changes(frames: list, frame_size: int, threshold: float) -> int:
+    """Count consecutive-frame pairs whose average per-pixel difference clears
+    `threshold` -- used to reject still-image uploads cheaply (compression
+    creates tiny changes even for a still image, so a real clip should
+    contain several clearly different consecutive frames).
+    """
+    return sum(
+        (sum(abs(left - right) for left, right in zip(previous, current, strict=True)) / frame_size) >= threshold
+        for previous, current in zip(frames, frames[1:], strict=False)
+    )
+
+
 def _youtube_has_motion(video_id: str) -> bool | None:
     """Use YouTube's storyboard samples to reject still-image uploads cheaply."""
     try:
@@ -266,22 +278,13 @@ def _youtube_has_motion(video_id: str) -> bool | None:
             tile_height = image.height // 5
             frames = [
                 image.crop((column * tile_width, row * tile_height,
-                            (column + 1) * tile_width, (row + 1) * tile_height)).resize((32, 18))
+                            (column + 1) * tile_width, (row + 1) * tile_height)).resize((32, 18)).getdata()
                 for row in range(5)
                 for column in range(5)
             ]
     except (OSError, UnidentifiedImageError, ValueError):
         return None
-    changes = []
-    for previous, current in zip(frames, frames[1:], strict=False):
-        difference = sum(
-            abs(left - right)
-            for left, right in zip(previous.getdata(), current.getdata(), strict=True)
-        )
-        changes.append(difference / (32 * 18))
-    # Compression creates tiny changes even for a still image. A real clip
-    # should contain several clearly different consecutive storyboard frames.
-    return sum(change >= 4.0 for change in changes) >= 3
+    return _significant_frame_changes(frames, 32 * 18, 4.0) >= 3
 
 
 def _youtube_video_is_acceptable(video_id: str, title: str, artist: str | None) -> bool | None:
@@ -420,11 +423,7 @@ def _video_has_motion(path: Path, duration: float) -> bool:
     ]
     if len(frames) < 4:
         return False
-    changes = [
-        sum(abs(left - right) for left, right in zip(previous, current, strict=True)) / frame_size
-        for previous, current in zip(frames, frames[1:], strict=False)
-    ]
-    return sum(change >= 3.5 for change in changes) >= 3
+    return _significant_frame_changes(frames, frame_size, 3.5) >= 3
 
 
 def _video_duration_matches(

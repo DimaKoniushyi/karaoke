@@ -49,7 +49,6 @@ if (hotData) hotData.onlineRoomContext = OnlineRoomContext;
 // that actually renders speaking indicators (OnlineRoomDock) subscribes to
 // this context and re-renders on those ticks.
 const OnlineRoomSpeakingContext = createContext({ localSpeakingLevel: 0, speakingLevels: {} });
-const OFF = false;
 export {
   normalizeParticipantEffects,
   shouldBroadcastRoomTransferProgress
@@ -60,12 +59,12 @@ export function OnlineRoomProvider({ children }) {
   const unsubscribeRef = useRef(null);
   const voiceRef = useRef(null);
   const roomUiRef = useRef({});
-  const microphoneMutedRef = useRef(OFF);
+  const microphoneMutedRef = useRef(false);
   const roomRef = useRef(null);
   const mutedPeopleRef = useRef(new Set());
-  const roomSoundMutedRef = useRef(OFF);
+  const roomSoundMutedRef = useRef(false);
   const participantVolumesRef = useRef({});
-  const intentionalDisconnectRef = useRef(OFF);
+  const intentionalDisconnectRef = useRef(false);
   const pendingSongCommandRef = useRef(null);
   const hostSongCommandRef = useRef(null);
   const songExportsRef = useRef(new Map());
@@ -93,8 +92,8 @@ export function OnlineRoomProvider({ children }) {
   const [mutedPeople, setMutedPeople] = useState(() => new Set());
   const [effectPeople, setEffectPeople] = useState(() => new Set());
   const [participantVolumes, setParticipantVolumes] = useState({});
-  const [microphoneMuted, setMicrophoneMutedState] = useState(OFF);
-  const [roomSoundMuted, setRoomSoundMutedState] = useState(OFF);
+  const [microphoneMuted, setMicrophoneMutedState] = useState(false);
+  const [roomSoundMuted, setRoomSoundMutedState] = useState(false);
   const [roomUi, setRoomUi] = useState({});
   const [roomCommand, setRoomCommand] = useState(null);
   const [voiceError, setVoiceError] = useState("");
@@ -109,17 +108,15 @@ export function OnlineRoomProvider({ children }) {
       return next;
     });
   }, []);
-  const activeTransfer =
-    [...transferStatuses.values()].find((item) => item.stage === "error") ||
-    [...transferStatuses.values()].at(-1) ||
-    null;
-  const transferStatus = activeTransfer
-    ? Object.fromEntries(
-        Object.entries(activeTransfer).filter(
-          ([key]) => !["participantId", "commandId"].includes(key)
-        )
-      )
-    : null;
+  const activeTransfer = useMemo(() => {
+    const values = [...transferStatuses.values()];
+    return values.find((item) => item.stage === "error") || values.at(-1) || null;
+  }, [transferStatuses]);
+  const transferStatus = useMemo(() => {
+    if (!activeTransfer) return null;
+    const { participantId: _participantId, commandId: _commandId, ...rest } = activeTransfer;
+    return rest;
+  }, [activeTransfer]);
   // Room sound controls remote participants only. Muting every <audio> element
   // here also silences recordings, previews and radio players across the app.
   const { restoreApplicationAudio } = useApplicationAudioMute(false);
@@ -276,10 +273,10 @@ export function OnlineRoomProvider({ children }) {
       setEffectPeople(new Set());
       participantVolumesRef.current = {};
       setParticipantVolumes({});
-      roomSoundMutedRef.current = OFF;
-      setRoomSoundMutedState(OFF);
-      microphoneMutedRef.current = OFF;
-      setMicrophoneMutedState(OFF);
+      roomSoundMutedRef.current = false;
+      setRoomSoundMutedState(false);
+      microphoneMutedRef.current = false;
+      setMicrophoneMutedState(false);
       setRoomUi({});
       setRoomCommand(null);
       pendingSongCommandRef.current = null;
@@ -303,7 +300,7 @@ export function OnlineRoomProvider({ children }) {
       restoreApplicationAudio();
       cleanupConnection();
       resetRoomState();
-      intentionalDisconnectRef.current = OFF;
+      intentionalDisconnectRef.current = false;
     },
     // Stryker disable next-line ArrayDeclaration: all callback dependencies are stable.
     [cleanupConnection, resetRoomState, restoreApplicationAudio]
@@ -315,7 +312,7 @@ export function OnlineRoomProvider({ children }) {
       intentionalDisconnectRef.current = true;
       restoreApplicationAudio();
       cleanupConnection();
-      intentionalDisconnectRef.current = OFF;
+      intentionalDisconnectRef.current = false;
       resetRoomState();
       const client = new OnlineRoomClient();
       const voice = new OnlineVoiceMesh(client);

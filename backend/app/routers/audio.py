@@ -82,16 +82,27 @@ def select_device(device_id: int, db: Session = Depends(get_db)):
 def signal_quality(db: Session = Depends(get_db)):
     settings = audio_service.get_settings(db)
     with http_error(RuntimeError, 503):
+        # Settings polls this every 80ms while monitoring is on (see
+        # runtime-config's realtimeSignal) -- check_signal_quality answers
+        # from the running worker's own cached reports in that case and
+        # never looks at the device id at all, so resolving one first (a
+        # full PortAudio device-table enumeration) would be pure waste on
+        # every single poll for as long as the page stays open.
+        #
         # Resolve the device the same way monitoring/recording do: an ASIO
         # driver selection with no explicit device saved must probe the
         # matching ASIO input, not whatever Windows treats as the default
         # WASAPI/MME device (check_signal_quality's own fallback, which has
         # no notion of the selected driver at all).
-        resolved_device_id = audio_service.preferred_input_device(
-            settings.input_device_id,
-            settings.audio_driver,
-            settings.asio_driver_name,
-            device_name=getattr(settings, "input_device_name", None),
+        resolved_device_id = (
+            None
+            if audio_service.is_monitor_process_alive()
+            else audio_service.preferred_input_device(
+                settings.input_device_id,
+                settings.audio_driver,
+                settings.asio_driver_name,
+                device_name=getattr(settings, "input_device_name", None),
+            )
         )
         return audio_service.check_signal_quality(
             resolved_device_id,

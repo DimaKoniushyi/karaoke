@@ -55,7 +55,13 @@ PROJECT_ROOT = BASE_DIR.parent
 
 def resolve_runtime_executable(name: str) -> str:
     """Resolve packaged siblings deterministically before consulting the host PATH."""
-    names, roots = [name] if name.lower().endswith('.exe') else [f'{name}.exe', name] if IS_FROZEN else [name, f'{name}.exe'] if os.name != 'nt' else [f'{name}.exe', name], (Path(sys.executable).resolve().parent, RUNTIME_DIR, BASE_DIR)
+    if name.lower().endswith('.exe'):
+        names = [name]
+    elif IS_FROZEN or os.name == 'nt':
+        names = [f'{name}.exe', name]
+    else:
+        names = [name, f'{name}.exe']
+    roots = (Path(sys.executable).resolve().parent, RUNTIME_DIR, BASE_DIR)
     for root in roots:
         for executable in names:
             candidate = root / executable

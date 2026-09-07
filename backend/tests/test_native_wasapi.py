@@ -223,11 +223,11 @@ def test_native_pump_failure_is_reported(dll):
 def test_native_shared_candidate_does_not_switch_mode_or_buffer():
     config = {"sample_rate": 48000, "blocksize": 64, "input_device_id": 1, "output_device_id": 2,
               "output_channels": 2, "wasapi_mode": "shared", "native_shared": True}
-    candidate, = monitor_worker._stream_candidates(config)
+    candidate = monitor_worker._stream_candidate(config)
     assert candidate["_engine"] == "wasapi-native-shared"
     assert candidate["_mode"] == "shared" and candidate["blocksize"] == 64
     with pytest.raises(ValueError):
-        monitor_worker._stream_candidates({**config, "wasapi_mode": "exclusive"})
+        monitor_worker._stream_candidate({**config, "wasapi_mode": "exclusive"})
 
 
 def test_native_shared_probes_only_categories_valid_for_capture_and_render():

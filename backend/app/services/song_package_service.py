@@ -65,23 +65,15 @@ def _safe_output_relative(value: object, *, key: str) -> str:
     return path.as_posix()
 
 
-def _instrumental_relative(root: Path) -> str:
-    path = song_artifacts.resolve_audio_artifact(root, "instrumental")
-    if path is None: raise ValueError("Song processing manifest has no usable instrumental output")
-    if path.suffix.lower() not in config.ALLOWED_AUDIO_EXTENSIONS: raise ValueError("Song instrumental format is not supported")
-    return path.relative_to(root.resolve()).as_posix()
-
-
-def _vocals_relative(root: Path) -> str:
-    path = song_artifacts.resolve_audio_artifact(root, "vocals")
-    if path is None: raise ValueError("Song processing manifest has no usable vocals output")
-    if path.suffix.lower() not in config.ALLOWED_AUDIO_EXTENSIONS:
-        raise ValueError("Song vocals format is not supported")
+def _artifact_relative(root: Path, key: str) -> str:
+    path = song_artifacts.resolve_audio_artifact(root, key)
+    if path is None: raise ValueError(f"Song processing manifest has no usable {key} output")
+    if path.suffix.lower() not in config.ALLOWED_AUDIO_EXTENSIONS: raise ValueError(f"Song {key} format is not supported")
     return path.relative_to(root.resolve()).as_posix()
 
 
 def _revision_artifact_paths(root: Path) -> tuple[str, ...]:
-    return (*REVISION_ARTIFACTS, _instrumental_relative(root), _vocals_relative(root))
+    return (*REVISION_ARTIFACTS, _artifact_relative(root, "instrumental"), _artifact_relative(root, "vocals"))
 
 
 def _canonical_runtime_state(values: dict[str, object], mode: str) -> dict[str, object]:
@@ -217,11 +209,22 @@ def content_revisions_for_songs(
 
 
 def find_song_id_by_content_revision(db: Session, revision: str) -> str | None:
-    """Return the local id of a completed song with identical packaged content."""
+    """Return the local id of a completed song with identical packaged content.
+
+    Fingerprints one song at a time (unlike content_revisions_for_songs,
+    which is for batch callers that need every song's revision) so a match
+    early in the library doesn't pay for hashing the artifacts of every
+    other song. Still holds the library lock for the whole search rather
+    than once per song, for the same batching reason.
+    """
     done_ids = [song.id for song in song_service.list_songs(db) if song_service.is_done(song)]
-    for song_id, local_revision, _error in content_revisions_for_songs(db, done_ids):
-        if local_revision == revision:
-            return song_id
+    with song_service.library_write_lock():
+        for song_id in done_ids:
+            try:
+                if content_revision_for_song(db, song_id) == revision:
+                    return song_id
+            except (OSError, ValueError):
+                continue
     return None
 
 
@@ -502,18 +505,11 @@ def _validate_archive_audio(
 
 
 
-def _instrumental_member(archive: zipfile.ZipFile) -> zipfile.ZipInfo:
+def _required_member(archive: zipfile.ZipFile, key: str) -> zipfile.ZipInfo:
     try:
-        return archive.getinfo("output/instrumental.flac")
+        return archive.getinfo(f"output/{key}.flac")
     except KeyError as exc:
-        raise ValueError("Song package manifest points to missing artifact: instrumental") from exc
-
-
-def _vocals_member(archive: zipfile.ZipFile) -> zipfile.ZipInfo:
-    try:
-        return archive.getinfo("output/vocals.flac")
-    except KeyError as exc:
-        raise ValueError("Song package manifest points to missing artifact: vocals") from exc
+        raise ValueError(f"Song package manifest points to missing artifact: {key}") from exc
 
 
 def _validate_timeline_artifacts(archive: zipfile.ZipFile, mode: object) -> None:
@@ -540,8 +536,8 @@ def _validate_semantic_package(archive: zipfile.ZipFile, members: list[zipfile.Z
     files = {member.filename for member in members if not member.is_dir()}
     if missing := {f"output/{name}" for name in REQUIRED_OUTPUT_PATHS} - files:
         raise ValueError(f"Song package is incomplete; missing: {', '.join(sorted(missing))}")
-    _validate_archive_audio(archive, _instrumental_member(archive), label="instrumental")
-    _validate_archive_audio(archive, _vocals_member(archive), label="vocals")
+    _validate_archive_audio(archive, _required_member(archive, "instrumental"), label="instrumental")
+    _validate_archive_audio(archive, _required_member(archive, "vocals"), label="vocals")
     source = _source_member(members)
     _validate_archive_audio(archive, source, label="source")
     _validate_timeline_artifacts(archive, mode)

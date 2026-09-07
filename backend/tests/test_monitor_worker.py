@@ -28,24 +28,22 @@ def test_emit_and_stop_update_process_contract(monkeypatch, capsys):
 
 
 def test_selected_buffer_is_not_raised_or_replaced():
-    candidates = monitor_worker._stream_candidates(options())
-    assert len(candidates) == 1
-    assert candidates[0]["blocksize"] == 64
-    assert candidates[0]["latency"] == 64 / 48000
-    assert "extra_settings" in candidates[0]
+    candidate = monitor_worker._stream_candidate(options())
+    assert candidate["blocksize"] == 64
+    assert candidate["latency"] == 64 / 48000
+    assert "extra_settings" in candidate
 
 
 def test_low_rate_keeps_selected_buffer():
-    candidates = monitor_worker._stream_candidates({**options(), "sample_rate": 16000})
-    assert len(candidates) == 1
-    assert candidates[0]["blocksize"] == 64
-    assert candidates[0]["samplerate"] == 16000
+    candidate = monitor_worker._stream_candidate({**options(), "sample_rate": 16000})
+    assert candidate["blocksize"] == 64
+    assert candidate["samplerate"] == 16000
 
 
 @pytest.mark.parametrize("mode", ["shared", "input-exclusive", "exclusive"])
 def test_auto_buffer_is_rejected_instead_of_changing_configuration(mode):
     with pytest.raises(ValueError, match="fixed positive"):
-        monitor_worker._stream_candidates({**options(), "wasapi_mode": mode, "blocksize": 0})
+        monitor_worker._stream_candidate({**options(), "wasapi_mode": mode, "blocksize": 0})
 
 
 def test_variable_callback_frames_and_glitches_are_reported(monkeypatch):
@@ -92,11 +90,10 @@ def test_real_latency_is_unavailable_without_both_driver_timestamps(monkeypatch)
 def test_each_mode_uses_only_its_selected_configuration():
     for mode in ("plain", "shared"):
         for block in (64, 128, 256, 512):
-            candidates = monitor_worker._stream_candidates({**options(), "wasapi_mode": mode, "blocksize": block})
-            assert len(candidates) == 1
-            assert candidates[0]["blocksize"] == block
-            assert candidates[0]["_mode"] == mode
-            assert candidates[0].get("_engine") != "wasapi-split"
+            candidate = monitor_worker._stream_candidate({**options(), "wasapi_mode": mode, "blocksize": block})
+            assert candidate["blocksize"] == block
+            assert candidate["_mode"] == mode
+            assert candidate.get("_engine") != "wasapi-split"
 
 
 def test_main_reports_a_hard_error_when_the_only_candidate_fails(monkeypatch, capsys):
@@ -204,6 +201,54 @@ def test_audio_callback_never_touches_a_relay_when_none_is_configured(monkeypatc
     # Must not raise even though relay defaults to None -- this is the
     # regression case: plain solo monitoring is unaffected by the relay code.
     callback(np.zeros((32, 1), dtype=np.float32), np.empty((32, 2), dtype=np.float32), 32, None, None)
+
+
+def _spy_on_quality_process(monkeypatch):
+    calls = []
+    original = monitor_worker.StudioMicrophoneProcessor.process
+
+    def spy(self, *args, **kwargs):
+        calls.append(True)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(monitor_worker.StudioMicrophoneProcessor, "process", spy)
+    return calls
+
+
+def test_dry_monitor_skips_the_whole_dsp_chain_without_a_relay(monkeypatch):
+    # Nothing local needs the processed signal (dry_monitor bypasses it) and
+    # no relay/room peer is listening either -- the native WASAPI engine
+    # already skips this whole callback for that case (see raw_active in
+    # monitor.cpp); this is the fallback PortAudio engine's own version of
+    # the same optimization, so it must not compute a chain it then discards.
+    monkeypatch.setattr(
+        monitor_worker, "_live_params",
+        {"reverb": 0, "echo": 0, "delay": 0, "octave": 0, "noise_suppression": 0, "dry_monitor": 1.0, "volume": 2.0},
+    )
+    calls = _spy_on_quality_process(monkeypatch)
+    callback = monitor_worker._audio_callback(1.0, 48000, {})
+    samples = np.full((32, 1), 0.5, dtype=np.float32)
+    output = np.empty((32, 2), dtype=np.float32)
+    callback(samples, output, 32, None, None)
+    assert calls == []
+    assert np.allclose(output[:, 0], np.clip(samples[:, 0] * 2.0, -1.0, 1.0))
+    assert np.allclose(output[:, 1], output[:, 0])
+
+
+def test_dry_monitor_still_runs_the_dsp_chain_when_a_relay_is_configured(monkeypatch):
+    # A room peer via the relay must keep hearing the normally processed
+    # audio even while the singer's own local output is the raw bypass.
+    monkeypatch.setattr(
+        monitor_worker, "_live_params",
+        {"reverb": 0, "echo": 0, "delay": 0, "octave": 0, "noise_suppression": 0, "dry_monitor": 1.0, "volume": 1.0},
+    )
+    calls = _spy_on_quality_process(monkeypatch)
+    pushed = []
+    relay = SimpleNamespace(push=lambda stream_id, sample_rate, samples: pushed.append(stream_id))
+    callback = monitor_worker._audio_callback(1.0, 48000, {}, relay)
+    callback(np.zeros((32, 1), dtype=np.float32), np.empty((32, 2), dtype=np.float32), 32, None, None)
+    assert calls == [True]
+    assert pushed == [monitor_worker.STREAM_DRY, monitor_worker.STREAM_WET]
 
 
 def test_main_constructs_a_relay_link_only_when_a_relay_port_is_configured(monkeypatch, capsys):

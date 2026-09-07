@@ -1,8 +1,8 @@
+import { clampWithFallback } from "../utils/math";
 import { formatClockTime } from "../utils/time-format";
 
 const number = (value) => Number(value);
-export const clampFinite = (value, min, max, fallback = min) =>
-  Number.isFinite(number(value)) ? Math.min(max, Math.max(min, number(value))) : fallback;
+export const clampFinite = clampWithFallback;
 export const normalizeAudioDuration = (value) =>
   Number.isFinite(number(value)) && number(value) > 0 ? number(value) : 0;
 export const normalizeAudioPosition = (value, duration = null) => {

@@ -13,6 +13,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
+
 import config
 import models
 from AI.utils.numeric import clamp01
@@ -314,8 +316,6 @@ class RecordingSession:
                     # the reverb/echo/delay effects, which _monitor_effects_
                     # disabled already zeroes) so what reaches the singer's
                     # headphones is the unprocessed microphone signal.
-                    import numpy as np
-
                     monitored = np.clip(indata[:, 0] * self.gain, -1.0, 1.0).astype(np.float32)
                 else:
                     processed = self._quality.process(indata, self.gain, self.noise_suppression)
@@ -335,7 +335,6 @@ class RecordingSession:
         if now - self._signal_reported_at < self._SIGNAL_INTERVAL_SEC:
             return
         self._signal_reported_at = now
-        import numpy as np
         rms = float(np.sqrt(np.mean(np.square(samples)))) if samples.size else 0.0
         self._signal = {"rms_db": round(20 * np.log10(rms), 1) if rms > 0 else -120.0,
                         "clipping": bool(np.any(np.abs(samples) >= .99)), "silent": rms < .0031623}
@@ -724,22 +723,6 @@ def _capture_blocksize(device_id: int | None, requested: int) -> int:
     return requested if "asio" in host_name.casefold() else 0
 
 
-def _capture_attempts(
-    device_id: int | None,
-    output_device_id: int | None,
-    sample_rate: int,
-    blocksize: int,
-    monitoring_enabled: bool,
-) -> list[tuple[int | None, int | None, int, int, bool, str | float]]:
-    # Do not silently change device, rate, buffer or disable self-monitoring.
-    # Driver rejection is reported to the user, not retried with hidden latency.
-    if blocksize < 0 or sample_rate <= 0:
-        raise RuntimeError("Recording requires a non-negative buffer and positive sample rate")
-    return [(device_id, output_device_id if monitoring_enabled else None,
-             sample_rate, blocksize, monitoring_enabled,
-             "low" if blocksize == 0 else blocksize / sample_rate)]
-
-
 def backend_available() -> tuple[bool, str | None]: return (_AUDIO_BACKEND_AVAILABLE, _AUDIO_BACKEND_ERROR)
 
 
@@ -765,8 +748,6 @@ def start_recording(
     if has_live_capture():
         raise RuntimeError("A microphone recording is already active")
     session_id = uuid.uuid4().hex
-    session: RecordingSession | None = None
-    errors: list[str] = []
     publish_target = config.SONG_OUTPUT_DIR
     recording_size = storage_budget_service.recording_bytes(
         sample_rate, channels, config.MAX_RECORDING_DURATION_SECONDS
@@ -777,47 +758,47 @@ def start_recording(
             ("recording_publish", publish_target, recording_size),
         ]
     )
-    for input_id, output_id, rate, frames, monitor, latency in _capture_attempts(
-        device_id, output_device_id, sample_rate, _capture_blocksize(device_id, blocksize),
-        monitoring_enabled or (monitor_owner == "recording" and monitor_mode is not None)
-    ):
-        try:
-            session = RecordingSession(
-                session_id,
-                song_id,
-                input_id,
-                output_id,
-                rate,
-                channels,
-                gain,
-                monitoring_enabled,
-                playback_offset_sec,
-                playback_rate,
-                frames,
-                music_gain,
-                effects,
-                noise_suppression,
-                latency,
-                monitor_mode=monitor_mode,
-                monitor_owner=monitor_owner,
-                storage_reservations=storage_reservations,
-            )
-            session.start()
-            logger.info(
-                "Recording audio started: input=%s output=%s requested_rate=%s actual_rate=%s "
-                "requested_buffer=%s capture_buffer=%s monitor=%s requested_latency=%s",
-                input_id, output_id, rate, session.sample_rate, blocksize, frames, monitor, latency,
-            )
-            break
-        except Exception as exc:  # Audio drivers raise implementation-specific errors.
-            errors.append(str(exc))
-            if session is not None:
-                with contextlib.suppress(Exception): session.close()
-            session = None
-    if session is None:
+    # Do not silently change device, rate, buffer or disable self-monitoring.
+    # Driver rejection is reported to the user, not retried with hidden latency.
+    frames = _capture_blocksize(device_id, blocksize)
+    if frames < 0 or sample_rate <= 0:
         storage_budget_service.release_all(storage_reservations)
-        detail = errors[-1] if errors else "no compatible capture mode"
-        raise RuntimeError(f"Could not start recording stream: {detail}")
+        raise RuntimeError("Recording requires a non-negative buffer and positive sample rate")
+    keep_monitor_output = monitoring_enabled or (monitor_owner == "recording" and monitor_mode is not None)
+    latency = "low" if frames == 0 else frames / sample_rate
+    session: RecordingSession | None = None
+    try:
+        session = RecordingSession(
+            session_id,
+            song_id,
+            device_id,
+            output_device_id if keep_monitor_output else None,
+            sample_rate,
+            channels,
+            gain,
+            monitoring_enabled,
+            playback_offset_sec,
+            playback_rate,
+            frames,
+            music_gain,
+            effects,
+            noise_suppression,
+            latency,
+            monitor_mode=monitor_mode,
+            monitor_owner=monitor_owner,
+            storage_reservations=storage_reservations,
+        )
+        session.start()
+        logger.info(
+            "Recording audio started: input=%s output=%s requested_rate=%s actual_rate=%s "
+            "requested_buffer=%s capture_buffer=%s monitor=%s requested_latency=%s",
+            device_id, output_device_id, sample_rate, session.sample_rate, blocksize, frames, keep_monitor_output, latency,
+        )
+    except Exception as exc:  # Audio drivers raise implementation-specific errors.
+        if session is not None:
+            with contextlib.suppress(Exception): session.close()
+        storage_budget_service.release_all(storage_reservations)
+        raise RuntimeError(f"Could not start recording stream: {exc}") from exc
     with _sessions_lock: _sessions[session_id] = session
     threading.Thread(
         target=_finalize_on_duration_limit,

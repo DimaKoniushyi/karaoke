@@ -1,3 +1,5 @@
+import { clamp } from "../utils/math";
+
 const ROOM_TRANSFER_BROADCAST_INTERVAL_MS = 500;
 const TERMINAL_TRANSFER_STAGES = new Set(["complete", "error", "cancelled"]);
 export const PARTICIPANT_EFFECT_LIMITS = Object.freeze({
@@ -13,13 +15,7 @@ export const normalizeParticipantEffects = (settings = {}) =>
     Object.entries(PARTICIPANT_EFFECT_LIMITS).map(([name, maximum]) => {
       const fallback = name === "volume" ? 1 : name === "noise_suppression" ? 0.35 : 0;
       const value = Number(settings?.[name]);
-      return [
-        name,
-        Math.max(
-          name === "octave" ? -1 : 0,
-          Math.min(maximum, Number.isFinite(value) ? value : fallback)
-        )
-      ];
+      return [name, clamp(Number.isFinite(value) ? value : fallback, name === "octave" ? -1 : 0, maximum)];
     })
   );
 export const normalizeParticipantEffectPatch = (settings = {}) =>

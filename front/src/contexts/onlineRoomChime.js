@@ -1,4 +1,5 @@
 import roomJoinLeaveSound from "../assets/sounds/room-join-leave.mp3";
+import { getAudioContextClass } from "../utils/audio-context";
 
 const setAudioParam = (parameter, value, time) => {
   if (typeof parameter?.setValueAtTime === "function") parameter.setValueAtTime(value, time);
@@ -12,7 +13,7 @@ const bendAudioParam = (parameter, value, time) => {
 };
 
 function playSynthesizedRoomSound(direction) {
-  const AudioContext = globalThis.AudioContext || globalThis.webkitAudioContext;
+  const AudioContext = getAudioContextClass();
   if (!AudioContext || typeof AudioContext.prototype?.createOscillator !== "function") return false;
   let context;
   try {
@@ -102,7 +103,7 @@ function playRoomSound(direction) {
 // voice-chat disconnect sound, played entirely from oscillators (no sampled
 // audio, so there is nothing here that could carry someone else's recording).
 function playDisconnectHornSound() {
-  const AudioContext = globalThis.AudioContext || globalThis.webkitAudioContext;
+  const AudioContext = getAudioContextClass();
   if (!AudioContext || typeof AudioContext.prototype?.createOscillator !== "function") return false;
   let context;
   try {

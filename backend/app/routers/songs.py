@@ -51,6 +51,8 @@ from database import get_db
 
 router = APIRouter(prefix="/songs", tags=["songs"])
 
+_COVER_MIME_TYPES = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+
 
 def _upload_size(file: UploadFile, default: int) -> int:
     # UploadFile.size is 0 until Starlette has parsed the multipart body, then
@@ -274,7 +276,7 @@ async def inspect_song_identity(file: UploadFile = File(...)):
         cover_data_url = None
         if cover is not None:
             payload, extension = cover
-            mime = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}[extension]
+            mime = _COVER_MIME_TYPES[extension]
             cover_data_url = f"data:{mime};base64,{base64.b64encode(payload).decode('ascii')}"
         return schemas.SongIdentityOut(
             title=title,
@@ -566,15 +568,15 @@ def get_processing_log(song: SongDependency):
 @router.get("/{song_id}/cover")
 def get_song_cover(song: SongDependency):
     with http_error(ValueError, 409):
-        output_dir, covers = song_service.resolve_output_dir(song), (('cover.jpg', 'image/jpeg'), ('cover.png', 'image/png'), ('cover.webp', 'image/webp'))
-        for filename, media_type in covers:
-            path = output_dir / filename
+        output_dir = song_service.resolve_output_dir(song)
+        for extension, media_type in _COVER_MIME_TYPES.items():
+            path = output_dir / f"cover{extension}"
             if path.is_file(): return FileResponse(path, media_type=media_type)
 
         source = song_service.resolve_source_path(song)
     recovered = song_service.extract_embedded_cover(source, output_dir) if source.is_file() else None
     if recovered is not None:
-        media_type = {".jpg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}[recovered.suffix.lower()]
+        media_type = _COVER_MIME_TYPES[recovered.suffix.lower()]
         return FileResponse(recovered, media_type=media_type)
     raise HTTPException(status_code=404, detail="Song cover not found")
 

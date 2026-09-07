@@ -87,7 +87,14 @@ test("native shared uses timestamp latency, not allocated buffer estimates", () 
       })}
     />
   );
-  expect(screen.getByText("Задержка потока (оценка): 22.669 мс").title).toContain("не заменяет физический");
+  // The native WASAPI engine's stream_latency_ms is itself a hardware-clock
+  // -timestamped capture-to-playback measurement (see monitor.cpp's
+  // render_ready()), not a coarser allocated-buffer guess -- it earns the
+  // same "measured" label and tooltip as real_latency_ms, not the vaguer
+  // "estimate" wording, and it must never fall back to the buffer estimate.
+  expect(screen.getByText("Реальная задержка (микрофон → наушники): 22.669 мс").title).toContain(
+    "Измерено по временным меткам аудиодрайвера"
+  );
   expect(screen.queryByText(/46.900/)).toBeNull();
 });
 

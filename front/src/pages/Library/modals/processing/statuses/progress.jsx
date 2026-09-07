@@ -1,18 +1,12 @@
 import { translateSaved as tr } from "../../../../../i18n/runtime";
 import { Stack, Typography } from "../../../../../theme/ui";
+import { formatSafeDate } from "../../../../../utils/time-format";
 import { formatEta } from "../../../utils";
 
-const finishTime = (value) => {
-  const date = new Date(value);
-
-  return value && !Number.isNaN(+date)
-    ? date.toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit"
-      })
-    : "—";
-};
+const finishTime = (value) =>
+  formatSafeDate(value, (date) =>
+    date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+  );
 export default ({ state, stage, active, current }) => {
   return (
     <Stack gap={0.4}>

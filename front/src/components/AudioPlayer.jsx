@@ -1,5 +1,6 @@
 import { Pause, Play, Volume2, VolumeX } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import useApiFetchParams from "../hooks/useApiFetchParams";
 import { useI18n } from "../i18n";
 import { IconButton, Slider, Stack, Typography, Waveform } from "../theme/ui";
 import * as platform from "../utils/platform";
@@ -26,10 +27,7 @@ export function AudioPlayer({ src, className = "", initialDuration = 0 }) {
   const rememberedVolume = useRef(1);
   const token = platform.apiToken();
   const [playbackSource, setPlaybackSource] = useState(src);
-  const waveformFetchParams = useMemo(
-    () => (token ? { headers: { "X-ADVoice-Token": token } } : undefined),
-    [token]
-  );
+  const waveformFetchParams = useApiFetchParams();
   const fallback = normalizeAudioDuration(initialDuration);
   const [state, setState] = useState({
     duration: fallback,

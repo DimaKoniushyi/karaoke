@@ -115,6 +115,15 @@ def test_monitor_process_consumes_started_levels_and_invalid_output(monkeypatch,
     assert creationflags & getattr(subprocess, "CREATE_NO_WINDOW", 0) == getattr(
         subprocess, "CREATE_NO_WINDOW", 0
     )
+    # NORMAL_PRIORITY_CLASS must be explicit, not merely absent: with no
+    # priority flag at all Windows has the child inherit the calling
+    # process's CURRENT priority class, so a monitor launched while
+    # pipeline_service's AI-job BELOW_NORMAL_PRIORITY_CLASS hadn't been
+    # restored yet would otherwise start -- and silently stay -- at
+    # BELOW_NORMAL for its whole session.
+    assert creationflags & getattr(subprocess, "NORMAL_PRIORITY_CLASS", 0) == getattr(
+        subprocess, "NORMAL_PRIORITY_CLASS", 0
+    )
 
     assert audio_service._monitor_signal == {
         "rms_db": -8,

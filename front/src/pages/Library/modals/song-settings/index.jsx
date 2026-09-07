@@ -16,10 +16,6 @@ import { getErrorMessage } from "../../../../utils/errors";
 import getRows from "./rows";
 import { createSongPayload, validateSongSettings } from "./utils";
 
-export const HALF = 6;
-export const THIRD = 4;
-export const FULL = 12;
-
 export default function SongSettings({ song, onClose, onSaved }) {
   const { alert } = useAppDialog();
   const navigate = useNavigate();

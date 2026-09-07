@@ -1,16 +1,10 @@
 import { useCallback, useEffect, useRef } from "react";
 import { connectVoiceEffects } from "../../services/voiceEffects";
-import { clamp01 as clampUnit } from "../../utils/math";
+import { closeAudioContextQuietly, getAudioContextClass } from "../../utils/audio-context";
+import { clamp, clamp01 as clampUnit } from "../../utils/math";
 
 const clamp01 = (value) => clampUnit(Number(value) || 0);
-const closeContext = (context) => {
-  try {
-    const result = context?.close?.();
-    result?.catch?.(() => {});
-  } catch {
-    // Closing an already-closed Web Audio context is harmless.
-  }
-};
+const closeContext = closeAudioContextQuietly;
 const routeMediaOutput = (target, deviceId) => {
   if (typeof target?.setSinkId !== "function") return null;
   try {
@@ -45,7 +39,7 @@ export default function useOnlineRoomAudio({
     if (sharedEffectsContextRef.current?.state !== "closed" && sharedEffectsContextRef.current) {
       return sharedEffectsContextRef.current;
     }
-    const AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext;
+    const AudioContextClass = getAudioContextClass();
     if (!AudioContextClass) return null;
     sharedEffectsContextRef.current = new AudioContextClass({ latencyHint: 0 });
     return sharedEffectsContextRef.current;
@@ -73,13 +67,9 @@ export default function useOnlineRoomAudio({
     for (const [participantId, audio] of remoteAudioRef.current) {
       const muted = roomSoundMutedRef.current || mutedPeopleRef.current.has(participantId);
       const effectGraph = remoteEffectsRef.current.get(participantId);
-      const volume = Math.max(
-        0,
-        Math.min(1, Number(participantVolumesRef.current?.[participantId] ?? 1))
-      );
-      const ownerVolume = Math.max(
-        0,
-        Math.min(2, Number(roomUiRef.current.effectsByParticipant?.[participantId]?.volume ?? 1))
+      const volume = clampUnit(Number(participantVolumesRef.current?.[participantId] ?? 1));
+      const ownerVolume = clamp(
+        Number(roomUiRef.current.effectsByParticipant?.[participantId]?.volume ?? 1), 0, 2
       );
       audio.muted = muted || Boolean(effectGraph);
       audio.volume = effectGraph ? 1 : Math.min(1, volume);
@@ -269,7 +259,7 @@ export default function useOnlineRoomAudio({
         stream.getTracks().forEach((track) => track.stop());
         return false;
       }
-      const AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext;
+      const AudioContextClass = getAudioContextClass();
       if (!AudioContextClass) return false;
       let context;
       try {
@@ -277,7 +267,7 @@ export default function useOnlineRoomAudio({
         await routeMediaOutput(context, outputDeviceIdRef.current);
         const source = context.createMediaStreamSource(stream);
         const gain = context.createGain();
-        gain.gain.value = Math.max(0, Math.min(2, Number(effects.volume ?? 1)));
+        gain.gain.value = clamp(Number(effects.volume ?? 1), 0, 2);
         // voice.start() returns the already processed stream from the central
         // microphone service. Applying the channel strip again would gate and
         // compress the singer twice.

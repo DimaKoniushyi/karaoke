@@ -1,11 +1,8 @@
 import { translateSaved } from "../i18n/runtime";
+import { clampWithFallback } from "../utils/math";
 
 const SONG_STATUSES = ["queued", "processing", "cancelling", "cancelled", "done", "error"];
-export function clampNumber(value, min, max, fallback = min) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return fallback;
-  return Math.min(max, Math.max(min, number));
-}
+export const clampNumber = clampWithFallback;
 export function normalizeString(value, fallback = "") {
   if (value == null) return fallback;
   const text = String(value).trim();

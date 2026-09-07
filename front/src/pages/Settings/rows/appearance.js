@@ -1,4 +1,5 @@
 import { translateSaved } from "../../../i18n/runtime";
+import { formatPercent } from "../../../utils/math";
 
 const appearanceRows = ({ settings: { radio, lighting }, tr = translateSaved }) => [
   {
@@ -60,7 +61,7 @@ const appearanceRows = ({ settings: { radio, lighting }, tr = translateSaved }) 
     min: 0,
     max: 1,
     step: 0.01,
-    formatValue: (value) => `${Math.round(value * 100)}%`,
+    formatValue: formatPercent,
     onSave: radio.setVolume
   },
   {
@@ -85,7 +86,7 @@ const appearanceRows = ({ settings: { radio, lighting }, tr = translateSaved }) 
     min: 0,
     max: 1,
     step: 0.05,
-    formatValue: (value) => `${Math.round(value * 100)}%`
+    formatValue: formatPercent
   },
   {
     type: "Slider",
@@ -95,7 +96,7 @@ const appearanceRows = ({ settings: { radio, lighting }, tr = translateSaved }) 
     min: 0.25,
     max: 2,
     step: 0.05,
-    formatValue: (value) => `${Math.round(value * 100)}%`
+    formatValue: formatPercent
   },
   {
     type: "Label",

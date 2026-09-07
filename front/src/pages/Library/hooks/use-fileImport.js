@@ -77,11 +77,10 @@ export default function useLibraryFileImport({ notify, onStarted }) {
       if (!files.length) return;
 
       return run(async () => {
-        const items = [];
-        for (const file of files) {
-          const metadata = await api.inspectSongIdentity(file).catch(() => ({}));
-          items.push(suggestedIdentity(file, metadata));
-        }
+        const metadata = await Promise.all(
+          files.map((file) => api.inspectSongIdentity(file).catch(() => ({})))
+        );
+        const items = files.map((file, index) => suggestedIdentity(file, metadata[index]));
         setReview({ items, index: 0, approved: [] });
       });
     },

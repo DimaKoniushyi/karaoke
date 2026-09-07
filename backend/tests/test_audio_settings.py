@@ -69,7 +69,11 @@ def test_input_device_name_is_bounded_and_backend_aware(monkeypatch):
 
 def test_normalized_settings_patch_handles_defaults_devices_and_asio(monkeypatch):
     current = settings(input_device_id=1, input_device_name="Old", output_device_id=2)
-    monkeypatch.setattr(audio_service, "_input_device_name", Mock(return_value="New"))
+    patch_attrs(monkeypatch, audio_service, _AUDIO_BACKEND_AVAILABLE=True)
+    patch_attrs(
+        monkeypatch, audio_service.sd,
+        query_devices=Mock(return_value=[{}, {}, {}, {'name': 'New'}, {}, {'name': 'New Speakers'}]),
+    )
     updates, changed = audio_service._normalized_settings_patch(
         current,
         {
@@ -93,7 +97,6 @@ def test_normalized_settings_patch_handles_defaults_devices_and_asio(monkeypatch
     # output_device_id resolves output_device_name the same way input does --
     # a saved PortAudio index isn't a stable identity across a USB reconnect,
     # and only the input side used to be able to recover its device by name.
-    monkeypatch.setattr(audio_service, "_output_device_name", Mock(return_value="New Speakers"))
     updates, changed = audio_service._normalized_settings_patch(current, {"output_device_id": 5})
     assert (updates, changed) == (
         {'output_device_id': 5, 'output_device_name': 'New Speakers'}, {'output_device_id'}

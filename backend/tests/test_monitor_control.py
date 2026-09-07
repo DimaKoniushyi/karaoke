@@ -312,13 +312,11 @@ def test_wasapi_always_opens_shared_with_correct_labels(monkeypatch):
     monkeypatch.setattr(monitor_worker.sd, "WasapiSettings", lambda **kwargs: kwargs)
     base = {"sample_rate": 48000, "output_channels": 2, "input_device_id": 0,
             "output_device_id": 1, "blocksize": 128, "wasapi_mode": "shared"}
-    candidates = monitor_worker._stream_candidates(base)
-    assert len(candidates) == 1
-    shared = candidates[0]
+    shared = monitor_worker._stream_candidate(base)
     assert shared["extra_settings"] == ({"exclusive": False, "auto_convert": True}, {"exclusive": False, "auto_convert": True})
     for mode in ("exclusive", "input-exclusive"):
         with pytest.raises(ValueError, match="Unsupported WASAPI mode"):
-            monitor_worker._stream_candidates({**base, "wasapi_mode": mode})
+            monitor_worker._stream_candidate({**base, "wasapi_mode": mode})
     details = monitor_worker._stream_diagnostics(SimpleNamespace(latency=(.004, .006)), shared, base, "shared")
     assert details["input_latency_ms"] == 4 and details["output_latency_ms"] == 6
 
@@ -326,15 +324,15 @@ def test_wasapi_always_opens_shared_with_correct_labels(monkeypatch):
 def test_fallback_never_decreases_explicit_buffer():
     base = {"sample_rate": 44100, "output_channels": 2, "input_device_id": 0,
             "output_device_id": 1, "blocksize": 512}
-    assert all(item["blocksize"] == 0 or item["blocksize"] >= 512 for item in monitor_worker._stream_candidates(base))
+    candidate = monitor_worker._stream_candidate(base)
+    assert candidate["blocksize"] == 0 or candidate["blocksize"] >= 512
 
 
 def test_format_fallbacks_keep_native_rate_first():
     base = {"sample_rate": 44100, "sample_rates": [44100, 48000], "output_channels": 2,
             "input_device_id": 0, "output_device_id": 1, "blocksize": 128}
-    candidates = monitor_worker._stream_candidates(base)
-    assert candidates[0]["samplerate"] == 44100
-    assert len(candidates) == 1
+    candidate = monitor_worker._stream_candidate(base)
+    assert candidate["samplerate"] == 44100
 
 
 def test_asio_settings_do_not_enumerate_drivers_in_http_thread(control, monkeypatch):

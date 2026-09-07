@@ -5,6 +5,7 @@ import { useRadio } from "../contexts/radio";
 import { useOnlineRoomNavigation } from "../hooks/useOnlineRoomNavigation";
 import { useI18n } from "../i18n";
 import { Box, IconButton, Popover, Slider, Stack } from "../theme/ui";
+import { formatPercent } from "../utils/math";
 import { recordStartupMilestone } from "../utils/platform";
 import TitleBar from "./TitleBar";
 import AppRoutes from "./routes";
@@ -85,7 +86,7 @@ function FloatingControls({ openSettings }) {
               max={1}
               step={0.01}
               value={radio.volume}
-              formatValue={(value) => `${Math.round(value * 100)}%`}
+              formatValue={formatPercent}
               onChange={(value) => radio.setVolume(value)}
               controlSx={{ inlineSize: "var(--space-16)" }}
             />

@@ -16,6 +16,7 @@ import { translateSaved as tr } from "../../i18n/runtime";
 import { POLLING_INTERVALS as POLL } from "../../runtime-config";
 import { Button, Card, Chip, Grid, Select, Stack, Typography } from "../../theme/ui";
 import { getErrorMessage } from "../../utils/errors";
+import { formatSafeDate } from "../../utils/time-format";
 import { SERVICES } from "./schema";
 
 export const SERVICE_ICONS = {
@@ -126,10 +127,8 @@ function Diagnostics() {
   );
 }
 
-export const formatDate = (value, language) => {
-  const date = new Date(value);
-  return value && !Number.isNaN(+date) ? date.toLocaleString(LOCALE[language]) : "—";
-};
+export const formatDate = (value, language) =>
+  formatSafeDate(value, (date) => date.toLocaleString(LOCALE[language]));
 
 function History() {
   const { language, t } = useI18n();

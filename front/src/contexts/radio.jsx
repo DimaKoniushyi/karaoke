@@ -11,6 +11,7 @@ import { api } from "../api/client";
 import { translateSaved } from "../i18n/runtime";
 import { registerLightingSource } from "../services/keyboardLighting";
 import { createLevelMeter } from "../services/levelMeter";
+import { getAudioContextClass } from "../utils/audio-context";
 import { clamp01 as clampVolume } from "../utils/math";
 import { readJsonStorage } from "../utils/storage";
 import { persistUiPreferences } from "../utils/ui-preferences";
@@ -206,7 +207,7 @@ export function RadioProvider({ children }) {
     const audio = audioRef.current;
     const existing = audioContextRef.current;
     if (existing && existing.state !== "closed") return existing;
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    const AudioContext = getAudioContextClass();
     // Absence is also contained by the best-effort caller's catch.
     // Stryker disable next-line ConditionalExpression
     if (!AudioContext) return null;

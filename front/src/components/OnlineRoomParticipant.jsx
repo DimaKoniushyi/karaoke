@@ -2,6 +2,7 @@ import { Lock, LogOut, Mic, MicOff, Sparkles, Unlock, Volume2, VolumeX } from "l
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { Box, IconButton, Popover, RotaryKnob, Slider, Stack, Typography } from "../theme/ui";
+import { formatPercent } from "../utils/math";
 import LiveSignalWaveform from "./LiveSignalWaveform";
 
 const key = (enabled, on, off) => `room.person.${enabled ? on : off}`;
@@ -202,7 +203,7 @@ export default function OnlineRoomParticipant({
                   max={1}
                   step={0.05}
                   value={participantVolume}
-                  formatValue={(value) => `${Math.round(value * 100)}%`}
+                  formatValue={formatPercent}
                   aria-label={t("room.person.volume", {
                     name: person.name
                   })}

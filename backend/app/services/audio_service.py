@@ -88,6 +88,23 @@ _LIVE_UPDATE_FIELDS = frozenset({"volume", "reverb", "echo", "delay", "noise_sup
 _PLAIN_HOST_MIN_BLOCKSIZE = 512
 _monitor_signal = dict(_EMPTY_MONITOR_SIGNAL)
 _monitor_effects_disabled = False
+
+
+def settings_snapshot(settings, **overrides):
+    """A detached copy of the monitor-relevant settings fields.
+
+    Used instead of passing a live, DB-session-bound AudioSettings row
+    around: that session can be long closed by the time a deferred/async
+    caller (a coalesced monitor restart, a request-scoped override) actually
+    reads it, and mutating the row in place to apply a transient override
+    risks a concurrent reader observing the transient values.
+    """
+    fields = {
+        field: getattr(settings, field, None)
+        for field in _MONITOR_RESTART_FIELDS | _LIVE_UPDATE_FIELDS | {"monitoring_enabled"}
+    }
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
 _monitor_dry_bypass = False
 # See check_signal_quality: throttles the ad-hoc sd.rec() probe it falls
 # back to whenever nothing is actively monitoring/recording yet.
@@ -257,6 +274,14 @@ def _matching_asio_device_index(driver_name: str | None, kind: str) -> int | Non
     return best[1] if best else None
 
 
+def device_snapshot() -> list[dict] | None:
+    """One PortAudio device-table enumeration, for callers that resolve
+    several preferred_*_device()/preferred_sample_rate() values from the same
+    settings and would otherwise each re-enumerate independently.
+    """
+    return sd.query_devices() if _AUDIO_BACKEND_AVAILABLE else None
+
+
 def preferred_input_device(
     device_id: int | None,
     driver: str = "auto",
@@ -266,11 +291,11 @@ def preferred_input_device(
     device_name: str | None = None,
 ) -> int | None:
     if driver == "asio":
+        available = devices if devices is not None else (sd.query_devices() if _AUDIO_BACKEND_AVAILABLE else [])
         if (
             device_id is not None and _AUDIO_BACKEND_AVAILABLE
-            and 0 <= device_id < len(sd.query_devices())
-            and (_is_wdm_ks_device(sd.query_devices()[device_id])
-                 or not _is_asio_device(sd.query_devices()[device_id]))
+            and 0 <= device_id < len(available)
+            and (_is_wdm_ks_device(available[device_id]) or not _is_asio_device(available[device_id]))
         ):
             # Saved id now resolves to a broken WDM-KS pin, or (most commonly)
             # to a plain WASAPI/MME device left over from a previous "auto"
@@ -279,9 +304,7 @@ def preferred_input_device(
             # than the one the native ASIO bridge is actually monitoring
             # through. Re-match by name instead.
             device_id = None
-        if device_id is not None and (
-            not _AUDIO_BACKEND_AVAILABLE or 0 <= device_id < len(sd.query_devices())
-        ):
+        if device_id is not None and (not _AUDIO_BACKEND_AVAILABLE or 0 <= device_id < len(available)):
             return device_id
         return _matching_asio_device_index(asio_driver_name, "input")
     if not _AUDIO_BACKEND_AVAILABLE:
@@ -306,6 +329,10 @@ def _host_api_name(device: dict) -> str:
 
 def _is_asio_device(device: dict) -> bool:
     return "asio" in _host_api_name(device).lower()
+
+
+def _is_wasapi_device(device: dict) -> bool:
+    return "wasapi" in _host_api_name(device).casefold()
 
 
 def _is_wdm_ks_device(device: dict) -> bool:
@@ -393,22 +420,20 @@ def preferred_output_device(
 ) -> int | None:
     if not _AUDIO_BACKEND_AVAILABLE:
         return output_device_id
+    devices = sd.query_devices() if devices is None else devices
     if driver == "asio":
         if output_device_id is not None:
-            available = sd.query_devices() if devices is None else devices
             # Same mismatch as preferred_input_device: a saved output id left
             # over from a non-ASIO driver selection must not be handed to
             # PortAudio recording as if it were the interface the native ASIO
             # bridge is actually monitoring through.
-            if 0 <= output_device_id < len(available) and _is_asio_device(available[output_device_id]):
+            if 0 <= output_device_id < len(devices) and _is_asio_device(devices[output_device_id]):
                 return output_device_id
             output_device_id = None
-        if input_device_id is not None:
-            available = sd.query_devices() if devices is None else devices
-            if 0 <= input_device_id < len(available):
-                device = available[input_device_id]
-                if _is_asio_device(device) and int(device.get("max_output_channels", 0)) > 0:
-                    return input_device_id
+        if input_device_id is not None and 0 <= input_device_id < len(devices):
+            device = devices[input_device_id]
+            if _is_asio_device(device) and int(device.get("max_output_channels", 0)) > 0:
+                return input_device_id
         return _matching_asio_device_index(asio_driver_name, "output")
     resolved_input = _low_latency_equivalent(
         input_device_id, "input", devices, preferred_host_api="mme" if driver == "mme" else "wasapi"
@@ -418,7 +443,7 @@ def preferred_output_device(
     )
 
 
-def preferred_sample_rate(input_device_id: int | None = None, driver: str = "auto") -> int:
+def preferred_sample_rate(input_device_id: int | None = None, driver: str = "auto", devices=None) -> int:
     if driver == "asio":
         # PortAudio's device table is captured once (first ASIO host-API
         # query in this process) and never refreshed, but the ASIO bridge can
@@ -434,7 +459,7 @@ def preferred_sample_rate(input_device_id: int | None = None, driver: str = "aut
             if isinstance(live_rate, (int, float)) and live_rate > 0:
                 return int(round(live_rate))
     if _AUDIO_BACKEND_AVAILABLE and input_device_id is not None:
-        devices = sd.query_devices()
+        devices = sd.query_devices() if devices is None else devices
         if 0 <= input_device_id < len(devices):
             return int(round(float(devices[input_device_id]["default_samplerate"])))
     return config.RECORDING_SAMPLE_RATE
@@ -524,13 +549,16 @@ def get_settings(db: Session) -> models.AudioSettings:
     return _get_or_create_settings(db)
 
 
+def _device_name_from(devices: list[dict], device_id: int | None) -> str | None:
+    if device_id is None or not (0 <= device_id < len(devices)):
+        return None
+    return str(devices[device_id].get("name") or "") or None
+
+
 def _input_device_name(device_id: int | None) -> str | None:
     if device_id is None or not _AUDIO_BACKEND_AVAILABLE:
         return None
-    devices = sd.query_devices()
-    return (
-        str(devices[device_id].get("name") or "") or None if 0 <= device_id < len(devices) else None
-    )
+    return _device_name_from(sd.query_devices(), device_id)
 
 
 # Mirrors _input_device_name -- output_device_id is just as much a
@@ -544,6 +572,13 @@ def _normalized_settings_patch(
 ) -> tuple[dict, set[str]]:
     updates: dict = {}
     changed_fields: set[str] = set()
+    # Resolved once (not per-field): a single patch can change both
+    # input_device_id and output_device_id, and each used to re-enumerate the
+    # full PortAudio device table independently.
+    needs_devices = resolve_devices and _AUDIO_BACKEND_AVAILABLE and any(
+        patch.get(field) is not None for field in ("input_device_id", "output_device_id")
+    )
+    devices = sd.query_devices() if needs_devices else None
     for field, value in patch.items():
         if field in {"input_device_id", "output_device_id"} and value is None:
             if getattr(settings, field) is not None:
@@ -559,10 +594,12 @@ def _normalized_settings_patch(
         if getattr(settings, field) != value:
             updates[field] = value
             changed_fields.add(field)
-        if field == "input_device_id":
-            updates["input_device_name"] = _input_device_name(value) if resolve_devices else (_known_device_names.get(value) or None)
-        elif field == "output_device_id":
-            updates["output_device_name"] = _output_device_name(value) if resolve_devices else (_known_device_names.get(value) or None)
+        if field in {"input_device_id", "output_device_id"}:
+            name_field = "input_device_name" if field == "input_device_id" else "output_device_name"
+            updates[name_field] = (
+                (_device_name_from(devices, value) if devices is not None else None) if resolve_devices
+                else (_known_device_names.get(value) or None)
+            )
 
     driver, asio_name = (
         updates.get("audio_driver", settings.audio_driver),
@@ -694,10 +731,7 @@ def request_monitoring(
     if _hardware_suspended:
         _monitor_control.cancel()
         return
-    snapshot = SimpleNamespace(**{
-        field: getattr(settings, field, None)
-        for field in _MONITOR_RESTART_FIELDS | _LIVE_UPDATE_FIELDS | {"monitoring_enabled"}
-    })
+    snapshot = settings_snapshot(settings)
     if disabled_effects is not None:
         _requested_effects_disabled = bool(disabled_effects)
     effects_disabled = _requested_effects_disabled
@@ -718,7 +752,7 @@ def monitoring_status() -> dict:
 
 
 def recording_monitor_mode(device_id):
-    if _AUDIO_BACKEND_AVAILABLE and "wasapi" in _host_api_name(sd.query_devices(device_id)).lower():
+    if _AUDIO_BACKEND_AVAILABLE and _is_wasapi_device(sd.query_devices(device_id)):
         return "shared"
     return "plain"
 
@@ -963,7 +997,7 @@ def _start_shared_monitor(settings, *, driver: str, relay_needed: bool = False) 
     if output_channels < 1:
         raise RuntimeError("No output device is available for microphone monitoring")
     gain = max(0.0, min(4.0, settings.volume))
-    wasapi = "wasapi" in _host_api_name(input_info).casefold()
+    wasapi = _is_wasapi_device(input_info)
     wasapi_mode = "shared" if wasapi else "plain"
     _monitor_control.publish(
         input_device=str(input_info.get("name", "")), output_device=str(output_info.get("name", "")),
@@ -1096,10 +1130,7 @@ def _start_asio_monitor(settings: models.AudioSettings, *, adopt_driver_buffer: 
     # snapshot request_monitoring builds for itself) -- that session can be
     # long closed by the time a reset actually happens, so a fresh detached
     # snapshot is captured here rather than closing over settings as-is.
-    reset_snapshot = SimpleNamespace(**{
-        field: getattr(settings, field, None)
-        for field in _MONITOR_RESTART_FIELDS | _LIVE_UPDATE_FIELDS | {"monitoring_enabled"}
-    })
+    reset_snapshot = settings_snapshot(settings)
     _launch_monitor_process(
         command,
         cwd=bridge.parent,
@@ -1140,7 +1171,21 @@ def _launch_monitor_process(
     # engines. Elevating the whole process on top of that only ever competed
     # with Electron and everything else for CPU on a weaker machine, with no
     # audio benefit.
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    #
+    # "Plain" must still be explicit: with no priority class flag at all,
+    # Windows has this child inherit the CALLING process's CURRENT priority
+    # class, not always NORMAL. If a song was processing (or had just
+    # finished) recently enough that pipeline_service._configure_ai_runtime's
+    # BELOW_NORMAL_PRIORITY_CLASS on the backend process hadn't been restored
+    # yet, every monitor/ASIO-bridge subprocess launched during that window
+    # would start -- and silently stay, since nothing ever revisits a child's
+    # priority after it launches -- at BELOW_NORMAL for its whole session,
+    # for however long the user kept monitoring going. NORMAL_PRIORITY_CLASS
+    # pins the actually-intended "plain" priority regardless of what the
+    # parent's own priority happens to be at that moment.
+    creationflags = (
+        getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "NORMAL_PRIORITY_CLASS", 0)
+    )
     # Registration and stop are atomic. A release response must not race a
     # just-created child that has not yet been installed in _monitor_process.
     with _monitor_lock:
@@ -1285,6 +1330,19 @@ def _launch_monitor_process(
     except Exception:
         _stop_monitoring_process(expected_process=process)
         raise
+
+
+def is_monitor_process_alive() -> bool:
+    """Whether check_signal_quality would take its cached-signal fast path.
+
+    Lets a caller that's about to resolve an input device purely to hand it
+    to check_signal_quality skip that resolution (a full PortAudio device
+    enumeration) when the result would go unused: check_signal_quality never
+    looks at device_id at all once a live monitor process means it can
+    answer from the already-running worker's own periodic reports instead.
+    """
+    with _monitor_lock:
+        return _monitor_process is not None and _monitor_process.poll() is None
 
 
 def check_signal_quality(

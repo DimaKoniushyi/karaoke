@@ -1,20 +1,14 @@
 import { Mic } from "lucide-react";
-import { useMemo } from "react";
 import { api } from "../../../api/client";
+import useApiFetchParams from "../../../hooks/useApiFetchParams";
 import useSongCover from "../../../hooks/useSongCover";
 import { translateSaved as t } from "../../../i18n/runtime";
 import { Box, Stack, Typography, Waveform } from "../../../theme/ui";
-import * as platform from "../../../utils/platform";
 import { formatClockTime as formatTime } from "../../../utils/time-format";
 
 export default function SongStrip({ song, currentTime, duration, onSeek, disablelabel }) {
   const cover = useSongCover(song?.id, `${song?.updated_at ?? ""}:${song?.status ?? ""}`);
-  const token = platform.apiToken();
-
-  const fetchParams = useMemo(
-    () => (token ? { headers: { "X-ADVoice-Token": token } } : undefined),
-    [token]
-  );
+  const fetchParams = useApiFetchParams();
 
   if (!song) return null;
 

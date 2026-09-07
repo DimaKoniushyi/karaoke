@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef } from "react";
 
+const collectAudioElements = (root) => [
+  ...(root instanceof HTMLAudioElement ? [root] : []),
+  ...(root.querySelectorAll?.("audio") || [])
+];
+
 export default function useApplicationAudioMute(enabled) {
   const originalMuteStateRef = useRef(new Map());
 
@@ -7,12 +12,7 @@ export default function useApplicationAudioMute(enabled) {
     (root) => {
       if (!root) return;
 
-      const audioElements = [
-        ...(root instanceof HTMLAudioElement ? [root] : []),
-        ...(root.querySelectorAll?.("audio") || [])
-      ];
-
-      for (const audio of audioElements) {
+      for (const audio of collectAudioElements(root)) {
         if (audio.dataset.onlineRoomParticipant) continue;
         if (!originalMuteStateRef.current.has(audio))
           originalMuteStateRef.current.set(audio, audio.muted);
@@ -26,11 +26,7 @@ export default function useApplicationAudioMute(enabled) {
   const forgetRemovedAudio = useCallback((root) => {
     if (!root) return;
 
-    const audioElements = [
-      ...(root instanceof HTMLAudioElement ? [root] : []),
-      ...(root.querySelectorAll?.("audio") || [])
-    ];
-    for (const audio of audioElements) originalMuteStateRef.current.delete(audio);
+    for (const audio of collectAudioElements(root)) originalMuteStateRef.current.delete(audio);
     // Stryker disable next-line ArrayDeclaration: the callback closes over refs only.
   }, []);
 

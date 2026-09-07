@@ -1,7 +1,8 @@
+import { useMemo } from "react";
 import { useDropzone } from "react-dropzone";
 import { translateSaved as tr } from "../../../i18n/runtime";
 import { Box, Card, Grid, Stack, Typography } from "../../../theme/ui";
-import { sameId } from "../utils";
+import { sameId, SONG_DROPZONE_ACCEPT } from "../utils";
 import LibrarySongCard from "./card";
 
 export const selectSongTransferStatus = (statuses, id) => {
@@ -27,12 +28,21 @@ export default function LibrarySongsGrid({
   onOpenSettings,
   songActions
 }) {
-  const statuses = [...(transferStatuses?.values?.() || [])];
+  // Grouped by song id once per transferStatuses change, instead of each
+  // song re-filtering the whole statuses list in the render loop below.
+  const statusesBySong = useMemo(() => {
+    const grouped = new Map();
+    for (const status of transferStatuses?.values?.() || []) {
+      if (status?.songId == null) continue;
+      const key = String(status.songId);
+      const bucket = grouped.get(key);
+      if (bucket) bucket.push(status);
+      else grouped.set(key, [status]);
+    }
+    return grouped;
+  }, [transferStatuses]);
   const { getRootProps, isDragActive } = useDropzone({
-    accept: {
-      "audio/*": [".mp3", ".wav", ".flac", ".m4a", ".ogg"],
-      "application/octet-stream": [".kar", ".mid", ".kfn"]
-    },
+    accept: SONG_DROPZONE_ACCEPT,
     disabled: fileImport.importing || !canManageLibrary,
     onDropAccepted: fileImport.importFile,
     multiple: true,
@@ -71,7 +81,10 @@ export default function LibrarySongsGrid({
             song={song}
             cardIndex={cardIndex}
             canManageLibrary={canManageLibrary}
-            transferStatus={selectSongTransferStatus(statuses, song.id)}
+            transferStatus={selectSongTransferStatus(
+              statusesBySong.get(String(song.id)) || [],
+              song.id
+            )}
             onOpenKaraoke={openKaraoke}
             onOpenProcessing={processing.track}
             onOpenRecordings={recordings.setSong}

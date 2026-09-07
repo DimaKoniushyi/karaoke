@@ -43,23 +43,23 @@ def save_editor(
         editor["ai_notes"] = [
             [dict(note) for note in word["notes"]] for word in payload["words"]
         ]
-    if word_texts is not None:
-        if len(word_texts) != len(payload["words"]):
-            raise ValueError("word_texts length must match the number of words")
+    if word_texts is not None and len(word_texts) != len(payload["words"]):
+        raise ValueError("word_texts length must match the number of words")
+    if word_bounds is not None and len(word_bounds) != len(payload["words"]):
+        raise ValueError("word_bounds length must match the number of words")
+    if word_texts is not None or word_bounds is not None:
+        words = payload["words"]
+        texts = word_texts if word_texts is not None else [None] * len(words)
+        bounds = word_bounds if word_bounds is not None else [None] * len(words)
         payload = {
             **payload,
             "words": [
-                {**word, "text": text} for word, text in zip(payload["words"], word_texts, strict=True)
-            ],
-        }
-    if word_bounds is not None:
-        if len(word_bounds) != len(payload["words"]):
-            raise ValueError("word_bounds length must match the number of words")
-        payload = {
-            **payload,
-            "words": [
-                {**word, "start": float(bound["start"]), "end": float(bound["end"])}
-                for word, bound in zip(payload["words"], word_bounds, strict=True)
+                {
+                    **word,
+                    **({"text": text} if text is not None else {}),
+                    **({"start": float(bound["start"]), "end": float(bound["end"])} if bound is not None else {}),
+                }
+                for word, text, bound in zip(words, texts, bounds, strict=True)
             ],
         }
     updated = replace_word_notes(payload, raw_notes)

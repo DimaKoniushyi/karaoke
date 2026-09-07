@@ -19,7 +19,7 @@ import {
   TextField,
   Typography
 } from "../../../theme/ui";
-import { defaultLibraryFilters as defaults } from "../utils";
+import { defaultLibraryFilters as defaults, SONG_DROPZONE_ACCEPT } from "../utils";
 
 const sorts = [
   ["relevance", "library.sort.relevance"],
@@ -47,16 +47,11 @@ export default function LibraryActions({
   setFiltersOpen,
   setQuery
 }) {
-  const open = filtersOpen;
-  const setOpen = setFiltersOpen;
   const [draft, setDraft] = useState(filters);
   const anchor = useRef();
 
   const drop = useDropzone({
-    accept: {
-      "audio/*": [".mp3", ".wav", ".flac", ".m4a", ".ogg"],
-      "application/octet-stream": [".kar", ".mid", ".kfn"]
-    },
+    accept: SONG_DROPZONE_ACCEPT,
     disabled: importing || !can,
     multiple: true,
     noClick: true,
@@ -109,10 +104,10 @@ export default function LibraryActions({
             icon={SlidersHorizontal}
             size="sm"
             label={tr("library.filtersAndSorting")}
-            variant={open ? "contained" : "outline"}
+            variant={filtersOpen ? "contained" : "outline"}
             onClick={() => {
-              !open && setDraft(filters);
-              setOpen(!open);
+              !filtersOpen && setDraft(filters);
+              setFiltersOpen(!filtersOpen);
             }}
           />
         }
@@ -136,7 +131,7 @@ export default function LibraryActions({
 
       <input {...drop.getInputProps()} />
 
-      <Popover open={open} anchorRef={anchor} placement="bottom-end" onClose={() => setOpen(false)}>
+      <Popover open={filtersOpen} anchorRef={anchor} placement="bottom-end" onClose={() => setFiltersOpen(false)}>
         <Stack gap="var(--space-4)">
           <Typography tone="muted">{tr("library.sorting")}</Typography>
 
@@ -167,7 +162,7 @@ export default function LibraryActions({
 
           <Stack direction="row" gap="var(--space-2)">
             {[
-              ["library.apply", undefined, () => (setFilters?.(draft), setOpen(false))],
+              ["library.apply", undefined, () => (setFilters?.(draft), setFiltersOpen(false))],
               ["library.reset", "outlined", () => setDraft(defaults)]
             ].map(([label, variant, onClick]) => (
               <Button key={label} fullWidth variant={variant} onClick={onClick}>

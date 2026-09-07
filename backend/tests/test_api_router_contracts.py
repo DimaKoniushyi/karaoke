@@ -53,6 +53,28 @@ def test_signal_quality_uses_persisted_gain_and_monitor_state(monkeypatch):
     assert_http_status(503, lambda: audio.signal_quality(database))
 
 
+def test_signal_quality_skips_device_resolution_while_monitoring_is_live(monkeypatch):
+    # Settings polls this endpoint every 80ms while monitoring is on;
+    # check_signal_quality answers from the live worker's own cached reports
+    # in that case and never looks at device_id at all, so resolving one
+    # first (a full PortAudio device-table enumeration) would be pure waste
+    # on every single poll for as long as the page stays open.
+    database, current = Mock(), SimpleNamespace(
+        input_device_id=2, volume=1.5, monitoring_enabled=True, audio_driver="auto", asio_driver_name=None
+    )
+    monkeypatch.setattr(audio.audio_service, "get_settings", Mock(return_value=current))
+    monkeypatch.setattr(audio.audio_service, "is_monitor_process_alive", Mock(return_value=True))
+    resolve = Mock(return_value=2)
+    monkeypatch.setattr(audio.audio_service, "preferred_input_device", resolve)
+    check = Mock(return_value={"rms_db": -10})
+    monkeypatch.setattr(audio.audio_service, "check_signal_quality", check)
+
+    assert audio.signal_quality(database) == {"rms_db": -10}
+
+    resolve.assert_not_called()
+    check.assert_called_once_with(None, gain=1.5, monitoring_expected=True)
+
+
 def test_signal_quality_resolves_the_matching_asio_input_not_the_saved_raw_id(monkeypatch):
     # A saved input_device_id is a PortAudio index for whatever driver was
     # selected when it was stored -- with an ASIO driver active it must be

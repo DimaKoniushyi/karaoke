@@ -13,6 +13,7 @@ from app import repositories
 from app.api.dependencies import AnalysisDependency, DatabaseSession, RecordingDependency
 from app.api.errors import http_error
 from app.services import analysis_service
+from app.services.db_utils import commit_refresh
 from app.utils.json_values import parse_json_value
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
@@ -60,28 +61,17 @@ def run_analysis(recording: RecordingDependency, db: DatabaseSession):
 
     if existing is not None:
         _apply_analysis(existing, analysis)
-        try:
-            db.commit()
-            db.refresh(existing)
-        except Exception:
-            db.rollback()
-            raise
-        return _to_out(existing)
+        return _to_out(commit_refresh(db, existing))
 
     result = models.AnalysisResult(recording_id=recording.id)
     _apply_analysis(result, analysis)
     db.add(result)
     try:
-        db.commit()
-        db.refresh(result)
+        result = commit_refresh(db, result)
     except IntegrityError:
-        db.rollback()
         stored_result = repositories.get_analysis_by_recording(db, recording.id)
         if stored_result is None: raise
         result = stored_result
-    except Exception:
-        db.rollback()
-        raise
     return _to_out(result)
 
 

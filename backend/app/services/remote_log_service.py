@@ -4,7 +4,6 @@ import atexit
 import json
 import logging
 import os
-import sys
 import threading
 import time
 import urllib.request
@@ -13,21 +12,17 @@ from pathlib import Path
 from typing import Any
 
 from AI.utils.env import env_flag
+from config import IS_FROZEN
 
 _LOG_UPLOAD_URL = os.getenv(
     "KARAOKE_LOG_COLLECTOR_URL",
     "https://karaoke-studio-online.pro100dimka-and.workers.dev/logs",
 )
 
-
-def _running_installed_build() -> bool:
-    return bool(getattr(sys, "frozen", False))
-
-
 # Development already has the local application.log and terminal. Remote R2
 # diagnostics are reserved for installed/frozen builds to avoid needless
 # Cloudflare requests while running start-dev/start-web.
-_DISABLED = env_flag("KARAOKE_LOG_COLLECTOR_DISABLED") or not _running_installed_build()
+_DISABLED = env_flag("KARAOKE_LOG_COLLECTOR_DISABLED") or not IS_FROZEN
 try:
     _FLUSH_DELAY_SECONDS = max(
         1.0, float(os.getenv("KARAOKE_LOG_FLUSH_DELAY_SECONDS", "30"))

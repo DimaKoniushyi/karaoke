@@ -263,7 +263,9 @@ def analyze_recording(recording: models.Recording, song: models.Song) -> dict[st
         frames.append({"time": song_time, "deviation_semitones": round(deviation, 3)})
         hits += deviation <= _HIT_TOLERANCE_SEMITONES
 
-    accuracy, mean_deviation, sections = round(hits / len(deviations) * 100, 1) if deviations else None, round(statistics.fmean(deviations), 3) if deviations else None, _sections_breakdown(structure, frames) if isinstance(structure, list) else None
+    accuracy = round(hits / len(deviations) * 100, 1) if deviations else None
+    mean_deviation = round(statistics.fmean(deviations), 3) if deviations else None
+    sections = _sections_breakdown(structure, frames) if isinstance(structure, list) else None
     cutoff_song_time = _take_cutoff_song_time(playback_segments, pitch_frames, playback_offset_sec)
     return {
         "pitch_accuracy_percent": accuracy,

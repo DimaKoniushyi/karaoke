@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createLevelMeter } from "../../services/levelMeter";
+import { getAudioContextClass } from "../../utils/audio-context";
 
 const METER_INTERVAL_MS = 70;
 const MIN_LEVEL_DELTA_PERCENT = 1;
@@ -66,7 +67,7 @@ export default function useSpeakingLevels() {
 
   const getAudioContext = useCallback(
     () => {
-      const AudioContextClass = globalThis.AudioContext || globalThis.webkitAudioContext;
+      const AudioContextClass = getAudioContextClass();
       if (audioContextRef.current?.state === "closed") audioContextRef.current = null;
       if (!audioContextRef.current) {
         try {
@@ -95,6 +96,11 @@ export default function useSpeakingLevels() {
       const audioContext = getAudioContext();
       if (!audioContext) return false;
 
+      // audioContext.state does not flip from "suspended" synchronously after
+      // resume() -- it updates asynchronously once the browser actually
+      // resumes -- so this still-suspended check right after getAudioContext()
+      // routinely re-fires in real usage, and its own failure must still be
+      // reported here even though getAudioContext() already attempted a resume.
       if (audioContext.state === "suspended") {
         try {
           const resumeResult = audioContext.resume();

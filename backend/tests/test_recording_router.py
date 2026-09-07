@@ -58,7 +58,11 @@ def test_recording_monitor_configuration_handles_auto_and_temporary_asio(monkeyp
     current = audio_settings(audio_driver="asio", monitoring_enabled=True)
     original = vars(current).copy()
     assert recording._configure_recording_monitor(current, body) is True
-    configure.assert_called_once_with(current)
+    passed = configure.call_args.args[0]
+    assert passed is not current  # a detached snapshot, never the live settings row
+    assert (passed.monitoring_enabled, passed.volume, passed.reverb, passed.echo, passed.delay, passed.octave) == (
+        True, body.microphone_volume, body.reverb, body.echo, body.delay, body.octave
+    )
     assert vars(current) == original
 
     configure.side_effect = RuntimeError("ASIO failed")

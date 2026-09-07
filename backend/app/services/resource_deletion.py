@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 import config
+from app.services.db_utils import commit
 from app.utils.json_files import read_json, write_json
 from app.utils.quarantine import (
     existing_unique_paths,
@@ -144,12 +145,8 @@ def delete_with_files(
         quarantined = quarantine_paths(existing)
     except OSError as exc:
         if not defer_windows_locks or not _is_windows_sharing_error(exc): raise
-        try:
-            db.delete(instance)
-            db.commit()
-        except Exception:
-            db.rollback()
-            raise
+        db.delete(instance)
+        commit(db)
         try:
             schedule_deferred_cleanup(existing)
         except Exception:
@@ -160,9 +157,8 @@ def delete_with_files(
         return
     try:
         db.delete(instance)
-        db.commit()
+        commit(db)
     except Exception as exc:
-        db.rollback()
         try:
             restore_quarantined_paths(quarantined)
         except Exception as restore_error:  # pragma: no cover - rare OS failure

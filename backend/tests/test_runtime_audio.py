@@ -1,4 +1,6 @@
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import config
 from app.services import audio_service, monitor_worker, recording_service
@@ -58,7 +60,7 @@ def test_duplex_output_uses_same_host_api(monkeypatch):
 
 
 def test_wasapi_has_no_host_neutral_fallback():
-    candidates = monitor_worker._stream_candidates(
+    candidate = monitor_worker._stream_candidate(
         {
             "sample_rate": 48_000,
             "output_channels": 2,
@@ -70,16 +72,21 @@ def test_wasapi_has_no_host_neutral_fallback():
     )
 
     assert (
-        candidates[0]["blocksize"] == 64
-        and candidates[0]["latency"] == 64 / 48_000
-        and "extra_settings" in candidates[0]
-        and len(candidates) == 1
+        candidate["blocksize"] == 64
+        and candidate["latency"] == 64 / 48_000
+        and "extra_settings" in candidate
         and Path(config.FFMPEG_EXE).name.casefold() in {"ffmpeg", "ffmpeg.exe"}
     )
 
 
 def test_recording_keeps_selected_microphone_monitor_and_buffer(monkeypatch):
-    patch_attrs(monkeypatch, recording_service.sd, query_devices=lambda *_args, **_kwargs: {'default_samplerate': 48000})
-    attempts = recording_service._capture_attempts(7, 9, 44_100, 64, True)
+    patch_attrs(monkeypatch, recording_service, _AUDIO_BACKEND_AVAILABLE=True, _capture_blocksize=lambda *_args: 64)
+    factory = Mock()
+    patch_attrs(monkeypatch, recording_service, RecordingSession=factory, _sessions={})
+    patch_attrs(monkeypatch, recording_service.uuid, uuid4=lambda: SimpleNamespace(hex="session"))
 
-    assert attempts == [(7, 9, 44100, 64, True, 64 / 44100)]
+    recording_service.start_recording('song', device_id=7, output_device_id=9, sample_rate=44_100, blocksize=64, monitoring_enabled=True)
+
+    (_session_id, _song_id, input_id, output_id, rate, _channels, _gain, monitoring,
+     _offset, _rate, frames, *_rest, latency) = factory.call_args.args
+    assert (input_id, output_id, rate, frames, monitoring, latency) == (7, 9, 44100, 64, True, 64 / 44100)

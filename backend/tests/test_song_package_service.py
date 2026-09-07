@@ -311,15 +311,11 @@ def test_find_song_id_by_content_revision_matches_completed_local_copy(monkeypat
         list_songs=Mock(return_value=songs),
         is_done=Mock(side_effect=lambda item: item.id != "pending"),
     )
+    revisions = {"local-copy": "sha256:" + "a" * 64, "other": "sha256:" + "b" * 64}
     patch_attrs(
         monkeypatch,
         song_package_service,
-        content_revisions_for_songs=Mock(
-            return_value=[
-                ("local-copy", "sha256:" + "a" * 64, None),
-                ("other", "sha256:" + "b" * 64, None),
-            ]
-        ),
+        content_revision_for_song=Mock(side_effect=lambda _db, song_id: revisions[song_id]),
     )
 
     result = song_package_service.find_song_id_by_content_revision(
@@ -327,9 +323,9 @@ def test_find_song_id_by_content_revision_matches_completed_local_copy(monkeypat
     )
 
     assert result == "local-copy"
-    song_package_service.content_revisions_for_songs.assert_called_once_with(
-        None, ["local-copy", "other"]
-    )
+    # Stops at the first match instead of fingerprinting every completed
+    # song -- "other" is never even looked at.
+    song_package_service.content_revision_for_song.assert_called_once_with(None, "local-copy")
 
 
 def test_member_path_rejects_traversal():

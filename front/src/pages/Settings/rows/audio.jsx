@@ -2,6 +2,7 @@ import { Volume2 } from "lucide-react";
 import LiveSignalWaveform from "../../../components/LiveSignalWaveform";
 import { translateSaved } from "../../../i18n/runtime";
 import { Stack, Switch } from "../../../theme/ui";
+import { formatPercent } from "../../../utils/math";
 
 export default function rows({ settings: { audio }, run, tr = translateSaved }) {
   const status = audio.monitorStatus;
@@ -10,30 +11,33 @@ export default function rows({ settings: { audio }, run, tr = translateSaved }) 
   const output = status?.output_latency_ms;
   const known = [input, output].every((value) => Number.isFinite(value) && value >= 0);
   const source = status?.latency_source === "asio-driver-report" ? "driver" : "estimate";
-  // Priority: an actually-measured mic-to-speaker round trip (driver ADC/DAC
-  // timestamps, covers the whole DSP path) beats the WASAPI stream's own
-  // requested-buffer-size figure, which in turn beats the driver-reported
-  // input+output estimate -- each is a coarser fallback for hosts/engines
-  // that don't report the one above it.
-  const measured = Number.isFinite(status?.real_latency_ms) && status.real_latency_ms > 0;
-  const timed =
-    !measured &&
-    status?.latency_source === "wasapi-stream-report" &&
-    Number.isFinite(status?.stream_latency_ms) &&
-    status.stream_latency_ms > 0;
+  // Priority: an actually-measured mic-to-speaker round trip beats the
+  // driver-reported input+output estimate, which is a coarser fallback for
+  // hosts/engines that don't report a real measurement at all. Two engines
+  // can supply the measured figure -- real_latency_ms (PortAudio engines,
+  // timestamped via inputBufferAdcTime/outputBufferDacTime) and
+  // stream_latency_ms for the native WASAPI engine (timestamped via the
+  // device's own audio clock in monitor.cpp's render_ready()) -- both cover
+  // the same capture-to-playback path including DSP and the program's
+  // queue, so neither is a coarser "estimate" than the other.
+  const measuredMs =
+    Number.isFinite(status?.real_latency_ms) && status.real_latency_ms > 0
+      ? status.real_latency_ms
+      : status?.latency_source === "wasapi-stream-report" &&
+          Number.isFinite(status?.stream_latency_ms) &&
+          status.stream_latency_ms > 0
+        ? status.stream_latency_ms
+        : null;
+  const measured = measuredMs != null;
   const latency = measured
-    ? tr("settings.audio.monitor.compact.measured", { 0: status.real_latency_ms.toFixed(3) })
-    : timed
-      ? tr("settings.audio.monitor.compact.sharedTiming", {
-          0: status.stream_latency_ms.toFixed(3)
+    ? tr("settings.audio.monitor.compact.measured", { 0: measuredMs.toFixed(3) })
+    : known
+      ? tr(`settings.audio.monitor.compact.${source}`, {
+          0: (input + output).toFixed(3),
+          1: input.toFixed(3),
+          2: output.toFixed(3)
         })
-      : known
-        ? tr(`settings.audio.monitor.compact.${source}`, {
-            0: (input + output).toFixed(3),
-            1: input.toFixed(3),
-            2: output.toFixed(3)
-          })
-        : tr("settings.audio.monitor.compact.unavailable");
+      : tr("settings.audio.monitor.compact.unavailable");
   const negotiatedPeriod =
     Number.isFinite(status?.input_period_frames) && Number.isFinite(status?.output_period_frames)
       ? tr("settings.audio.monitor.compact.negotiatedPeriod", {
@@ -71,7 +75,7 @@ export default function rows({ settings: { audio }, run, tr = translateSaved }) 
       min: 0,
       max,
       step: 0.05,
-      formatValue: (value) => `${Math.round(value * 100)}%`
+      formatValue: formatPercent
     })),
     {
       md: 4,
@@ -165,9 +169,7 @@ export default function rows({ settings: { audio }, run, tr = translateSaved }) 
       type: "Label",
       variant: "caption",
       showFor: running,
-      title: tr(
-        `settings.audio.monitor.compact.${status?.latency_source === "wasapi-stream-report" ? "shared" : source}Tooltip`
-      ),
+      title: tr(`settings.audio.monitor.compact.${measured ? "measured" : source}Tooltip`),
       text: latency
     },
     {

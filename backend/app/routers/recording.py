@@ -66,24 +66,16 @@ def _configure_recording_monitor(settings, body: schemas.RecordingStartRequest) 
         audio_service.stop_monitoring()
         return True
 
-    transient_values = {
-        name: (hasattr(settings, name), getattr(settings, name, 0.0))
-        for name in ("monitoring_enabled", "volume", "reverb", "echo", "delay", "octave")
-    }
-    settings.monitoring_enabled = True
-    settings.volume = body.microphone_volume
-    settings.reverb = body.reverb
-    settings.echo = body.echo
-    settings.delay = body.delay
-    settings.octave = body.octave
-    try:
-        audio_service.configure_monitoring(settings)
-    finally:
-        for name, (existed, value) in transient_values.items():
-            if existed:
-                setattr(settings, name, value)
-            else:
-                delattr(settings, name)
+    overrides = audio_service.settings_snapshot(
+        settings,
+        monitoring_enabled=True,
+        volume=body.microphone_volume,
+        reverb=body.reverb,
+        echo=body.echo,
+        delay=body.delay,
+        octave=body.octave,
+    )
+    audio_service.configure_monitoring(overrides)
     return True
 
 
@@ -147,10 +139,12 @@ def start_recording(body: schemas.RecordingStartRequest, db: DatabaseSession):
             keep_native_monitor = False
         else:
             keep_native_monitor = _configure_recording_monitor(settings, body)
+        devices = audio_service.device_snapshot()
         input_device_id = audio_service.preferred_input_device(
             settings.input_device_id,
             settings.audio_driver,
             settings.asio_driver_name,
+            devices,
             device_name=getattr(settings, "input_device_name", None),
         )
         session_id = recording_service.start_recording(
@@ -161,11 +155,13 @@ def start_recording(body: schemas.RecordingStartRequest, db: DatabaseSession):
                 settings.audio_driver,
                 settings.output_device_id,
                 settings.asio_driver_name,
+                devices,
                 device_name=getattr(settings, "output_device_name", None),
             ),
             sample_rate=audio_service.preferred_sample_rate(
                 input_device_id,
                 settings.audio_driver,
+                devices,
             ),
             gain=body.microphone_volume,
             monitoring_enabled=(

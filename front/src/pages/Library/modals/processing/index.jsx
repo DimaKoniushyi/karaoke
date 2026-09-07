@@ -1,11 +1,10 @@
 import { CircleDot, Library, OctagonX, Play } from "lucide-react";
-import { useMemo } from "react";
 import { api } from "../../../../api/client";
+import useApiFetchParams from "../../../../hooks/useApiFetchParams";
 import useSongCover from "../../../../hooks/useSongCover";
 import { translateSaved as tr } from "../../../../i18n/runtime";
 import ProcessingSignal from "../../../../theme/features/ProcessingSignal";
 import { Button, Chip, Modal, Stack } from "../../../../theme/ui";
-import * as platform from "../../../../utils/platform";
 import { getProcessingProgress, isProcessingActive, sameId } from "../../utils";
 import getProcessingFailureInfo from "./processing-failure-info";
 import QueueNav from "./queue-nav";
@@ -24,11 +23,7 @@ export default function ProcessingModal({
   const current = status?.song_id && !sameId(status.song_id, song?.id) ? null : status;
   const state = current?.status ?? song?.status;
   const cover = useSongCover(song?.id, state);
-  const token = platform.apiToken();
-  const fetchParams = useMemo(
-    () => (token ? { headers: { "X-ADVoice-Token": token } } : undefined),
-    [token]
-  );
+  const fetchParams = useApiFetchParams();
   if (!song) return null;
   const progress = getProcessingProgress(current, song);
   const active = isProcessingActive(state);

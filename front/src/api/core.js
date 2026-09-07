@@ -54,19 +54,16 @@ function buildRequestOptions(options = {}) {
   const { headers, body, timeoutMs: _, ...requestOptions } = options;
   const FormDataCtor = globalThis.FormData;
   const isFormData = typeof FormDataCtor === "function" && body instanceof FormDataCtor;
-  const normalizedHeaders = normalizeHeaders(headers);
+  const nextHeaders = normalizeHeaders(headers) || {};
   const apiToken = platform.apiToken();
+  if (apiToken) nextHeaders["X-ADVoice-Token"] = apiToken;
   if (isFormData || body == null) {
-    const nextHeaders = normalizedHeaders || {};
-    if (apiToken) nextHeaders["X-ADVoice-Token"] = apiToken;
     return {
       ...requestOptions,
       body,
       ...(Object.keys(nextHeaders).length ? { headers: nextHeaders } : {})
     };
   }
-  const nextHeaders = normalizedHeaders || {};
-  if (apiToken) nextHeaders["X-ADVoice-Token"] = apiToken;
   if (typeof body === "string" && !hasContentType(nextHeaders)) {
     nextHeaders["Content-Type"] = "application/json";
   }

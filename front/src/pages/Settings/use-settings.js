@@ -137,9 +137,6 @@ function useAudio(open) {
   }, [monitorStatus.data?.blocksize]);
   const [local, setLocal] = useState({});
   const [busy, setBusy] = useState(false);
-  // A momentary, unsaved check -- never carry a stale "on" across a
-  // stop/restart of monitoring itself.
-  const [dryMonitor, setDryMonitorState] = useState(false);
   const values = { ...settings.data, ...local };
   // The level meter only ever renders while monitoring is on (see `level`
   // below) -- polling this while it's off used to open the microphone for a
@@ -174,21 +171,12 @@ function useAudio(open) {
         : api.startDirectMonitoring({ disabledEffects: true }));
 
       merge({ monitoring_enabled: !enabled });
-      if (enabled) setDryMonitorState(false);
       emit(saved);
       await Promise.all([monitorStatus.refresh(), settings.refresh()]);
     } catch (error) {
       await fail("settings.couldNotChangeMonitoring", error);
     } finally {
       setBusy(false);
-    }
-  };
-  const setDryMonitor = async (value) => {
-    try {
-      const result = await api.setDirectMonitorDry(value);
-      setDryMonitorState(!!result?.dry_monitor);
-    } catch (error) {
-      await fail("settings.couldNotChangeMonitoring", error);
     }
   };
   const selectDriver = (name) =>
@@ -233,9 +221,6 @@ function useAudio(open) {
     selectDriver,
     monitorStatus: monitorStatus.data,
     monitorStatusError: monitorStatus.error,
-    suggestAsio: false,
-    dryMonitor,
-    setDryMonitor,
     level: values.monitoring_enabled ? signalLevel(signal.data) : 0,
     options: {
       drivers: [

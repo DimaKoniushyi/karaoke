@@ -148,7 +148,9 @@ export default function useLibraryKaraoke({
         }
 
         const id = await getLocalSongId(song, room, localSongs, refresh);
-        if (room?.room && (!room.room.host || !(await room.openKaraoke(id)))) {
+        // Reaching here means room?.room is either falsy or host -- see the
+        // guest branch above, which already returned for the non-host case.
+        if (room?.room && !(await room.openKaraoke(id))) {
           lock.current = false;
           return true;
         }

@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { clamp01 } from "../../utils/math";
 import { normalizeParticipantEffectPatch } from "../onlineRoomEffects";
 
 export default function useOnlineRoomParticipantControls({
@@ -30,7 +31,7 @@ export default function useOnlineRoomParticipantControls({
 
   const setParticipantVolume = useCallback(
     (id, value) => {
-      const nextValue = Math.max(0, Math.min(1, Number(value) || 0));
+      const nextValue = clamp01(Number(value) || 0);
       participantVolumesRef.current = { ...participantVolumesRef.current, [id]: nextValue };
       setParticipantVolumes((current) => ({ ...current, [id]: nextValue }));
       applyParticipantVolume(id, nextValue);
