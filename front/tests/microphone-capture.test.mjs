@@ -53,6 +53,21 @@ describe("central microphone capture", () => {
     expect(graph.close).toHaveBeenCalledOnce();
   });
 
+  test("requests the browser's lowest capture latency without voice-conference DSP", async () => {
+    const { acquireMicrophone } = await import("../src/services/microphoneCapture.js");
+    const lease = await acquireMicrophone();
+
+    expect(getUserMedia).toHaveBeenCalledWith({
+      audio: expect.objectContaining({
+        latency: { ideal: 0 },
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false
+      })
+    });
+    await lease.release();
+  });
+
   test("can bypass effects for one lease without changing other microphone users", async () => {
     const { acquireMicrophone } = await import("../src/services/microphoneCapture.js");
     const clean = await acquireMicrophone("", { disabledEffects: true });

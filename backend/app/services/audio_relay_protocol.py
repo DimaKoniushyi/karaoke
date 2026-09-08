@@ -14,6 +14,12 @@ import numpy as np
 STREAM_DRY = 0
 STREAM_WET = 1
 
+# All three live-relay hops use the same small budget. Dry and wet frames
+# are interleaved, so four 5ms-per-stream frames represent roughly 10ms of
+# wall-clock audio. A stalled consumer loses old audio instead of making a
+# singer permanently late.
+LIVE_RELAY_QUEUE_MAX_FRAMES = 4
+
 # stream_id (0=dry, 1=wet), sample_rate, sample_count -- followed by
 # sample_count * 4 bytes of little-endian float32 PCM. All three header
 # fields are 4 bytes (stream_id doesn't need the range, but a 1-byte field

@@ -24,6 +24,7 @@ const STREAM_WET = 1;
 // .slice() first just to satisfy TypedArray alignment.
 const HEADER_BYTES = 12; // uint32 stream_id + float32 sample_rate + uint32 sample_count
 const DEFAULT_CONNECT_TIMEOUT_MS = 2000;
+const MAX_PENDING_FRAMES = 8;
 
 function relayWebSocketUrl() {
   const token = apiToken();
@@ -134,7 +135,9 @@ export async function createRelayVoiceGraph({ connectTimeoutMs = DEFAULT_CONNECT
     // are actually ready to receive, instead of losing that startup window.
     const pending = [];
     socket.onmessage = (event) => {
-      if (event.data instanceof ArrayBuffer) pending.push(event.data);
+      if (!(event.data instanceof ArrayBuffer)) return;
+      pending.push(event.data);
+      if (pending.length > MAX_PENDING_FRAMES) pending.shift();
     };
 
     // Requesting the source rate avoids any resampling work when it matches

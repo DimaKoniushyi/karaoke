@@ -18,7 +18,7 @@
 // Losing a little audio to a brief stall is far less disruptive to live
 // singing than that much added lag, so the queued-latency cap is
 // deliberately tight.
-const MAX_QUEUED_SECONDS = 0.1;
+const MAX_QUEUED_SECONDS = 0.02;
 const REPORT_INTERVAL_SAMPLES = Math.round(sampleRate * 0.5);
 
 class RelayPlaybackProcessor extends AudioWorkletProcessor {

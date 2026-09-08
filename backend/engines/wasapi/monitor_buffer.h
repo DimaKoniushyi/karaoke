@@ -43,12 +43,14 @@ class MonitorBuffer {
     std::vector<float> samples;
     std::vector<double> timestamps;
     std::vector<double> received_times, processed_times;
-    size_t head = 0, used = 0;
+    size_t head = 0, used = 0, target_fill = 2;
     uint64_t lost = 0;
     double ratio, base_ratio, phase = 0;
 public:
-    MonitorBuffer(size_t capacity, double rate_ratio) : samples(capacity), timestamps(capacity),
-        received_times(capacity), processed_times(capacity), ratio(rate_ratio), base_ratio(rate_ratio) {
+    MonitorBuffer(size_t capacity, double rate_ratio, size_t requested_target_fill = 2) :
+        samples(capacity), timestamps(capacity), received_times(capacity), processed_times(capacity),
+        target_fill(std::clamp<size_t>(requested_target_fill, 2, capacity - 1)),
+        ratio(rate_ratio), base_ratio(rate_ratio) {
         if (capacity < 2 || !std::isfinite(ratio) || ratio <= 0) throw std::runtime_error("Invalid monitor queue");
     }
     size_t size() const { return used; }
@@ -75,10 +77,12 @@ public:
     // underruns. A tiny proportional nudge toward a mid-fill target corrects
     // for it continuously; the correction is capped small enough (0.02%,
     // ratio clamped to +/-0.1% of nominal) to never be audible as pitch
-    // wobble on its own. Call once per output callback.
+    // wobble on its own. The target is the single safety period supplied by
+    // the engine, not half of the emergency allocation: spare capacity is
+    // for stalls and must not become deliberate audible latency. Call once
+    // per output callback.
     void nudge() {
-        const double target = double(samples.size()) / 2.0;
-        const double error = double(used) - target;
+        const double error = double(used) - double(target_fill);
         const double correction = std::clamp(error / double(samples.size()) * 0.02, -0.0002, 0.0002);
         ratio = std::clamp(base_ratio * (1.0 + correction), base_ratio * 0.999, base_ratio * 1.001);
     }

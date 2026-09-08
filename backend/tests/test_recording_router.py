@@ -53,7 +53,7 @@ def test_recording_monitor_configuration_handles_auto_and_temporary_asio(monkeyp
     stop, configure = Mock(), Mock()
     patch_attrs(monkeypatch, recording.audio_service, stop_monitoring=stop, configure_monitoring=configure)
     body = start_body()
-    assert (recording._configure_recording_monitor(audio_settings(), body) is False) and (recording._configure_recording_monitor(audio_settings(audio_driver='asio', monitoring_enabled=False), body) is True)
+    assert (recording._configure_recording_monitor(audio_settings(), body) is True) and (recording._configure_recording_monitor(audio_settings(audio_driver='asio', monitoring_enabled=False), body) is True)
 
     current = audio_settings(audio_driver="asio", monitoring_enabled=True)
     original = vars(current).copy()
@@ -70,9 +70,22 @@ def test_recording_monitor_configuration_handles_auto_and_temporary_asio(monkeyp
     assert vars(current) == original
 
 
+def test_windows_recording_keeps_native_shared_monitor_instead_of_portaudio_duplex(monkeypatch):
+    stop, configure = Mock(), Mock()
+    patch_attrs(monkeypatch, recording.audio_service, stop_monitoring=stop, configure_monitoring=configure)
+    body = start_body()
+    current = audio_settings(audio_driver="auto", monitoring_enabled=True)
+
+    assert recording._configure_recording_monitor(current, body) is True
+    configured = configure.call_args.args[0]
+    assert configured.monitoring_enabled is True
+    assert configured.volume == body.microphone_volume
+    stop.assert_not_called()
+
+
 def test_start_recording_builds_session_without_driver_latency_adjustment(monkeypatch):
     database, body, song, settings = Mock(), start_body(), SimpleNamespace(id='song'), audio_settings(monitoring_enabled=True)
-    patch_many(monkeypatch, (recording.repositories, "get_song", Mock(return_value=song)), (recording.audio_service, "get_settings", Mock(return_value=settings)), (recording, "_configure_recording_monitor", Mock(return_value=False)))
+    patch_many(monkeypatch, (recording.repositories, "get_song", Mock(return_value=song)), (recording.audio_service, "get_settings", Mock(return_value=settings)), (recording, "_configure_recording_monitor", Mock(return_value=True)))
     patch_attrs(monkeypatch, recording.audio_service, preferred_input_device=Mock(return_value=3), preferred_output_device=Mock(return_value=4), preferred_sample_rate=Mock(return_value=48000))
     start = Mock(return_value="session")
     monkeypatch.setattr(recording.audio_service, "recording_monitor_mode", Mock(return_value="shared"))
@@ -87,15 +100,15 @@ def test_start_recording_builds_session_without_driver_latency_adjustment(monkey
         output_device_id=4,
         sample_rate=48_000,
         gain=1.5,
-        monitoring_enabled=True,
+        monitoring_enabled=False,
         playback_offset_sec=2,
         playback_rate=1,
         blocksize=64,
         music_gain=0.8,
             effects={"reverb": 0.4, "echo": 0.5, "delay": 0.6, "octave": 0},
             noise_suppression=0.35,
-            monitor_owner="recording",
-            monitor_mode="shared",
+            monitor_owner="native-monitor",
+            monitor_mode=None,
         )
 
 

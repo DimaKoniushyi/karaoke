@@ -57,11 +57,6 @@ def _configure_room_relay_monitor(settings) -> bool:
 
 
 def _configure_recording_monitor(settings, body: schemas.RecordingStartRequest) -> bool:
-    keep_native_monitor = settings.audio_driver == "asio"
-    if not keep_native_monitor:
-        audio_service.stop_monitoring()
-        return False
-
     if not settings.monitoring_enabled:
         audio_service.stop_monitoring()
         return True
@@ -185,7 +180,7 @@ def start_recording(body: schemas.RecordingStartRequest, db: DatabaseSession):
             monitor_owner=(
                 "room-relay" if body.room_mode and body.voice_relay
                 else "room" if body.room_mode
-                else "asio" if keep_native_monitor
+                else "native-monitor" if keep_native_monitor
                 else "recording"
             ),
             monitor_mode=None if body.room_mode or keep_native_monitor else audio_service.recording_monitor_mode(input_device_id),

@@ -3122,6 +3122,30 @@ test("uses the Python monitor relay instead of local capture when it is availabl
   expect(graph.onUnavailable).toHaveBeenCalledWith(expect.any(Function));
 });
 
+test("releases a prepared backend relay when browser relay construction fails", async () => {
+  const capture = vi.fn().mockResolvedValue(stream([track("mic")]));
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { mediaDevices: { getUserMedia: capture } }
+  });
+  relayMocks.createRelayVoiceGraph.mockReset().mockRejectedValue(new Error("worklet failed"));
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({ relay_available: true })
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  try {
+    const mesh = makeMesh();
+    await mesh.start();
+    expect(capture).toHaveBeenCalled();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("release-voice-relay"))).toBe(true);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
 test("skips the relay entirely for an ASIO driver and falls back to local capture", async () => {
   const capture = vi.fn().mockResolvedValue(stream([track("mic")]));
   Object.defineProperty(globalThis, "navigator", {

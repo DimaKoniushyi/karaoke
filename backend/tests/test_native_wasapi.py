@@ -253,6 +253,20 @@ def test_native_shared_probes_only_categories_valid_for_capture_and_render():
     assert "AUDCLNT_SHAREMODE_EXCLUSIVE" not in source
 
 
+def test_native_wasapi_pump_requests_critical_pro_audio_mmcss_priority():
+    source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
+    registered = source.index('AvSetMmThreadCharacteristicsW(L"Pro Audio"')
+    critical = source.index("AvSetMmThreadPriority(scheduling, AVRT_PRIORITY_CRITICAL)")
+    capture_start = source.index("input.start()", registered)
+    assert registered < critical < capture_start
+
+
+def test_native_wasapi_drift_target_is_the_requested_low_latency_block_not_a_full_device_period():
+    source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
+    assert "std::min<size_t>(blocksize" in source
+    assert "MonitorBuffer>(capacity, ratio, safety_frames)" in source
+
+
 def test_worker_uses_native_event_pump_and_native_rate(monkeypatch, dll, capsys):
     import json
     import sys

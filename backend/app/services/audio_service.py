@@ -18,6 +18,7 @@ import config
 import models
 from AI.utils.numeric import clamp01
 from app.services.audio_relay import AudioRelayServer
+from app.services.audio_relay_protocol import LIVE_RELAY_QUEUE_MAX_FRAMES
 from app.services.audio_runtime import hardware_lock, run_on_audio_thread
 from app.services.db_utils import commit_refresh
 from app.services.monitor_control import MonitorCancelled, MonitorControl
@@ -845,12 +846,7 @@ def subscribe_monitor_relay() -> tuple[AudioRelayServer, queue.Queue] | None:
     """
     with _monitor_lock:
         relay = _monitor_relay
-    # 8 slots at RelayLink's ~5ms chunking is ~40ms of backlog before the
-    # server starts dropping the oldest queued frame -- live duet singing
-    # should lose a little audio to a brief stall rather than build up a
-    # queue of old voice waiting to play (the previous default of 32 could
-    # let backlog reach several hundred ms for dry+wet before that kicked in).
-    return (relay, relay.subscribe(maxsize=8)) if relay is not None else None
+    return (relay, relay.subscribe(maxsize=LIVE_RELAY_QUEUE_MAX_FRAMES)) if relay is not None else None
 
 
 def _send_live_update(payload: dict) -> None:

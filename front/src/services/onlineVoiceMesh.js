@@ -184,16 +184,25 @@ export default class OnlineVoiceMesh {
       } catch {
         return null;
       }
-      if (cancelled()) throw new Error(translateSaved("room.microphoneLaunchCanceled"));
       if (!prepared?.relay_available) return null;
+      if (cancelled()) {
+        api.releaseRoomVoiceRelay().catch(() => {});
+        throw new Error(translateSaved("room.microphoneLaunchCanceled"));
+      }
       let graph;
       try {
         graph = await createRelayVoiceGraph({ connectTimeoutMs: 1500 });
       } catch {
+        // prepareRoomVoiceRelay makes the backend keep the Python relay
+        // enabled across monitor reconfigures. Give that lease back when
+        // browser construction fails, otherwise every later local monitor
+        // callback keeps paying the relay copy/encode/socket cost forever.
+        api.releaseRoomVoiceRelay().catch(() => {});
         return null;
       }
       if (cancelled()) {
         await graph.close();
+        api.releaseRoomVoiceRelay().catch(() => {});
         throw new Error(translateSaved("room.microphoneLaunchCanceled"));
       }
       this.usingRelay = true;

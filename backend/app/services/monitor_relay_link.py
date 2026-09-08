@@ -18,7 +18,7 @@ import threading
 
 import numpy as np
 
-from .audio_relay_protocol import encode_frame
+from .audio_relay_protocol import LIVE_RELAY_QUEUE_MAX_FRAMES, encode_frame
 
 # A room duet is two-way live singing, not one-way speech -- every chunk here
 # is latency the other participant hears added on top of the network/WebRTC
@@ -27,7 +27,7 @@ from .audio_relay_protocol import encode_frame
 # audio but keeps this accumulator's own contribution close to a single
 # audio block instead of a noticeable chunk of the whole budget.
 _CHUNK_SECONDS = 0.005
-_QUEUE_MAXSIZE = 8
+_QUEUE_MAXSIZE = LIVE_RELAY_QUEUE_MAX_FRAMES
 
 
 class _StreamAccumulator:

@@ -165,6 +165,40 @@ describe("python voice relay", () => {
     await graph.close();
   });
 
+  test("keeps only the newest startup frames while the worklet is loading", async () => {
+    let resolveAddModule;
+    class SlowAudioContext extends FakeAudioContext {
+      constructor(options) {
+        super(options);
+        this.audioWorklet = {
+          addModule: vi.fn(() => new Promise((resolve) => { resolveAddModule = resolve; }))
+        };
+      }
+    }
+    vi.stubGlobal("AudioContext", SlowAudioContext);
+
+    const promise = createRelayVoiceGraph({ connectTimeoutMs: 500 });
+    await Promise.resolve();
+    await Promise.resolve();
+    const socket = FakeWebSocket.instances[0];
+    socket.onmessage({ data: encodeFrame(STREAM_DRY, 48000, [0]) });
+    for (let tick = 0; tick < 10 && !resolveAddModule; tick += 1) await Promise.resolve();
+    expect(resolveAddModule).toBeTruthy();
+
+    for (let index = 1; index <= 40; index += 1) {
+      socket.onmessage({ data: encodeFrame(STREAM_DRY, 48000, [index]) });
+    }
+    resolveAddModule();
+    const graph = await promise;
+
+    const [dryNode] = FakeAudioWorkletNode.instances;
+    // One first frame plus no more than ~20ms of fresh startup audio. Old
+    // voice must be discarded instead of being replayed late into the room.
+    expect(dryNode.port.postMessage.mock.calls.length).toBeLessThanOrEqual(9);
+    expect(Array.from(dryNode.port.postMessage.mock.calls.at(-1)[0])).toEqual([40]);
+    await graph.close();
+  });
+
   test("rejects when the relay closes before sending any frame", async () => {
     const promise = createRelayVoiceGraph({ connectTimeoutMs: 500 });
     await Promise.resolve();

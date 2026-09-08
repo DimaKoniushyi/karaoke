@@ -269,7 +269,16 @@ struct Engine {
             FAILED(clock->GetFrequency(&clock_frequency)) || !clock_frequency) clock.Reset();
         const double ratio = double(info.sample_rate) / info.output_sample_rate;
         const size_t capacity = 2 * std::max(input.period, UINT32(std::ceil(output.period * ratio))) + blocksize * 2;
-        queue = std::make_unique<shared_audio::MonitorBuffer>(capacity, ratio);
+        // The driver period is allocation/callback cadence, not a latency
+        // target. On consumer drivers it is commonly 10ms even when the user
+        // selected 32/64 frames. Steering clock-drift correction toward a
+        // whole period therefore manufactures that much queued delay inside
+        // the app. Retain only the requested processing block (or less when
+        // the endpoint period itself is shorter); spare capacity still
+        // absorbs scheduling stalls without becoming intentional latency.
+        const size_t safety_frames = std::max<size_t>(2, std::min<size_t>(blocksize,
+            size_t(std::ceil(output.period * ratio))));
+        queue = std::make_unique<shared_audio::MonitorBuffer>(capacity, ratio, safety_frames);
         source.resize(blocksize);
         processed.resize(blocksize);
     }
@@ -277,6 +286,10 @@ struct Engine {
         process = callback;
         DWORD task = 0;
         scheduling = AvSetMmThreadCharacteristicsW(L"Pro Audio", &task);
+        // Registration selects the MMCSS task profile, but does not select
+        // its highest realtime priority by itself. Keep only this pump thread
+        // critical so renderer/AI load cannot make it miss an endpoint event.
+        if (scheduling) AvSetMmThreadPriority(scheduling, AVRT_PRIORITY_CRITICAL);
         // Start playback with the first real packet, not a period of silence
         // queued ahead of the microphone. Capture alone drives startup events.
         input.start();

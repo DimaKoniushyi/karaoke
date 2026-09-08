@@ -19,6 +19,7 @@ import threading
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.services import audio_service
+from app.services.audio_relay_protocol import LIVE_RELAY_QUEUE_MAX_FRAMES
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ async def monitor_relay(websocket: WebSocket) -> None:
     # to the loop via call_soon_threadsafe; outgoing (a real asyncio.Queue)
     # is what pump_frames() actually awaits.
     loop = asyncio.get_running_loop()
-    outgoing: asyncio.Queue[bytes] = asyncio.Queue(maxsize=8)
+    outgoing: asyncio.Queue[bytes] = asyncio.Queue(maxsize=LIVE_RELAY_QUEUE_MAX_FRAMES)
     stop_pulling = threading.Event()
 
     def offer(frame: bytes) -> None:

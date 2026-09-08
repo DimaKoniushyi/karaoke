@@ -1,10 +1,11 @@
 import socket
 import time
+from pathlib import Path
 
 import numpy as np
 
-from app.services.audio_relay_protocol import STREAM_DRY, FrameReader
-from app.services.monitor_relay_link import RelayLink
+from app.services.audio_relay_protocol import LIVE_RELAY_QUEUE_MAX_FRAMES, STREAM_DRY, FrameReader
+from app.services.monitor_relay_link import RelayLink, _QUEUE_MAXSIZE
 
 
 def wait_until(predicate, timeout=2.0, interval=0.01):
@@ -21,6 +22,21 @@ def make_server():
     server.bind(("127.0.0.1", 0))
     server.listen(1)
     return server, server.getsockname()[1]
+
+
+def test_live_relay_sender_never_retains_more_than_four_interleaved_frames():
+    # Dry and wet frames share this queue. Four slots are about 10ms at the
+    # 5ms per-stream chunk cadence; a larger backlog should be discarded,
+    # never played late in a live duet.
+    assert _QUEUE_MAXSIZE <= 4
+    assert _QUEUE_MAXSIZE == LIVE_RELAY_QUEUE_MAX_FRAMES
+
+
+def test_every_relay_hop_uses_the_same_low_latency_queue_budget():
+    root = Path(__file__).resolve().parents[1]
+    for relative in ("app/services/monitor_relay_link.py", "app/services/audio_service.py", "app/routers/audio_relay.py"):
+        source = (root / relative).read_text(encoding="utf-8")
+        assert "LIVE_RELAY_QUEUE_MAX_FRAMES" in source
 
 
 def test_push_accumulates_and_flushes_a_full_chunk_once_the_threshold_is_reached():

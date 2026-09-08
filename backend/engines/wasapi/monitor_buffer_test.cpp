@@ -76,5 +76,16 @@ int main() {
         for (int frame = 0; frame < 60; ++frame) bounded.pop(result);
         verify(bounded.size() <= 256);
     }
+    // Drift correction is allowed to keep one small safety period, but must
+    // never steer a healthy same-rate stream toward half of its emergency
+    // allocation. Half-full here would add ~10ms at 48kHz solely inside the
+    // application, even though capture and render are keeping pace.
+    MonitorBuffer low_latency_drift(1024, 1.0, 64);
+    for (int tick = 0; tick < 100000; ++tick) {
+        low_latency_drift.push(block, 64);
+        low_latency_drift.nudge();
+        for (int frame = 0; frame < 64; ++frame) low_latency_drift.pop(result);
+    }
+    verify(low_latency_drift.size() <= 96);
     std::cout << "Native shared audio tests passed: periods, PCM/float, saturation, bounded queue, underrun, resampling\n";
 }

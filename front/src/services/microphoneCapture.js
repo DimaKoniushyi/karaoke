@@ -37,6 +37,7 @@ const constraints = (id) => ({
     // either way) gets no benefit from.
     sampleRate: { ideal: 48_000 },
     sampleSize: { ideal: 24 },
+    latency: { ideal: 0 },
     ...(id && { deviceId: { exact: id } })
   }
 });
