@@ -256,10 +256,24 @@ class AudioPipelineV2:
             text, direct = self.engines.transcriber.transcribe(
                 analysis_vocals, request.language
             )
-            if not text.strip() or not direct:
+            text = text.strip()
+            if not text and direct:
+                text = " ".join(word.text for word in direct).strip()
+            if not text:
                 raise EngineUnavailableError("Could not transcribe the complete vocal")
-            words = self._normalized_words(direct)
-            return text.strip(), words, "asr", self._score_lines(words, text.splitlines())
+            if direct:
+                words = self._normalized_words(direct)
+                return text, words, "asr", self._score_lines(words, text.splitlines())
+            # Neural ASR can return the complete transcription without word
+            # timestamps (notably when audio is processed in several voice
+            # chunks).  The text is still valid input for the forced aligner;
+            # discarding it here made otherwise healthy songs fail outright.
+            discovered = LyricsDiscovery(
+                text,
+                "asr",
+                f"{request.artist} - {request.title}",
+                language=request.language,
+            )
         discovered = LyricsDiscovery(
             text=normalize_lyrics_text(discovered.text),
             source=discovered.source,
@@ -270,7 +284,7 @@ class AudioPipelineV2:
                 for line in discovered.lines
             ),
         )
-        if discovered.source != "user":
+        if discovered.source not in {"user", "asr"}:
             source_lines = tuple(
                 line.text for line in discovered.lines
             ) or tuple(discovered.text.splitlines())
@@ -394,13 +408,18 @@ class AudioPipelineV2:
                 continue
             first, last = cursor, cursor + count - 1
             next_index = last + 1
+            line_start = words[first].start
             line_end = (
-                words[next_index].start
+                max(
+                    words[next_index].start,
+                    words[last].end,
+                    line_start + 0.01,
+                )
                 if next_index < len(words)
                 else max(words[last].end, words[last].start + 0.25)
             )
             result.append(ScoreLine(
-                line, words[first].start, line_end, first, last
+                line, line_start, line_end, first, last
             ))
             cursor += count
         return result

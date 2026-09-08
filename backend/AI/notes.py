@@ -185,6 +185,7 @@ def fit_notes_to_sung_words(
     word_end_limits: dict[int, float] | None = None,
     contiguous_gap: float = 0.2,
     phrase_tail: float = 0.25,
+    max_note_stretch: float = 1.1,
 ) -> tuple[list[Word], list[VocalNote]]:
     """Expand narrow CTC emissions into karaoke-style sung word intervals.
 
@@ -268,7 +269,14 @@ def fit_notes_to_sung_words(
             target_end = min(target_end, word_end_limits[word.index])
         target_end = max(word.start + 0.001, target_end)
         source_span = max(0.001, last - first)
-        scale = (target_end - word.start) / source_span
+        # Word intervals may legitimately extend to the next lyric onset, but
+        # the measured vocal note must not be warped to fill that complete
+        # lexical slot.  Large stretching erased rests and produced note
+        # lengths far beyond both the vocal stem and authored karaoke scores.
+        scale = min(
+            (target_end - word.start) / source_span,
+            max(1.0, float(max_note_stretch)),
+        )
         fitted_words.append(
             Word(
                 word.start,

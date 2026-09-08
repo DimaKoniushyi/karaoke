@@ -26,7 +26,7 @@ vi.mock("../src/i18n", async (importOriginal) => ({
   useI18n: mockUseI18nWithValues
 }));
 import { OnlineRoomDock } from "../src/components/OnlineRoomDock.jsx";
-import { OnlineRoomModal } from "../src/pages/OnlineRoom/index.jsx";
+import OnlineRoomModal from "../src/pages/Library/modals/online-room/index.jsx";
 import OnlineRoomParticipant from "../src/components/OnlineRoomParticipant.jsx";
 import RoomRadioSync from "../src/components/RoomRadioSync.jsx";
 const roomValue = (overrides = {}) => ({
@@ -244,35 +244,35 @@ describe("online room modal", () => {
   test("creates a room and closes on success", async () => {
     const close = vi.fn();
     render(<OnlineRoomModal onlineName="Alice" onClose={close} />);
-    fireEvent.click(screen.getByText("room.create"));
+    fireEvent.click(screen.getByText("Создать комнату"));
     await act(async () => Promise.resolve());
     verify([mocks.roomValue.createRoom, "toHaveBeenCalledWith", "Alice"], [close, "toHaveBeenCalled"]);
   });
   test("validates, normalizes and joins by code or Enter", async () => {
     const close = vi.fn();
     render(<OnlineRoomModal onlineName="Bob" onClose={close} />);
-    fireEvent.click(screen.getByText("room.joinByCode"));
-    const input = screen.getByLabelText("room.code");
+    fireEvent.click(screen.getByText("Войти по коду"));
+    const input = screen.getByLabelText("Код комнаты");
     fireEvent.change(input, { target: { value: " ab-cd " } });
     fireEvent.submit(input.closest("form"));
     await act(async () => Promise.resolve());
     expect(mocks.roomValue.joinRoom).toHaveBeenCalledWith("AB-CD", "Bob");
-    fireEvent.click(screen.getByText("room.back"));
+    fireEvent.click(screen.getByText("Назад"));
   });
   test("shows connection failures", async () => {
     mocks.roomValue.createRoom.mockRejectedValue(new Error("socket refused"));
     render(<OnlineRoomModal onlineName="Alice" onClose={vi.fn()} />);
-    fireEvent.click(screen.getByText("room.create"));
+    fireEvent.click(screen.getByText("Создать комнату"));
     await act(async () => Promise.resolve());
     expect(screen.getByText("socket refused")).not.toBeNull();
   });
   test("shows join failures and ignores connection completion after unmount", async () => {
     mocks.roomValue.joinRoom.mockRejectedValueOnce(new Error("join refused"));
     const failed = render(<OnlineRoomModal onlineName="Alice" onClose={vi.fn()} />);
-    fireEvent.click(screen.getByText("room.joinByCode"));
-    const input = screen.getByLabelText("room.code");
+    fireEvent.click(screen.getByText("Войти по коду"));
+    const input = screen.getByLabelText("Код комнаты");
     fireEvent.change(input, { target: { value: "ABCD" } });
-    fireEvent.click(screen.getByText("room.join"));
+    fireEvent.click(screen.getByText("Войти"));
     await act(async () => Promise.resolve());
     expect(screen.getByText("join refused")).not.toBeNull();
     failed.unmount();
@@ -283,7 +283,7 @@ describe("online room modal", () => {
       })
     );
     const staleSuccess = render(<OnlineRoomModal onlineName="Alice" onClose={vi.fn()} />);
-    fireEvent.click(screen.getByText("room.create"));
+    fireEvent.click(screen.getByText("Создать комнату"));
     staleSuccess.unmount();
     await act(async () => resolveCreate());
     let rejectCreate;
@@ -293,7 +293,7 @@ describe("online room modal", () => {
       })
     );
     const staleFailure = render(<OnlineRoomModal onlineName="Alice" onClose={vi.fn()} />);
-    fireEvent.click(screen.getByText("room.create"));
+    fireEvent.click(screen.getByText("Создать комнату"));
     staleFailure.unmount();
     await act(async () => rejectCreate(new Error("late")));
   });
@@ -306,13 +306,13 @@ describe("online room modal", () => {
     );
     const close = vi.fn();
     render(<OnlineRoomModal onlineName="Alice" onClose={close} />);
-    fireEvent.click(screen.getByText("room.joinByCode"));
-    const join = screen.getByText("room.join");
+    fireEvent.click(screen.getByText("Войти по коду"));
+    const join = screen.getByText("Войти");
     expect(join.disabled).toBe(true);
-    fireEvent.keyDown(screen.getByLabelText("room.code"), { key: "Enter" });
+    fireEvent.keyDown(screen.getByLabelText("Код комнаты"), { key: "Enter" });
     expect(mocks.roomValue.joinRoom).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByText("room.back"));
-    const create = screen.getByText("room.create");
+    fireEvent.click(screen.getByText("Назад"));
+    const create = screen.getByText("Создать комнату");
     fireEvent.click(create);
     fireEvent.click(create);
     await act(async () => Promise.resolve());

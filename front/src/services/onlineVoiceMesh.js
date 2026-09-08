@@ -9,6 +9,7 @@ import { suspendVoiceMicrophone } from "./onlineVoiceHardwareLifecycle";
 import { createRelayVoiceGraph } from "./pythonVoiceRelay";
 import { updatePeerIceServers } from "./onlineVoicePeerConfiguration";
 import OnlineVoicePeerRecovery from "./onlineVoicePeerRecovery";
+import { PEER_TIMEOUTS } from "./onlineVoicePeerTimeouts";
 // Audio is peer-to-peer; the signaling Worker never stores microphone data.
 
 import OnlineVoiceTransferSession from "./onlineVoiceTransferSession";
@@ -448,7 +449,7 @@ export default class OnlineVoiceMesh {
           if (isCurrentPeer() && peer.connectionState === "disconnected") {
             this.recoverPeer(participantId, peer);
           }
-        }, 10_000);
+        }, PEER_TIMEOUTS.disconnectGrace);
         this.disconnectTimers.set(participantId, timer);
       }
       if (peer.connectionState === "connected") {
@@ -467,7 +468,7 @@ export default class OnlineVoiceMesh {
           this.recovery.fail(participantId);
           this.removePeer(participantId);
         }
-      }, 30_000)
+      }, PEER_TIMEOUTS.connect)
     );
     return peer;
   }

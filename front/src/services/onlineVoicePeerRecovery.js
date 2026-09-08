@@ -1,6 +1,7 @@
 // eslint-disable-next-line import/extensions
 import { translateSaved } from "../i18n/runtime";
 import { updatePeerIceServers } from "./onlineVoicePeerConfiguration";
+import { PEER_TIMEOUTS } from "./onlineVoicePeerTimeouts";
 
 export default class OnlineVoicePeerRecovery {
   constructor(mesh, formatOffer) {
@@ -53,7 +54,7 @@ export default class OnlineVoicePeerRecovery {
       if (!isCurrent() || peer.connectionState === "connected") return;
       this.fail(participantId);
       mesh.removePeer(participantId);
-    }, 15_000);
+    }, PEER_TIMEOUTS.iceRecovery);
     mesh.disconnectTimers.set(participantId, expiry);
     this.recovering.add(participantId);
     mesh.onPeerRecovering?.(participantId);

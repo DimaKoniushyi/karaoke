@@ -70,7 +70,7 @@ function ScrollTrack({ axis, scrollRef, state, sync }) {
         border: "1px solid color-mix(in srgb, var(--color-primary) 15%, var(--color-text) 8%)",
         borderRadius: "var(--radius-pill)",
         background: "color-mix(in srgb, var(--color-text) 4%, transparent)",
-        boxShadow: "inset 0 1px var(--space-1) #0009",
+        boxShadow: "inset 0 1px var(--space-1) color-mix(in srgb, var(--color-bg-deep) 60%, transparent)",
         outline: "none",
         cursor: "pointer"
       }}
@@ -106,7 +106,7 @@ function ScrollTrack({ axis, scrollRef, state, sync }) {
           borderRadius: "var(--radius-pill)",
           background: "linear-gradient(180deg, var(--color-primary-hover), var(--color-primary))",
           boxShadow:
-            "0 0 var(--space-2) color-mix(in srgb, var(--color-primary) 32%, transparent), inset 0 1px #ffffff38",
+            "0 0 var(--space-2) color-mix(in srgb, var(--color-primary) 32%, transparent), inset 0 1px color-mix(in srgb, var(--color-white) 22%, transparent)",
           cursor: "grab",
           touchAction: "none"
         }}

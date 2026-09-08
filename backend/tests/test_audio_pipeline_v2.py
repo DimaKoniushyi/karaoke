@@ -243,6 +243,50 @@ def test_complete_online_text_is_forced_aligned_without_ctc_rewriting(tmp_path):
     aligner.align_long_text.assert_called_once()
 
 
+def test_asr_text_without_direct_timestamps_is_forced_aligned(tmp_path):
+    transcriber = SimpleNamespace(
+        transcribe=Mock(return_value=("Первая вторая", [])),
+    )
+    aligner = SimpleNamespace(
+        set_cancelled=Mock(),
+        align_long_text=Mock(return_value=[
+            Word(1.0, 1.3, "Первая", 0.9, 0),
+            Word(1.4, 1.8, "вторая", 0.9, 1),
+        ]),
+    )
+    pipeline = AudioPipelineV2(
+        engines=SimpleNamespace(transcriber=transcriber, aligner=aligner)
+    )
+    request = AudioPipelineV2Request(
+        tmp_path / "song.flac", tmp_path, artist="Исполнитель", title="Песня"
+    )
+
+    text, words, source, score_lines = pipeline._align(
+        request, tmp_path / "vocals.flac", None
+    )
+
+    assert text == "Первая вторая"
+    assert [word.text for word in words] == ["Первая", "вторая"]
+    assert source == "asr"
+    assert len(score_lines) == 1
+    aligner.align_long_text.assert_called_once_with(
+        tmp_path / "vocals.flac", "Первая вторая", None
+    )
+
+
+def test_score_lines_remain_valid_when_adjacent_words_share_an_onset():
+    words = [
+        Word(1.0, 1.08, "Первая", 0.9, 0),
+        Word(1.0, 1.10, "Вторая", 0.9, 1),
+    ]
+
+    lines = AudioPipelineV2._score_lines(words, ["Первая", "Вторая"])
+
+    assert len(lines) == 2
+    assert all(line.end > line.start for line in lines)
+    assert lines[0].end >= words[0].end
+
+
 def test_online_text_is_normalized_before_alignment_and_publication(tmp_path):
     aligner = SimpleNamespace(
         set_cancelled=Mock(),

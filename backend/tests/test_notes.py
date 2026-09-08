@@ -31,7 +31,7 @@ def test_distant_pitch_is_not_claimed_by_a_word():
     assert build_vocal_notes(pitch, words=words) == []
 
 
-def test_narrow_ctc_words_are_expanded_to_the_next_sung_word():
+def test_narrow_ctc_word_expands_without_warping_its_physical_note():
     words = [
         Word(1.0, 1.05, "первая", index=0),
         Word(1.2, 1.25, "вторая", index=1),
@@ -45,7 +45,23 @@ def test_narrow_ctc_words_are_expanded_to_the_next_sung_word():
 
     assert fitted_words[0].end == 1.2
     assert fitted_notes[0].start == 1.0
-    assert fitted_notes[0].end == 1.2
+    assert fitted_notes[0].end <= 1.056
+
+
+def test_physical_note_duration_is_not_stretched_to_fill_a_lexical_slot():
+    words = [
+        Word(1.0, 1.1, "первая", index=0),
+        Word(1.4, 1.5, "вторая", index=1),
+    ]
+    notes = [
+        VocalNote(1.05, 1.25, 60, word_index=0),
+        VocalNote(1.43, 1.55, 62, word_index=1),
+    ]
+
+    _fitted_words, fitted_notes = fit_notes_to_sung_words(words, notes)
+
+    first = next(note for note in fitted_notes if note.word_index == 0)
+    assert first.end - first.start <= 0.221
 
 
 def test_phrase_final_note_gets_a_bounded_tail_instead_of_crossing_the_pause():
@@ -61,7 +77,7 @@ def test_phrase_final_note_gets_a_bounded_tail_instead_of_crossing_the_pause():
     fitted_words, fitted_notes = fit_notes_to_sung_words(words, notes)
 
     assert fitted_words[0].end == 1.45
-    assert fitted_notes[0].end == 1.45
+    assert fitted_notes[0].end == 1.22
 
 
 def test_note_near_a_new_word_is_not_claimed_by_an_overlapping_previous_word():
@@ -146,7 +162,7 @@ def test_silent_word_far_from_pitch_stays_without_an_invented_note():
     assert all(note.word_index != 0 for note in fitted_notes)
 
 
-def test_note_inside_the_same_lyric_line_extends_to_a_contiguous_next_word():
+def test_word_inside_the_same_line_extends_without_warping_its_note():
     words = [
         Word(1.0, 1.2, "никто", index=0),
         Word(1.35, 1.55, "не", index=1),
@@ -162,7 +178,7 @@ def test_note_inside_the_same_lyric_line_extends_to_a_contiguous_next_word():
     )
 
     assert fitted_words[0].end == 1.35
-    assert fitted_notes[0].end == 1.35
+    assert fitted_notes[0].end == 1.22
 
 
 def test_physical_note_is_not_stretched_across_a_real_silence_inside_a_line():
@@ -182,7 +198,7 @@ def test_physical_note_is_not_stretched_across_a_real_silence_inside_a_line():
     )
 
     assert fitted_words[0].end == 1.45
-    assert fitted_notes[0].end == 1.45
+    assert fitted_notes[0].end == 1.22
 
 
 def test_line_final_word_cannot_claim_a_disconnected_later_vocal_interval():
