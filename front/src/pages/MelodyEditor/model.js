@@ -15,6 +15,25 @@ export function setPlayheadPosition(ref, time, zoom, { announce = true } = {}) {
   if (announce) node.setAttribute("aria-valuenow", String(time));
 }
 
+// Pure layout math for the note grid: how many MIDI rows to show (padded
+// around the song's actual pitch range, snapped to an octave boundary) and
+// how wide/tall the scrollable lane is. Kept free of React so it can be
+// unit-tested and reused by both the controller and the surface directly.
+export function computeEditorLayout(notes, rowHeight, zoom, duration) {
+  const midi = notes.map(({ note }) => note);
+  const low = Math.min(...midi, 60);
+  const high = Math.max(...midi, 72);
+  const span = Math.max(60, high - low + 24);
+  const center = (low + high) / 2;
+  let minMidi = Math.max(0, Math.floor(center - span / 2));
+  const maxMidi = Math.min(127, Math.ceil((minMidi + span) / 12) * 12);
+  minMidi = Math.max(0, maxMidi - span);
+  const keyboardWidth = rowHeight * 4.5;
+  const laneHeight = (maxMidi - minMidi + 1) * rowHeight;
+  const laneWidth = keyboardWidth + Math.max(duration, 16) * zoom;
+  return { minMidi, maxMidi, keyboardWidth, laneHeight, laneWidth };
+}
+
 export function normalizeNotes(notes = []) {
   const ends = new Map();
 

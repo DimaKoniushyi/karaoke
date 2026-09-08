@@ -2,7 +2,14 @@ import { Graphics, Stage, useTick } from "@pixi/react";
 import "@pixi/unsafe-eval";
 import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
 import { clamp } from "../../../../utils/math";
-import { pianoPitchRange, pianoRollFrame } from "./geometry";
+import {
+  connectionLineWidth,
+  noteHeight as computeNoteHeight,
+  noteOpacity,
+  pianoPitchRange,
+  pianoRollFrame,
+  pitchDotRadius
+} from "./geometry";
 
 const options = {
   antialias: true,
@@ -41,7 +48,7 @@ function RollGraphics({
 
       for (const line of frame.connections ?? []) {
         g.lineStyle(
-          clamp(rowHeight * 0.24, 2, 5),
+          connectionLineWidth(rowHeight),
           palette.hover,
           line.state === "past" ? 0.3 : 0.72
         )
@@ -49,10 +56,9 @@ function RollGraphics({
           .lineTo(line.toX, line.toY);
       }
 
-      const noteHeight = clamp(rowHeight * 0.72, 5, 15);
+      const noteHeight = computeNoteHeight(rowHeight);
       for (const note of frame.notes) {
-        const opacity =
-          note.state === "past" ? clamp(0.58 * (1 - (frame.time - note.end) / 2.8), 0.08, 0.58) : 1;
+        const opacity = noteOpacity(note, frame.time);
 
         g.lineStyle(note.state === "current" ? 1.8 : 1.1, palette.highlight, opacity)
           .beginFill(note.state === "current" ? palette.hover : palette.primary, opacity)
@@ -69,7 +75,7 @@ function RollGraphics({
       g.lineStyle(2.2, palette.hover).moveTo(playhead, 0).lineTo(playhead, frame.height);
 
       if (isPitchDetected && Number.isFinite(sung)) {
-        const radius = Math.max(3, rowHeight * 0.2);
+        const radius = pitchDotRadius(rowHeight);
         // Pin the dot to the nearest edge instead of hiding it when the singer
         // strays outside the melody's note range -- an octave slip or a
         // genuinely off-pitch note should still show *something*, not vanish.

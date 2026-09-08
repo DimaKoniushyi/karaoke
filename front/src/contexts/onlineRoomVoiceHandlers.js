@@ -136,26 +136,50 @@ export function createVoiceMeshHandlers({
       ? canAcceptLibrarySongPackage(participantId, metadata)
       : canAcceptSongPackage(participantId, metadata);
 
+  // Shared by both onFile handlers below: marks the transfer "importing",
+  // hands the blob to the API, then confirms the imported copy actually
+  // landed on the revision the sender promised before either handler treats
+  // it as usable. `resolveVerifyId` lets a caller check a different song id
+  // than the one requested (the library import can resolve to an existing
+  // local copy under its own id) -- it defaults to the requested id.
+  const importAndVerifySongPackage = async ({
+    participantId,
+    blob,
+    metadata,
+    signal,
+    resolveVerifyId
+  }) => {
+    setTransferStatus({
+      participantId,
+      songId: metadata.songId,
+      commandId: metadata.commandId,
+      stage: "importing",
+      percent: 100
+    });
+    const importedSong = await api.importSongPackage(blob, metadata.filename, {
+      ...(signal ? { signal } : {}),
+      expectedRevision: metadata.revision
+    });
+    const verifyId = resolveVerifyId ? resolveVerifyId(importedSong) : metadata.songId;
+    const imported = await api.getSongRevision(verifyId);
+    if (imported?.revision !== metadata.revision)
+      throw new Error(translateSaved("room.importedSongVersionDoesNotMatchTheRoomVersion"));
+    return importedSong;
+  };
+
   const handleLibrarySongFile = async (participantId, blob, metadata, signal) => {
     const pending = librarySyncRef.current;
     if (!canAcceptLibrarySongPackage(participantId, metadata))
       throw new Error(translateSaved("room.receivingThisSongIsNoLongerAllowed"));
     try {
-      setTransferStatus({
+      const importedSong = await importAndVerifySongPackage({
         participantId,
-        songId: metadata.songId,
-        commandId: metadata.commandId,
-        stage: "importing",
-        percent: 100
-      });
-      const importedSong = await api.importSongPackage(blob, metadata.filename, {
-        ...(signal ? { signal } : {}),
-        expectedRevision: metadata.revision
+        blob,
+        metadata,
+        signal,
+        resolveVerifyId: (song) => song?.id || metadata.songId
       });
       const localSongId = importedSong?.id || metadata.songId;
-      const imported = await api.getSongRevision(localSongId);
-      if (imported?.revision !== metadata.revision)
-        throw new Error(translateSaved("room.importedSongVersionDoesNotMatchTheRoomVersion"));
       if (!isCurrentConnection() || librarySyncRef.current !== pending) return false;
       setTransferStatus({
         participantId,
@@ -182,20 +206,7 @@ export function createVoiceMeshHandlers({
     if (!canAcceptSongPackage(participantId, metadata))
       throw new Error(translateSaved("room.receivingThisSongPackageIsNoLongerAllowed"));
     try {
-      setTransferStatus({
-        participantId,
-        songId: metadata.songId,
-        commandId: metadata.commandId,
-        stage: "importing",
-        percent: 100
-      });
-      await api.importSongPackage(blob, metadata.filename, {
-        ...(signal ? { signal } : {}),
-        expectedRevision: metadata.revision
-      });
-      const imported = await api.getSongRevision(metadata.songId);
-      if (imported?.revision !== metadata.revision)
-        throw new Error(translateSaved("room.importedSongVersionDoesNotMatchTheRoomVersion"));
+      await importAndVerifySongPackage({ participantId, blob, metadata, signal });
       if (!isCurrentConnection() || pendingSongCommandRef.current?.commandId !== metadata.commandId)
         return false;
       setTransferStatus({

@@ -79,6 +79,44 @@ def test_note_near_a_new_word_is_not_claimed_by_an_overlapping_previous_word():
     assert note.word_index == 1
 
 
+def test_vibrato_around_one_pitch_remains_one_sustained_note():
+    pitch = [
+        PitchFrame(
+            index * 0.01,
+            440.0 * (2 ** ((0.42 if index % 2 else -0.42) / 12)),
+            1.0,
+            True,
+            1.0,
+        )
+        for index in range(30)
+    ]
+    words = [Word(0.0, 0.4, "долго", index=0)]
+
+    notes = build_vocal_notes(pitch, words=words)
+
+    assert len(notes) == 1
+    assert notes[0].start == 0.0
+    assert notes[0].end == 0.3
+
+
+def test_sustained_pitch_change_still_starts_a_new_note():
+    pitch = [
+        PitchFrame(index * 0.01, 440.0, 1.0, True, 1.0)
+        for index in range(15)
+    ] + [
+        PitchFrame(index * 0.01, 493.883, 1.0, True, 1.0)
+        for index in range(15, 30)
+    ]
+    words = [Word(0.0, 0.4, "две", index=0)]
+
+    notes = build_vocal_notes(pitch, words=words)
+
+    assert len(notes) == 2
+    assert [note.midi_note for note in notes] == [69, 71]
+    assert notes[0].end == 0.15
+    assert notes[1].start == 0.15
+
+
 def test_short_word_between_sung_words_recovers_a_note_from_nearby_pitch():
     words = [
         Word(1.0, 1.1, "до", index=0),

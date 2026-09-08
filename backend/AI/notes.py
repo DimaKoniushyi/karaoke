@@ -52,19 +52,61 @@ def hz_to_midi(hz: float) -> float:
     return 69 + 12 * math.log2(float(hz) / 440)
 
 
-def _segments(frames: list[PitchFrame], gap: float, split: float):
+def _segments(
+    frames: list[PitchFrame],
+    gap: float,
+    split: float,
+    *,
+    change_confirmation_frames: int = 3,
+):
+    """Split voiced pitch into notes without mistaking vibrato for boundaries.
+
+    A real note transition remains away from the established pitch for several
+    frames.  Vibrato, pitch-estimator jitter and single-frame glitches normally
+    return immediately.  Keep those provisional frames in the current note,
+    while preserving the first frame of a confirmed transition as its onset.
+    """
     current: list[PitchFrame] = []
+    pending: list[PitchFrame] = []
     for frame in frames:
         if not frame.voiced:
             if current:
+                current.extend(pending)
                 yield current
                 current = []
+                pending = []
             continue
-        if current and (frame.time - current[-1].time > gap or abs(hz_to_midi(frame.frequency) - hz_to_midi(current[-1].frequency)) >= split):
+
+        previous = pending[-1] if pending else (current[-1] if current else None)
+        if previous is not None and frame.time - previous.time > gap:
+            current.extend(pending)
             yield current
             current = []
+            pending = []
+
+        if not current:
+            current.append(frame)
+            continue
+
+        # Compare with the last accepted frame so a gradual slide remains a
+        # single gesture.  Once a sudden departure appears, keep comparing
+        # with that stable anchor until it either returns (vibrato/jitter) or
+        # persists long enough to become a real new note.
+        anchor = hz_to_midi(current[-1].frequency)
+        if abs(hz_to_midi(frame.frequency) - anchor) >= split:
+            pending.append(frame)
+            if len(pending) >= change_confirmation_frames:
+                yield current
+                current = pending
+                pending = []
+            continue
+
+        if pending:
+            current.extend(pending)
+            pending = []
         current.append(frame)
     if current:
+        current.extend(pending)
         yield current
 
 

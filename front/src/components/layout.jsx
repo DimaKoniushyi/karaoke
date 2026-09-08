@@ -25,7 +25,13 @@ const useBlackout = () => {
 function FloatingControls({ openSettings }) {
   const { t } = useI18n();
   const radio = useRadio();
-  const { open: radioVolumeOpen, setOpen: setRadioVolumeOpen, anchorRef: radioAnchorRef, show, hideSoon: hideRadioVolumeSoon } = useHoverPopover();
+  const {
+    open: radioVolumeOpen,
+    setOpen: setRadioVolumeOpen,
+    anchorRef: radioAnchorRef,
+    show,
+    hideSoon: hideRadioVolumeSoon
+  } = useHoverPopover();
   const showRadioVolume = () => {
     if (radio.isPlaying) show();
   };

@@ -1,4 +1,5 @@
 import { clamp } from "../../../../utils/math";
+import { connectionLineWidth, noteHeight as computeNoteHeight, noteOpacity, pitchDotRadius } from "./geometry";
 
 const rect = (ctx, x, y, w, h) => {
   ctx.beginPath();
@@ -19,7 +20,7 @@ export function drawPianoRoll(ctx, frame, palette, pitch = {}) {
     connections = []
   } = frame;
 
-  const noteHeight = clamp(rowHeight * 0.72, 5, 15);
+  const noteHeight = computeNoteHeight(rowHeight);
   const center = rowHeight / 2;
 
   ctx.clearRect(0, 0, width, height);
@@ -32,7 +33,7 @@ export function drawPianoRoll(ctx, frame, palette, pitch = {}) {
   ctx.lineJoin = "round";
   ctx.shadowBlur = 0;
   ctx.strokeStyle = palette.hover;
-  ctx.lineWidth = clamp(rowHeight * 0.24, 2, 5);
+  ctx.lineWidth = connectionLineWidth(rowHeight);
 
   for (const line of connections) {
     ctx.globalAlpha = line.state === "past" ? 0.3 : 0.72;
@@ -44,9 +45,8 @@ export function drawPianoRoll(ctx, frame, palette, pitch = {}) {
 
   for (const note of notes) {
     const current = note.state === "current";
-    const past = note.state === "past";
     const top = y(note.note) + (rowHeight - noteHeight) / 2;
-    const alpha = past ? clamp(0.58 * (1 - (time - note.end) / 2.8), 0.08, 0.58) : 1;
+    const alpha = noteOpacity(note, time);
 
     const gradient = ctx.createLinearGradient(0, top, 0, top + noteHeight);
     gradient.addColorStop(0, current ? palette.text : palette.highlight);
@@ -80,7 +80,7 @@ export function drawPianoRoll(ctx, frame, palette, pitch = {}) {
   ctx.stroke();
 
   if (pitch.detected && Number.isFinite(pitch.midi)) {
-    const radius = Math.max(3, rowHeight * 0.2);
+    const radius = pitchDotRadius(rowHeight);
     // Pin the dot to the nearest edge instead of hiding it when the singer
     // strays outside the melody's note range -- an octave slip or a genuinely
     // off-pitch note should still show *something*, not vanish silently.

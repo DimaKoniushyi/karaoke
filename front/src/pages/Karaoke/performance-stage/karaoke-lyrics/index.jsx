@@ -9,7 +9,7 @@ const fillSx = {
   color: "var(--color-primary-hover)",
   WebkitTextFillColor: "var(--color-primary-hover)",
   clipPath: "inset(0 calc(100% - var(--character-fill)) 0 0)",
-  filter: "drop-shadow(0 0 .18em color-mix(in srgb, var(--color-primary) 48%, transparent))",
+  filter: "drop-shadow(0 0 .18em color-mix(in srgb, var(--color-primary) 8%, transparent))",
   pointerEvents: "none",
   willChange: "clip-path"
 };
@@ -83,7 +83,7 @@ function KaraokeLyrics({ lyricsSync, currentTime = 0, currentTimeRef, isPlaying 
         inset: "50% auto auto 50%",
         transform: "translate(-50%, -50%)",
         inlineSize: "min(88rem, 92vw)",
-        blockSize: "min(25rem, 40vh)",
+        blockSize: "min(10rem, 40vh)",
         padding: "var(--space-4) var(--space-8)",
         border: "1px solid color-mix(in srgb, var(--color-text) 10%, transparent)",
         borderRadius: "var(--shape-xl)",
@@ -118,7 +118,7 @@ function KaraokeLyrics({ lyricsSync, currentTime = 0, currentTimeRef, isPlaying 
             sx={{
               zIndex: 99999,
               position: "absolute",
-              insetBlockStart: "50%",
+              insetBlockStart: "25%",
               insetInlineStart: "50%",
               inlineSize: "calc(100% - var(--space-16))",
               margin: 0,
@@ -182,10 +182,7 @@ function KaraokeLyrics({ lyricsSync, currentTime = 0, currentTimeRef, isPlaying 
                         data-start={syllable.start}
                         data-end={syllable.end}
                         style={{ "--character-fill": lyricSyllableFill(syllable, time) }}
-                        sx={{
-                          position: "relative",
-                          display: "inline-block"
-                        }}
+                        sx={{ position: "relative", display: "inline-block" }}
                       >
                         {syllable.text}
                         <Fill dataRole="lyric-syllable-fill">{syllable.text}</Fill>

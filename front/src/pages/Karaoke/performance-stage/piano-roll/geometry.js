@@ -56,6 +56,15 @@ export function pianoPitchRange(notes = [], sungMidi) {
   };
 }
 
+// Shared by both piano-roll renderers (Canvas2D fallback and Pixi/WebGL) so
+// the same numbers drive whichever backend is active instead of two
+// independently hand-copied sets of magic constants.
+export const noteHeight = (rowHeight) => clamp(rowHeight * 0.72, 5, 15);
+export const connectionLineWidth = (rowHeight) => clamp(rowHeight * 0.24, 2, 5);
+export const pitchDotRadius = (rowHeight) => Math.max(3, rowHeight * 0.2);
+export const noteOpacity = (note, time) =>
+  note.state === "past" ? clamp(0.58 * (1 - (time - note.end) / 2.8), 0.08, 0.58) : 1;
+
 export function pianoRollFrame(notes = [], currentTime = 0, size, range) {
   const view = size || PIANO_ROLL_VIEW;
   const pitch = range || pianoPitchRange(notes);

@@ -12,12 +12,40 @@ const bendAudioParam = (parameter, value, time) => {
   else if (parameter) parameter.value = value;
 };
 
-function playSynthesizedRoomSound(direction) {
+// Builds a throwaway AudioContext, lets `build` wire up its oscillator
+// graph and return the tone(s) it started, then closes the context once
+// every returned tone has fired its `onended` -- shared by every synthesized
+// room cue below so each one only supplies its own oscillator/gain wiring.
+function withTransientToneContext(build) {
   const AudioContext = getAudioContextClass();
   if (!AudioContext || typeof AudioContext.prototype?.createOscillator !== "function") return false;
   let context;
   try {
     context = new AudioContext({ latencyHint: "interactive" });
+    const tones = build(context);
+    Promise.all(
+      (Array.isArray(tones) ? tones : [tones]).map(
+        (tone) =>
+          new Promise((resolve) => {
+            tone.onended = () => {
+              tone.onended = null;
+              resolve();
+            };
+          })
+      )
+    )
+      .then(() => context.close?.())
+      .catch(() => undefined);
+    context.resume?.()?.catch?.(() => undefined);
+    return true;
+  } catch {
+    Promise.resolve(context?.close?.()).catch(() => undefined);
+    return false;
+  }
+}
+
+function playSynthesizedRoomSound(direction) {
+  return withTransientToneContext((context) => {
     const gain = context.createGain();
     const { currentTime } = context;
     gain.gain.setValueAtTime(0.0001, currentTime);
@@ -60,18 +88,8 @@ function playSynthesizedRoomSound(direction) {
       tone.stop(currentTime + 0.4);
       return tone;
     });
-    const lastTone = tones.at(-1);
-    lastTone.onended = () => {
-      lastTone.onended = null;
-      Promise.resolve(context.close?.()).catch(() => undefined);
-    };
-    context.resume?.()?.catch?.(() => undefined);
-    return true;
-  } catch {
-    // Optional feedback must never break room state.
-    Promise.resolve(context?.close?.()).catch(() => undefined);
-    return false;
-  }
+    return tones;
+  });
 }
 
 function playRoomSound(direction) {
@@ -103,11 +121,7 @@ function playRoomSound(direction) {
 // voice-chat disconnect sound, played entirely from oscillators (no sampled
 // audio, so there is nothing here that could carry someone else's recording).
 function playDisconnectHornSound() {
-  const AudioContext = getAudioContextClass();
-  if (!AudioContext || typeof AudioContext.prototype?.createOscillator !== "function") return false;
-  let context;
-  try {
-    context = new AudioContext({ latencyHint: "interactive" });
+  return withTransientToneContext((context) => {
     const master = context.createGain();
     master.gain.setValueAtTime(0.09, context.currentTime);
     master.connect(context.destination);
@@ -155,23 +169,8 @@ function playDisconnectHornSound() {
       tone.stop(endAt + 0.05);
       tones.push(tone);
     }
-    Promise.all(
-      tones.map(
-        (tone) =>
-          new Promise((resolve) => {
-            tone.onended = () => {
-              tone.onended = null;
-              resolve();
-            };
-          })
-      )
-    ).then(() => context.close?.()).catch(() => undefined);
-    context.resume?.()?.catch?.(() => undefined);
-    return true;
-  } catch {
-    Promise.resolve(context?.close?.()).catch(() => undefined);
-    return false;
-  }
+    return tones;
+  });
 }
 
 export const playParticipantJoinedSound = () => playRoomSound("join");

@@ -38,10 +38,17 @@ test("closes the participant notification AudioContext when playback actually en
   playParticipantJoinedSound();
   expect(oscillators).toHaveLength(2);
   notCalled(timeout, close);
+  expect(oscillators[0].onended).toBeTypeOf("function");
   expect(oscillators[1].onended).toBeTypeOf("function");
+  oscillators[0].onended();
   oscillators[1].onended();
   await Promise.resolve();
-  verify([close, "toHaveBeenCalledTimes", 1], [oscillators[1].onended, "toBeNull"]);
+  await Promise.resolve();
+  verify(
+    [close, "toHaveBeenCalledTimes", 1],
+    [oscillators[0].onended, "toBeNull"],
+    [oscillators[1].onended, "toBeNull"]
+  );
   expect(playParticipantLeftSound()).toBe(true);
   expect(oscillators).toHaveLength(4);
   expect(oscillators[2].frequency.value).toBe(659.25);

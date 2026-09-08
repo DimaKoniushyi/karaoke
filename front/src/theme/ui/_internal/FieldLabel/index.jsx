@@ -1,5 +1,5 @@
-import cx from "../cx";
 import FieldTooltipButton from "../FieldTooltipButton";
+import cx from "../cx";
 import "./field-label.css";
 
 export default function FieldLabel({ htmlFor, label, tooltip, required = false, className }) {
