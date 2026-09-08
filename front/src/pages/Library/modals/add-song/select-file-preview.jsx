@@ -7,8 +7,9 @@ import { IconButton } from "../../../../theme/ui";
 export default ({ file }) => {
   const ref = useRef(null);
   const [playing, setPlaying] = useState(false);
+  const canPreview = Boolean(file && typeof URL.createObjectURL === "function");
   useEffect(() => {
-    if (!file) return;
+    if (!canPreview) return;
     const audio = ref.current;
     const url = URL.createObjectURL(file);
     audio.src = url;
@@ -16,7 +17,7 @@ export default ({ file }) => {
       audio.pause();
       URL.revokeObjectURL(url);
     };
-  }, [file]);
+  }, [canPreview, file]);
   const Icon = playing ? Pause : Play;
   const stop = () => setPlaying(false);
   return (
@@ -25,7 +26,7 @@ export default ({ file }) => {
         label={tr(playing ? "library.pauseSelectedAudioFile" : "library.previewSelectedAudioFile")}
         variant={playing ? "contained" : "outlined"}
         size="lg"
-        disabled={!file}
+        disabled={!canPreview}
         onClick={async () => setPlaying(await toggleAudioPlayback(ref.current))}
       >
         <Icon size={19} fill={playing ? "currentColor" : "none"} />

@@ -187,7 +187,7 @@ test("stage displays panorama, intro, lyrics and melody", () => {
   );
   expect(container.textContent).toContain("Line");
 });
-test("stage randomizes local scene video with a short fade", () => {
+test("stage randomizes local scene video with a short fade", async () => {
   vi.useFakeTimers();
   globalThis.electronAPI = { getSceneVideoUrl: () => "scene.mp4" };
   const result = render(
@@ -209,6 +209,7 @@ test("stage randomizes local scene video with a short fade", () => {
   fireEvent.loadedMetadata(video);
   expect(video.dataset.switching).toBe("true");
   vi.advanceTimersByTime(180);
+  await Promise.resolve();
   verify([video.currentTime, "toBeGreaterThan", 0], [HTMLMediaElement.prototype.play, "toHaveBeenCalled"]);
   vi.useRealTimers();
 });

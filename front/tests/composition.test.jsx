@@ -23,16 +23,16 @@ vi.mock("../src/contexts/radio", () => ({
   RadioProvider: ({ children }) => <div data-provider="radio">{children}</div>
 }));
 vi.mock("../src/pages/Karaoke/console/center", () => ({
-  default: ({ marker }) => <span data-testid="center">{marker}</span>
+  default: () => <span data-testid="center" />
 }));
 vi.mock("../src/pages/Karaoke/console/mixer", () => ({
-  default: ({ marker }) => <span data-testid="mixer">{marker}</span>
+  default: () => <span data-testid="mixer" />
 }));
 vi.mock("../src/pages/Karaoke/console/song-strip", () => ({
-  default: ({ marker }) => <span data-testid="strip">{marker}</span>
+  default: () => <span data-testid="strip" />
 }));
 vi.mock("../src/pages/Karaoke/console/tools", () => ({
-  default: ({ marker }) => <span data-testid="tools">{marker}</span>
+  default: () => <span data-testid="tools" />
 }));
 import ContextProviders from "../src/contexts/index.jsx";
 import KaraokeConsole from "../src/pages/Karaoke/console/index.jsx";
@@ -46,9 +46,9 @@ test("context composition preserves provider ownership order", () => {
   verify([result.getByTestId("child").closest('[data-provider="room"]'), "toBeTruthy"]);
   expect(result.container.querySelectorAll("[data-provider]")).toHaveLength(5);
 });
-test("karaoke console forwards shared and auto-hide contracts", () => {
-  const result = render(<KaraokeConsole marker="karaoke" autoHideEnabled onAutoHideChange={vi.fn()} />);
+test("karaoke console composes every panel around the grouped transport contract", () => {
+  const result = render(<KaraokeConsole transport={{ seekTo: vi.fn() }} />);
   for (const id of ["strip", "mixer", "center", "tools"]) {
-    expect(result.getByTestId(id).textContent).toBe("karaoke");
+    expect(result.getByTestId(id)).not.toBeNull();
   }
 });

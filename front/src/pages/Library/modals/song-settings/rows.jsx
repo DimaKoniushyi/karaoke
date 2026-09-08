@@ -44,6 +44,7 @@ export default () => [
     tag: "note_range",
     type: "custom",
     label: tr("library.noteRange"),
+    xs: 12,
     render: ({ formik }) => (
       <Field label={tr("library.noteRange")}>
         {({ id }) => (
@@ -64,5 +65,11 @@ export default () => [
         )}
       </Field>
     )
+  },
+  {
+    tag: "video_url",
+    label: tr("library.linkToClip"),
+    placeholder: "https://example.com/video.mp4",
+    xs: 12
   }
 ];

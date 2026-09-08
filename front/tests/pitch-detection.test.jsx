@@ -224,7 +224,7 @@ describe("pitch detection", () => {
     ]);
     verify([audio.context.options, "toEqual", { latencyHint: "interactive" }], [audio.context.resume, "toHaveBeenCalled"]);
     hook.unmount();
-    called(audio.track.stop, audio.context.close);
+    await waitFor(() => called(audio.track.stop, audio.context.close));
     audio.context.close.mockClear();
   });
   test("does not construct a context when every capture attempt fails", async () => {
@@ -289,7 +289,7 @@ describe("pitch detection", () => {
     await waitFor(() => expect(resolveStream).toBeTypeOf("function"));
     hook.unmount();
     await act(async () => resolveStream(audio.stream));
-    called(audio.track.stop, audio.context.close);
+    await waitFor(() => called(audio.track.stop, audio.context.close));
   });
   test("handles null and stale capture results after unmount", async () => {
     setMediaDevices(vi.fn().mockResolvedValue(null));

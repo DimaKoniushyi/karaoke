@@ -10,6 +10,7 @@ import { resolveVisibleSongs } from "../src/pages/Library/utils.js";
 
 const api = vi.hoisted(() => ({
   addSong: vi.fn(),
+  inspectSongIdentity: vi.fn(),
   processSong: vi.fn(),
   reprocessMelody: vi.fn(),
   deleteSong: vi.fn(),
@@ -21,6 +22,7 @@ vi.mock("../src/hooks/useExclusiveAsyncAction", () => ({ default: () => exclusiv
 
 beforeEach(() => {
   Object.values(api).forEach((mock) => mock.mockReset());
+  api.inspectSongIdentity.mockResolvedValue({});
   exclusive.pending = false;
   exclusive.run.mockReset().mockImplementation((action) => action());
   delete window.electronAPI;
@@ -44,15 +46,12 @@ const confirmAndFlush = async (result) => {
 };
 
 describe("library file import", () => {
-  test("opens the picker and imports the selected file", async () => {
-    const click = vi.fn();
+  test("stages and imports the selected file", async () => {
     const notify = vi.fn();
     const onStarted = vi.fn();
     api.addSong.mockResolvedValue({ id: "song", title: "Track" });
     api.processSong.mockResolvedValue({});
-    const { result } = renderHook(() => useLibraryFileImport({ fileInputRef: { current: { click } }, notify, onStarted }));
-    act(() => result.current.openFilePicker());
-    expect(click).toHaveBeenCalledOnce();
+    const { result } = renderHook(() => useLibraryFileImport({ notify, onStarted }));
     const input = { files: [new File(["audio"], "track.mp3")], value: "path" };
     await act(() => result.current.importFile({ currentTarget: input }));
     expect(input.value).toBe("");
@@ -65,22 +64,15 @@ describe("library file import", () => {
   });
 
   test("tracks changing picker state, callbacks and compound extensions", async () => {
-    const click = vi.fn();
     const firstStarted = vi.fn();
     const secondStarted = vi.fn();
     const props = {
-      fileInputRef: { current: { click } },
       notify: vi.fn(),
       onStarted: firstStarted
     };
     api.addSong.mockResolvedValue({ id: "song" });
     api.processSong.mockResolvedValue({});
     const hook = renderHook((value) => useLibraryFileImport(value), { initialProps: props });
-    exclusive.pending = true;
-    hook.rerender({ ...props, onStarted: secondStarted });
-    act(() => hook.result.current.openFilePicker());
-    expect(click).not.toHaveBeenCalled();
-    exclusive.pending = false;
     hook.rerender({ ...props, onStarted: secondStarted });
     const file = new File(["audio"], "archive.tar.mp3");
     await act(() => hook.result.current.importFile({ currentTarget: { files: [file], value: "path" } }));
@@ -90,21 +82,13 @@ describe("library file import", () => {
     expect(secondStarted).toHaveBeenCalledWith({ id: "song" });
   });
 
-  test("ignores empty and concurrent selection and reports failures", async () => {
-    const click = vi.fn();
+  test("ignores empty selection and reports failures", async () => {
     const notify = vi.fn().mockResolvedValue(undefined);
-    exclusive.pending = true;
-    const hook = renderHook(() => useLibraryFileImport({ fileInputRef: { current: { click } }, notify, onStarted: vi.fn() }));
-    act(() => hook.result.current.openFilePicker());
-    expect(click).not.toHaveBeenCalled();
+    const hook = renderHook(() => useLibraryFileImport({ notify, onStarted: vi.fn() }));
     await act(() => hook.result.current.importFile({ currentTarget: { files: [], value: "x" } }));
     expect(exclusive.run).not.toHaveBeenCalled();
     await act(() => hook.result.current.importFile({ currentTarget: { files: undefined, value: "x" } }));
     expect(exclusive.run).not.toHaveBeenCalled();
-
-    exclusive.pending = false;
-    const missingPicker = renderHook(() => useLibraryFileImport({ fileInputRef: { current: null }, notify, onStarted: vi.fn() }));
-    expect(() => missingPicker.result.current.openFilePicker()).not.toThrow();
 
     api.addSong.mockRejectedValue(new Error("invalid file"));
     await act(() =>
@@ -123,7 +107,7 @@ describe("library file import", () => {
     processingError.status = 409;
     api.processSong.mockRejectedValue(processingError);
     api.deleteSong.mockResolvedValue(null);
-    const { result } = renderHook(() => useLibraryFileImport({ fileInputRef: { current: null }, notify, onStarted: vi.fn() }));
+    const { result } = renderHook(() => useLibraryFileImport({ notify, onStarted: vi.fn() }));
     await act(() =>
       result.current.importFile({
         currentTarget: { files: [new File(["x"], "track.mp3")], value: "x" }
@@ -141,7 +125,7 @@ describe("library file import", () => {
     const timeout = new Error("deadline");
     timeout.name = "TimeoutError";
     api.processSong.mockRejectedValue(timeout);
-    const { result } = renderHook(() => useLibraryFileImport({ fileInputRef: { current: null }, notify, onStarted }));
+    const { result } = renderHook(() => useLibraryFileImport({ notify, onStarted }));
     await act(() =>
       result.current.importFile({
         currentTarget: { files: [new File(["x"], "track.mp3")], value: "x" }

@@ -8,16 +8,15 @@ test("song fields use the common Formik contract and responsive cell sizes", () 
   expect(createSongFields().map(({ tag }) => tag)).toEqual([
     "artist",
     "title",
+    "genre",
     "tempo_override",
     "key_override",
-    "genre",
     "difficulty_override",
     "note_range",
     "video_url"
   ]);
   for (const field of createSongFields()) {
-    expect(field.xs).toBe(12);
-    expect([4, 6, 12]).toContain(field.md);
+    expect([4, 12]).toContain(field.xs);
     expect(field).not.toHaveProperty("getValue");
     expect(field).not.toHaveProperty("setValue");
     expect(field).not.toHaveProperty("onChange");

@@ -135,7 +135,7 @@ export const getSongCardState = (song) => {
 };
 
 export const formatSongKey = (value) => {
-  const key = text(value);
+  const key = typeof value === "string" ? text(value) : "";
   return key
     ? key.replace(/\s+minor$/i, "m").replace(/\s+major$/i, "maj")
     : tr("library.theTonalityIsDetermined");

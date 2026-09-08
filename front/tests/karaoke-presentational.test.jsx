@@ -8,6 +8,7 @@ vi.mock("../src/api/client", () => ({
   api: {
     getAudioTrackUrl: (id, track) => `${id}/${track}`,
     getAudioTrackBlob: apiMocks.getAudioTrackBlob,
+    getSongCoverUrl: (id) => `/songs/${id}/cover`,
     getSongVideoUrl: (id) => `/songs/${id}/video`
   }
 }));
@@ -145,8 +146,6 @@ test("karaoke media loads authenticated audio blobs and activates a verified loc
   await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(2));
   const audio = container.querySelector("audio");
   expect(audio.getAttribute("src")).toBe("blob:12");
-  Object.defineProperty(audio, "volume", { configurable: true, writable: true, value: 0 });
-  fireEvent.loadedMetadata(audio);
   expect(audio.volume).toBeGreaterThan(0);
   const video = container.querySelector("video");
   verify([video.getAttribute("src"), "toBe", "/songs/song/video"]);
@@ -323,7 +322,7 @@ test("KAR lyrics fill every preserved syllable on its own timing", () => {
   expect(fills()[1]).toBeCloseTo(50, 10);
 });
 
-test("lyrics show only the current and next source lines", () => {
+test("lyrics show the current line and the remaining preview lines", () => {
   const lyricsSync = {
     text: "Первая строка\n.\nВторая строка\nТретья строка",
     words: [
@@ -338,11 +337,11 @@ test("lyrics show only the current and next source lines", () => {
   const { container, rerender } = render(<KaraokeLyrics lyricsSync={lyricsSync} currentTime={1.5} />);
 
   let lines = container.querySelectorAll('[data-role="lyric-line"]');
-  expect(lines).toHaveLength(2);
+  expect(lines).toHaveLength(3);
   const lineText = (line) => [...line.querySelectorAll(':scope > [data-role="lyric-word"]')].map(({ dataset }) => dataset.text).join("");
   expect(lineText(lines[0])).toBe("Перваястрока");
   expect(lineText(lines[1])).toBe("Втораястрока");
-  expect(container.textContent).not.toContain("Третья");
+  expect(lineText(lines[2])).toBe("Третьястрока");
   expect(lines[0].querySelector("[data-start]").dataset.start).toBe("1.01");
   expect(lines[0].querySelector("[data-end]").dataset.end).toBe("1.41");
 

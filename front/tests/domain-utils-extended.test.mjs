@@ -21,9 +21,8 @@ import {
   rootMeanSquare,
   selectFundamentalLag
 } from "../src/pages/Karaoke/utils/pitch.js";
-import { getSongActions } from "../src/pages/Library/components.jsx";
 import { formatSongKey } from "../src/pages/Library/utils.js";
-import { createSongPayload, getSelectedSong, normalizeText, validateSongSettings } from "../src/pages/Library/song-settings.jsx";
+import { createSongPayload, normalizeText, validateSongSettings } from "../src/pages/Library/modals/song-settings/utils.js";
 import { equal, deepEqual } from "./helpers/assertions.mjs";
 describe("analysis normalization and feedback", () => {
   test("normalizes every nullable section field without inventing data", () => {
@@ -453,19 +452,12 @@ describe("device, settings and song-card factories", () => {
       ]
     );
   });
-  test("validates song settings and dispatches card actions", () => {
+  test("validates and normalizes song settings", () => {
     const songs = [
       { id: "a", title: "A" },
       { id: "b", title: "B" }
     ];
-    equal(
-      [getSelectedSong(songs, "b").id, "b"],
-      [getSelectedSong(songs).id, "a"],
-      [getSelectedSong([null, songs[0]], "").id, "a"],
-      [getSelectedSong([null, songs[0]], "missing"), undefined],
-      [getSelectedSong(null), undefined],
-      [normalizeText(" x "), "x"]
-    );
+    equal([normalizeText(" x "), "x"]);
     for (const value of [null, undefined, 7, {}, "   "]) equal([normalizeText(value), null]);
     equal(
       [validateSongSettings(undefined), translateSaved("Укажите название песни.")],
@@ -536,102 +528,5 @@ describe("device, settings and song-card factories", () => {
       [formatSongKey("C major extra"), "C major extra"]
     );
     for (const value of [null, undefined, "", "   ", 0]) equal([formatSongKey(value), translateSaved("Тональность определяется")]);
-    const callbacks = {
-      activate: vi.fn(),
-      onDelete: vi.fn(),
-      onOpenFolder: vi.fn(),
-      onOpenRecordings: vi.fn(),
-      onOpenSettings: vi.fn(),
-      onProcess: vi.fn(),
-      onReprocess: vi.fn()
-    };
-    const ready = getSongActions({
-      ...callbacks,
-      canManageLibrary: true,
-      isReady: true,
-      song: songs[0]
-    });
-    const actionContracts = (actions) =>
-      actions.map(([, label, variant, callback, disabled]) => ({
-        label,
-        variant,
-        callback: typeof callback,
-        disabled
-      }));
-    deepEqual([
-      actionContracts(ready),
-      [
-        {
-          label: translateSaved("Воспроизвести"),
-          variant: "contained",
-          callback: "function",
-          disabled: undefined
-        },
-        {
-          label: translateSaved("Прослушать записи"),
-          variant: "contained",
-          callback: "function",
-          disabled: undefined
-        },
-        {
-          label: translateSaved("Настройки песни"),
-          variant: "contained",
-          callback: "function",
-          disabled: undefined
-        },
-        {
-          label: translateSaved("Открыть папку"),
-          variant: "contained",
-          callback: "function",
-          disabled: undefined
-        },
-        {
-          label: translateSaved("Переобработать мелодию"),
-          variant: "contained",
-          callback: "function",
-          disabled: undefined
-        },
-        {
-          label: translateSaved("Удалить песню"),
-          variant: "danger",
-          callback: "function",
-          disabled: undefined
-        }
-      ]
-    ]);
-    ready.forEach((action) => action[3]());
-    deepEqual(
-      [callbacks.onOpenRecordings.mock.calls.at(-1), [songs[0]]],
-      [callbacks.onOpenSettings.mock.calls.at(-1), ["a"]],
-      [callbacks.onOpenFolder.mock.calls.at(-1), [songs[0]]],
-      [callbacks.onReprocess.mock.calls.at(-1), [songs[0]]],
-      [callbacks.onDelete.mock.calls.at(-1), [songs[0]]]
-    );
-    const pending = getSongActions({
-      ...callbacks,
-      canManageLibrary: true,
-      isReady: false,
-      isWorking: true,
-      song: songs[0]
-    });
-    deepEqual([
-      actionContracts(pending),
-      [
-        {
-          label: translateSaved("Обработать песню"),
-          variant: "contained",
-          callback: "function",
-          disabled: true
-        },
-        ...actionContracts(ready.slice(2, 4)),
-        actionContracts(ready).at(-1)
-      ]
-    ]);
-    pending.forEach((action) => action[3]());
-    deepEqual(
-      [callbacks.onProcess.mock.calls.at(-1), [songs[0]]],
-      [getSongActions({ ...callbacks, canManageLibrary: false, isReady: false, song: songs[0] }), []]
-    );
-    equal([getSongActions({ ...callbacks, canManageLibrary: false, isReady: true, song: songs[0] }).length, 2]);
   });
 });

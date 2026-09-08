@@ -100,7 +100,7 @@ vi.mock("../src/theme/ui", () => ({
   Grid: passthrough("div")
 }));
 vi.mock("../src/pages/Library/backdrop", () => ({
-  QuantumFieldBackdrop: () => <div data-testid="backdrop" />
+  default: () => <div data-testid="backdrop" />
 }));
 vi.mock("../src/pages/Library/hero", () => ({
   default: (props) => (
@@ -111,36 +111,38 @@ vi.mock("../src/pages/Library/hero", () => ({
   )
 }));
 vi.mock("../src/pages/Library/songs-grid", () => ({
-  default: ({ state, processing, recordings }) =>
-    state.songsError ? (
-      <p role="alert">{state.songsError.message}</p>
-    ) : state.filteredSongs.length ? (
-      state.filteredSongs.map((song) => (
+  default: ({ songs, error, openKaraoke, onOpenSettings, processing, recordings }) =>
+    error ? (
+      <p role="alert">{error.message}</p>
+    ) : songs.length ? (
+      songs.map((song) => (
         <div key={song.id} data-testid={`song-${song.id}`}>
-          <button type="button" data-testid="karaoke" onClick={() => state.openKaraoke(song)} />
+          <button type="button" data-testid="karaoke" onClick={() => openKaraoke(song)} />
           <button type="button" data-testid="processing" onClick={() => processing.track(song)} />
           <button type="button" data-testid="recordings" onClick={() => recordings.setSong(song)} />
-          <button type="button" data-testid="song-settings" onClick={() => state.setSettingsSongId(song.id)} />
+          <button type="button" data-testid="song-settings" onClick={() => onOpenSettings(song.id)} />
         </div>
       ))
     ) : (
       <p data-testid="empty-library">empty</p>
     )
 }));
-vi.mock("../src/pages/OnlineRoom", () => ({
-  OnlineRoomModal: ({ onClose }) => <button data-testid="room-modal" onClick={onClose} />
+vi.mock("../src/pages/Library/modals/online-room/index.jsx", () => ({
+  default: ({ onClose }) => <button data-testid="room-modal" onClick={onClose} />
 }));
-vi.mock("../src/pages/Library/modals", () => ({
-  AddSongsModal: () => null,
-  ProcessingModal: ({ song, onCancel, onClose, onOpenKaraoke }) =>
+vi.mock("../src/pages/Library/modals/add-song", () => ({ default: () => null }));
+vi.mock("../src/pages/Library/modals/processing/index.jsx", () => ({
+  default: ({ song, onCancel, onClose, onOpenKaraoke }) =>
     song ? (
       <div data-testid="processing-modal">
         <button data-testid="cancel-processing" onClick={onCancel} />
         <button data-testid="close-processing" onClick={onClose} />
         <button data-testid="open-processed" onClick={() => onOpenKaraoke(song.id)} />
       </div>
-    ) : null,
-  RecordingsModal: ({ song, onAnalyze, onDelete, onClose }) =>
+    ) : null
+}));
+vi.mock("../src/pages/Library/modals/recordings", () => ({
+  default: ({ song, onAnalyze, onDelete, onClose }) =>
     song ? (
       <div data-testid="recordings-modal">
         <button data-testid="analyze" onClick={() => onAnalyze({ id: "rec" })} />
@@ -150,9 +152,9 @@ vi.mock("../src/pages/Library/modals", () => ({
     ) : null
 }));
 vi.mock("../src/pages/Library/modals/song-settings", () => ({
-  default: ({ songId, onClose }) => (
+  default: ({ song, onClose }) => (
     <button data-testid="song-settings-modal" onClick={onClose}>
-      {songId}
+      {song?.id}
     </button>
   )
 }));
