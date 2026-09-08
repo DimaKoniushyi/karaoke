@@ -185,7 +185,7 @@ def fit_notes_to_sung_words(
     word_end_limits: dict[int, float] | None = None,
     contiguous_gap: float = 0.2,
     phrase_tail: float = 0.25,
-    max_note_stretch: float = 1.1,
+    max_note_stretch: float = 1.0,
 ) -> tuple[list[Word], list[VocalNote]]:
     """Expand narrow CTC emissions into karaoke-style sung word intervals.
 

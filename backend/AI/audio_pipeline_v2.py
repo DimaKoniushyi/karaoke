@@ -139,6 +139,12 @@ def validate_audio_artifacts(output_dir: str | Path) -> None:
             raise ValueError(f"{name} must be 24-bit like the reference corpus")
     payload = json.loads((output / "lyricsSync.json").read_text(encoding="utf-8"))
     validate_lyrics_document(payload)
+    words = payload["words"]
+    for index in range(1, len(words)):
+        if float(words[index - 1]["end"]) > float(words[index]["start"]) + 1e-6:
+            raise ValueError(
+                f"lyricsSync.json has overlapping words {index - 1} and {index}"
+            )
     try:
         document_duration = float(payload["duration"])
     except (KeyError, TypeError, ValueError) as exc:
@@ -195,16 +201,31 @@ class AudioPipelineV2:
 
     @staticmethod
     def _normalized_words(values) -> list[Word]:
-        result: list[Word] = []
-        previous_start = 0.0
+        ordered: list[Word] = []
+        previous_start: float | None = None
         for index, word in enumerate(values):
-            start = max(previous_start, float(word.start))
+            minimum_start = (
+                0.0 if previous_start is None else previous_start + 0.01
+            )
+            start = max(minimum_start, float(word.start))
             # The document is serialized with millisecond precision. Keep a
             # full 10 ms minimum so rounding can never collapse a CTC token
             # back into a zero-length interval.
             end = max(start + 0.01, float(word.end))
-            result.append(Word(start, end, word.text, word.confidence, index))
+            ordered.append(Word(start, end, word.text, word.confidence, index))
             previous_start = start
+
+        result: list[Word] = []
+        for index, word in enumerate(ordered):
+            next_start = (
+                ordered[index + 1].start
+                if index + 1 < len(ordered)
+                else None
+            )
+            end = min(word.end, next_start) if next_start is not None else word.end
+            result.append(
+                Word(word.start, end, word.text, word.confidence, word.index)
+            )
         return result
 
     @staticmethod
@@ -361,6 +382,16 @@ class AudioPipelineV2:
                             query=discovered.query,
                             language=discovered.language,
                         )
+                finally:
+                    # transcribe_ctc runs in the parent process, whereas the
+                    # subsequent forced alignment normally loads its model in
+                    # an isolated worker.  Leaving the probe resident on the
+                    # GPU can therefore require two copies of the same large
+                    # CTC model and fail with CUDA OOM.
+                    parker = getattr(self.engines.aligner, "park", None)
+                    if callable(parker):
+                        parker()
+                    release_torch_memory()
         text = discovered.text.strip()
         setter = getattr(self.engines.aligner, "set_cancelled", None)
         if callable(setter):

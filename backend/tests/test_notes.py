@@ -45,7 +45,7 @@ def test_narrow_ctc_word_expands_without_warping_its_physical_note():
 
     assert fitted_words[0].end == 1.2
     assert fitted_notes[0].start == 1.0
-    assert fitted_notes[0].end <= 1.056
+    assert fitted_notes[0].end == 1.05
 
 
 def test_physical_note_duration_is_not_stretched_to_fill_a_lexical_slot():
@@ -64,6 +64,22 @@ def test_physical_note_duration_is_not_stretched_to_fill_a_lexical_slot():
     assert first.end - first.start <= 0.221
 
 
+def test_physical_note_duration_is_preserved_when_word_slot_is_longer():
+    words = [
+        Word(1.0, 1.1, "первая", index=0),
+        Word(1.4, 1.5, "вторая", index=1),
+    ]
+    notes = [
+        VocalNote(1.05, 1.25, 60, word_index=0),
+        VocalNote(1.43, 1.55, 62, word_index=1),
+    ]
+
+    _fitted_words, fitted_notes = fit_notes_to_sung_words(words, notes)
+
+    first = next(note for note in fitted_notes if note.word_index == 0)
+    assert abs((first.end - first.start) - 0.2) < 1e-9
+
+
 def test_phrase_final_note_gets_a_bounded_tail_instead_of_crossing_the_pause():
     words = [
         Word(1.0, 2.8, "конец", index=0),
@@ -77,7 +93,7 @@ def test_phrase_final_note_gets_a_bounded_tail_instead_of_crossing_the_pause():
     fitted_words, fitted_notes = fit_notes_to_sung_words(words, notes)
 
     assert fitted_words[0].end == 1.45
-    assert fitted_notes[0].end == 1.22
+    assert fitted_notes[0].end == 1.2
 
 
 def test_note_near_a_new_word_is_not_claimed_by_an_overlapping_previous_word():
@@ -178,7 +194,7 @@ def test_word_inside_the_same_line_extends_without_warping_its_note():
     )
 
     assert fitted_words[0].end == 1.35
-    assert fitted_notes[0].end == 1.22
+    assert fitted_notes[0].end == 1.2
 
 
 def test_physical_note_is_not_stretched_across_a_real_silence_inside_a_line():
@@ -198,7 +214,7 @@ def test_physical_note_is_not_stretched_across_a_real_silence_inside_a_line():
     )
 
     assert fitted_words[0].end == 1.45
-    assert fitted_notes[0].end == 1.22
+    assert fitted_notes[0].end == 1.2
 
 
 def test_line_final_word_cannot_claim_a_disconnected_later_vocal_interval():
@@ -230,7 +246,7 @@ def test_line_final_word_keeps_a_bounded_phrase_tail():
     assert constrained == words
 
 
-def test_fitted_line_final_note_respects_a_measured_voice_end_limit():
+def test_fitted_line_final_word_respects_voice_limit_without_stretching_note():
     words = [
         Word(74.4, 75.56, "метро", index=0),
         Word(87.6, 87.9, "На", index=1),
@@ -244,4 +260,4 @@ def test_fitted_line_final_note_respects_a_measured_voice_end_limit():
     )
 
     assert fitted_words[0].end == 75.56
-    assert fitted_notes[0].end == 75.56
+    assert fitted_notes[0].end == 75.54

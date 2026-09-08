@@ -9,6 +9,21 @@ from .base import PitchEstimator
 from .device import select_torch_device
 
 
+def _prepare_model_signal(signal) -> np.ndarray:
+    """Return finite FCPE input inside [-1, 1] without hard clipping peaks."""
+    prepared = np.nan_to_num(
+        np.asarray(signal, dtype=np.float32),
+        copy=True,
+        nan=0.0,
+        posinf=1.0,
+        neginf=-1.0,
+    )
+    peak = float(np.max(np.abs(prepared))) if prepared.size else 0.0
+    if peak > 1.0:
+        prepared /= peak
+    return prepared
+
+
 def _frames_from_frequencies(frequencies, step: float, fmin: float, fmax: float) -> list[PitchFrame]:
     """Build one PitchFrame per inference frame, masking out-of-range pitches.
 
@@ -56,6 +71,7 @@ class FCPEPitchEstimator(PitchEstimator):
         signal, _ = load_mono(audio, self.sr)
         if not signal.size:
             return []
+        signal = _prepare_model_signal(signal)
         tensor = torch.from_numpy(signal).view(1, -1, 1).to(self._device)
         with torch.inference_mode():
             raw = model.infer(tensor, sr=self.sr, decoder_mode="local_argmax", threshold=0.006)

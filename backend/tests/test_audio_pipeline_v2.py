@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import ANY, Mock, call
 
 import numpy as np
 import pytest
@@ -121,6 +121,39 @@ def test_audio_artifact_contract_rejects_old_mono_vocals(tmp_path: Path):
     )
 
     with pytest.raises(ValueError, match="stereo"):
+        validate_audio_artifacts(tmp_path)
+
+
+def test_audio_artifact_contract_rejects_overlapping_words(tmp_path: Path):
+    for name in ("original.flac", "vocals.flac", "instrumental.flac"):
+        sf.write(
+            tmp_path / name,
+            np.zeros((44_100, 2), dtype=np.float32),
+            44_100,
+            subtype="PCM_24",
+        )
+    (tmp_path / "cover.jpg").write_bytes(b"cover")
+    (tmp_path / "metadata.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "lyricsSync.json").write_text(
+        json.dumps({
+            "schemaVersion": 1,
+            "bpm": 120,
+            "duration": 1,
+            "key": "C",
+            "reference_audio": "original.flac",
+            "text": "первое второе",
+            "words": [
+                {"text": "первое", "start": 0.1, "end": 0.5, "notes": []},
+                {"text": "второе", "start": 0.4, "end": 0.7, "notes": []},
+            ],
+            "source": "audio",
+            "title": "Тест",
+            "artist": "Автор",
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="overlapping words"):
         validate_audio_artifacts(tmp_path)
 
 
@@ -367,6 +400,49 @@ def test_repetitive_catalog_outro_is_rearranged_only_from_acoustic_evidence(tmp_
     aligner.align_long_text.assert_called_once()
 
 
+def test_ctc_arrangement_probe_is_parked_before_forced_alignment(tmp_path):
+    catalog_lines = (
+        "verse one", "verse two", "vocalise", "chorus",
+        "middle one", "middle two", "vocalise", "chorus",
+        "vocalise", "chorus", "vocalise", "chorus",
+        "vocalise", "chorus", "vocalise", "chorus",
+    )
+    heard = (
+        "verse one verse two vocalise chorus middle one middle two "
+        "vocalise chorus vocalise chorus verse one verse two vocalise chorus"
+    ).split()
+    calls = Mock()
+    aligner = SimpleNamespace(
+        transcribe_ctc=Mock(return_value=[
+            Word(index * 0.1, index * 0.1 + 0.05, token, 0.8, index)
+            for index, token in enumerate(heard)
+        ]),
+        park=Mock(),
+        set_cancelled=Mock(),
+        align_long_text=Mock(side_effect=lambda _audio, text, _language: [
+            Word(index * 0.1, index * 0.1 + 0.05, token, 0.9, index)
+            for index, token in enumerate(text.split())
+        ]),
+    )
+    calls.attach_mock(aligner.park, "park")
+    calls.attach_mock(aligner.align_long_text, "align")
+    pipeline = AudioPipelineV2(engines=SimpleNamespace(aligner=aligner))
+    request = AudioPipelineV2Request(
+        tmp_path / "song.flac", tmp_path, artist="Artist", title="Song"
+    )
+
+    pipeline._align(
+        request,
+        tmp_path / "vocals.flac",
+        LyricsDiscovery("\n".join(catalog_lines), "internet", "query"),
+    )
+
+    assert aligner.park.call_count == 1
+    assert calls.mock_calls.index(call.park()) < calls.mock_calls.index(
+        call.align(tmp_path / "vocals.flac", ANY, None)
+    )
+
+
 def test_long_outro_uses_music_reprise_before_fallback_transcription(
     tmp_path, monkeypatch
 ):
@@ -425,6 +501,25 @@ def test_ctc_word_intervals_are_made_monotonic_before_document_validation():
     assert words[0].end - words[0].start > 0.009
     assert words[1].start >= words[0].start
     assert words[1].end - words[1].start > 0.009
+
+
+def test_ctc_words_with_shared_onsets_become_strict_non_overlapping_intervals():
+    words = AudioPipelineV2._normalized_words([
+        Word(1.0, 1.30, "один", 0.9, 0),
+        Word(1.0, 1.30, "два", 0.9, 1),
+        Word(1.0, 1.30, "три", 0.9, 2),
+        Word(1.25, 1.50, "четыре", 0.9, 3),
+    ])
+
+    assert all(
+        words[index].end <= words[index + 1].start
+        for index in range(len(words) - 1)
+    )
+    assert all(
+        words[index].start < words[index + 1].start
+        for index in range(len(words) - 1)
+    )
+    assert all(word.end - word.start >= 0.01 for word in words)
 
 
 def test_fast_processing_does_not_run_the_four_gigabyte_symbolic_model():
