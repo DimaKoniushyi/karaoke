@@ -253,6 +253,12 @@ def test_native_shared_probes_only_categories_valid_for_capture_and_render():
     assert "AUDCLNT_SHAREMODE_EXCLUSIVE" not in source
 
 
+def test_native_render_probes_game_chat_for_low_latency_without_ducking_other_audio():
+    source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
+    render_branch = source[source.index("} else {"):source.index("if (!client) throw")]
+    assert "try_candidate(AudioCategory_GameChat, AUDCLNT_STREAMOPTIONS_RAW);" in render_branch
+
+
 def test_native_wasapi_pump_requests_critical_pro_audio_mmcss_priority():
     source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
     registered = source.index('AvSetMmThreadCharacteristicsW(L"Pro Audio"')

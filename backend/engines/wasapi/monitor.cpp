@@ -183,6 +183,11 @@ struct Endpoint {
                 try_candidate(AudioCategory_Other, static_cast<AUDCLNT_STREAMOPTIONS>(0));
         } else {
             try_candidate(AudioCategory_Media, AUDCLNT_STREAMOPTIONS_RAW);
+            // GameChat is the real-time render category that explicitly
+            // does not attenuate other streams. Some consumer drivers offer
+            // it a shorter shared period than Media; it only wins below when
+            // that is genuinely true, so equal-period devices retain Media.
+            try_candidate(AudioCategory_GameChat, AUDCLNT_STREAMOPTIONS_RAW);
             try_candidate(AudioCategory_Movie, AUDCLNT_STREAMOPTIONS_RAW);
             try_candidate(AudioCategory_SoundEffects, AUDCLNT_STREAMOPTIONS_RAW);
             try_candidate(AudioCategory_GameEffects, AUDCLNT_STREAMOPTIONS_RAW);

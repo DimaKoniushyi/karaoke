@@ -4,11 +4,24 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import numpy as np
+import pytest
 from sqlalchemy.exc import IntegrityError
 
 import models
 from app.services import audio_service
 from tests._shared import patch_attrs, patch_many, raises
+
+
+@pytest.fixture(autouse=True)
+def reset_process_wide_audio_state(monkeypatch):
+    """These globals intentionally persist in production, but not between tests."""
+    monkeypatch.setattr(audio_service, "_monitor_relay_needed", False)
+    monkeypatch.setattr(
+        audio_service,
+        "_signal_probe_cache",
+        {"at": 0.0, "device": object(), "gain": None, "result": None},
+    )
+    audio_service._monitor_control.publish(state="idle")
 
 
 def settings(**changes):
