@@ -2,6 +2,11 @@ import { Fragment } from "react";
 import { Mic } from "lucide-react";
 import { translateSaved as t } from "../../../i18n/runtime";
 import { Grid, RotaryKnob, Slider, Stack, Switch, Typography } from "../../../theme/ui";
+// Paired with EFFECT_FIELDS by array index below (knob/slider column pairs
+// in one Grid) -- intentionally shorter than EFFECT_FIELDS, so the render
+// loop's `mixer &&` guard leaves the remaining effect knobs without a
+// paired slider instead of throwing. Add a mixer slider here only if the
+// new effect should render alongside one.
 const MIXER_FIELDS = [
   ["microphone", t("karaoke.mick"), "var(--color-primary)"],
   ["music", t("karaoke.music"), "var(--color-success)"],
