@@ -171,6 +171,7 @@ def _low_latency_equivalent(
     *,
     preferred_host_api: str = "wasapi",
     preferred_name: str | None = None,
+    require_preferred_host: bool = False,
 ) -> int:
     devices = sd.query_devices() if devices is None else devices
     source_id = _resolved_device_index(device_id, kind, devices, preferred_name=preferred_name)
@@ -178,12 +179,25 @@ def _low_latency_equivalent(
     source_name = str(source.get("name", "")).casefold().strip()
     source_tokens = _device_tokens(str(source.get("name", "")))
     best: tuple[float, int] | None = None
+    host_fallbacks: list[tuple[float, int]] = []
+    default_pair = getattr(sd.default, "device", (-1, -1))
+    default_index = default_pair[0 if kind == "input" else 1] if isinstance(
+        default_pair, (tuple, list)
+    ) else -1
     for index, candidate in enumerate(devices):
         if int(candidate.get(capability, 0)) < 1:
             continue
         host = _host_api_name(candidate).casefold()
         if preferred_host_api not in host:
             continue
+        # Keep a host-correct fallback independently of physical-name
+        # matching. A persisted PortAudio index can belong to the previously
+        # selected ASIO/MME host; returning it when names do not overlap makes
+        # the UI say "Windows Driver" while bypassing native WASAPI entirely.
+        fallback_score = -_device_latency(candidate, kind) * 1000
+        if index == default_index:
+            fallback_score += 10_000
+        host_fallbacks.append((fallback_score, index))
         overlap = len(source_tokens & _device_tokens(str(candidate.get("name", ""))))
         if device_id is not None and overlap == 0 and index != source_id:
             continue
@@ -194,7 +208,12 @@ def _low_latency_equivalent(
             score += 20
         if best is None or score > best[0]:
             best = (score, index)
-    return best[1] if best else source_id
+    if best:
+        return best[1]
+    source_host = _host_api_name(source).casefold()
+    if require_preferred_host and preferred_host_api not in source_host and host_fallbacks:
+        return max(host_fallbacks)[1]
+    return source_id
 
 
 def _matching_output_for_input(
@@ -321,6 +340,7 @@ def preferred_input_device(
         devices,
         preferred_host_api="mme" if driver == "mme" else "wasapi",
         preferred_name=device_name,
+        require_preferred_host=True,
     )
 
 
@@ -437,7 +457,11 @@ def preferred_output_device(
                 return input_device_id
         return _matching_asio_device_index(asio_driver_name, "output")
     resolved_input = _low_latency_equivalent(
-        input_device_id, "input", devices, preferred_host_api="mme" if driver == "mme" else "wasapi"
+        input_device_id,
+        "input",
+        devices,
+        preferred_host_api="mme" if driver == "mme" else "wasapi",
+        require_preferred_host=True,
     )
     return _matching_output_for_input(
         resolved_input, output_device_id, devices, preferred_name=device_name
@@ -608,6 +632,13 @@ def _normalized_settings_patch(
     )
     if driver not in {"auto", "asio", "mme"}:
         raise RuntimeError("Unsupported audio driver")
+    # ASIO is an explicit mode, not an automatic preference.  Remove its
+    # persisted name as soon as another mode is selected so a stale driver
+    # cannot leak into device resolution, diagnostics, or a later restart.
+    if driver != "asio" and asio_name:
+        updates["asio_driver_name"] = None
+        changed_fields.add("asio_driver_name")
+        asio_name = None
     if driver == "asio" and {"audio_driver", "asio_driver_name"} & changed_fields:
         if not resolve_devices:
             # A named ASIO selection is validated by the unchanged native start

@@ -130,6 +130,17 @@ def test_normalized_settings_patch_handles_defaults_devices_and_asio(monkeypatch
     assert (updates['asio_driver_name'] == 'Studio ASIO') and ('asio_driver_name' in changed)
 
 
+def test_selecting_windows_driver_clears_a_stale_asio_driver_name():
+    current = settings(audio_driver="asio", asio_driver_name="Realtek ASIO")
+
+    updates, changed = audio_service._normalized_settings_patch(
+        current, {"audio_driver": "auto"}, resolve_devices=False
+    )
+
+    assert updates == {"audio_driver": "auto", "asio_driver_name": None}
+    assert changed == {"audio_driver", "asio_driver_name"}
+
+
 def test_update_settings_reconfigures_monitor_and_rolls_back(monkeypatch):
     current, database = settings(monitoring_enabled=True), Mock()
     monkeypatch.setattr(audio_service, "_get_or_create_settings", Mock(return_value=current))

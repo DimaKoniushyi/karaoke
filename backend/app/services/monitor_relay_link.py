@@ -44,6 +44,16 @@ class RelayLink:
         self._sample_rate = sample_rate
         self._chunk_samples = max(1, round(sample_rate * _CHUNK_SECONDS))
         self._accumulators: dict[int, _StreamAccumulator] = {}
+        # push() runs on the realtime audio callback thread for every engine
+        # except the native WASAPI one (whose callback runs synchronously on
+        # this same thread inside stream.pump()); close() can run
+        # concurrently with it on a still-live stream (see main()'s finally,
+        # which closes the relay before the stream). Without this lock,
+        # close()'s flush loop below could iterate _accumulators while push()
+        # concurrently inserts a new stream id into it (RuntimeError:
+        # dictionary changed size during iteration) or mutates a buffer
+        # close() is mid-read of, corrupting the flushed frame.
+        self._accumulators_lock = threading.Lock()
         self._closed = False
         self._socket: socket.socket | None = None
         self._connect_timeout = connect_timeout
@@ -66,24 +76,25 @@ class RelayLink:
     def push(self, stream_id: int, sample_rate: float, samples: np.ndarray) -> None:
         if self._socket is None or self._closed:
             return
-        accumulator = self._accumulators.get(stream_id)
-        if accumulator is None:
-            accumulator = _StreamAccumulator(self._chunk_samples)
-            self._accumulators[stream_id] = accumulator
-        source = np.asarray(samples, dtype=np.float32)
-        offset, remaining = 0, len(source)
-        while remaining:
-            space = len(accumulator.buffer) - accumulator.position
-            take = min(space, remaining)
-            accumulator.buffer[accumulator.position : accumulator.position + take] = source[
-                offset : offset + take
-            ]
-            accumulator.position += take
-            offset += take
-            remaining -= take
-            if accumulator.position >= len(accumulator.buffer):
-                self._enqueue(encode_frame(stream_id, sample_rate, accumulator.buffer))
-                accumulator.position = 0
+        with self._accumulators_lock:
+            accumulator = self._accumulators.get(stream_id)
+            if accumulator is None:
+                accumulator = _StreamAccumulator(self._chunk_samples)
+                self._accumulators[stream_id] = accumulator
+            source = np.asarray(samples, dtype=np.float32)
+            offset, remaining = 0, len(source)
+            while remaining:
+                space = len(accumulator.buffer) - accumulator.position
+                take = min(space, remaining)
+                accumulator.buffer[accumulator.position : accumulator.position + take] = source[
+                    offset : offset + take
+                ]
+                accumulator.position += take
+                offset += take
+                remaining -= take
+                if accumulator.position >= len(accumulator.buffer):
+                    self._enqueue(encode_frame(stream_id, sample_rate, accumulator.buffer))
+                    accumulator.position = 0
 
     def _enqueue(self, payload: bytes) -> None:
         try:
@@ -134,12 +145,13 @@ class RelayLink:
         # _CHUNK_SECONDS worth) never reaches a full chunk otherwise -- push()
         # only ever enqueues once the buffer fills -- and was silently lost
         # on every stop/restart instead of being sent as one final short frame.
-        for stream_id, accumulator in self._accumulators.items():
-            if accumulator.position:
-                self._enqueue(
-                    encode_frame(stream_id, self._sample_rate, accumulator.buffer[: accumulator.position])
-                )
-                accumulator.position = 0
+        with self._accumulators_lock:
+            for stream_id, accumulator in self._accumulators.items():
+                if accumulator.position:
+                    self._enqueue(
+                        encode_frame(stream_id, self._sample_rate, accumulator.buffer[: accumulator.position])
+                    )
+                    accumulator.position = 0
         with contextlib.suppress(queue.Full):
             self._queue.put_nowait(None)
         if sock is None:

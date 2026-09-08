@@ -192,6 +192,25 @@ def test_mme_driver_stays_on_mme_instead_of_upgrading_to_wasapi(monkeypatch):
     assert audio_service.preferred_output_device(0, "mme", None) == 2
 
 
+def test_windows_driver_never_falls_back_to_a_stale_asio_device(monkeypatch):
+    """A discovered ASIO driver must not influence the explicit Windows mode.
+
+    PortAudio indices are persisted, so switching from an ASIO endpoint whose
+    name does not resemble its Windows endpoint used to leave the ASIO index
+    selected.  The settings UI still said ``Windows Driver`` while the native
+    WASAPI worker was consequently bypassed.
+    """
+    devices = [
+        device("Realtek ASIO", 0, inputs=2),
+        device("Microphone Array", 1, inputs=2, input_latency=0.012),
+        device("Speakers", 1, outputs=2, output_latency=0.014),
+    ]
+    install_devices(monkeypatch, devices, {0: "ASIO", 1: "Windows WASAPI"})
+
+    assert audio_service.preferred_input_device(0, "auto", "Realtek ASIO") == 1
+
+
+
 def test_auto_output_keeps_exact_interface_port_name(monkeypatch):
     devices = [
         device("Analogue 1/2 (6- Audient iD14)", 0, inputs=2),
