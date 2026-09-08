@@ -29,7 +29,7 @@ vi.mock("../src/theme/ui", async (importOriginal) => ({
   Stack: passthrough("div"),
   Typography: passthrough("p")
 }));
-import SongSettings from "../src/pages/Library/song-settings.jsx";
+import SongSettings from "../src/pages/Library/modals/song-settings/index.jsx";
 const song = {
   id: "song",
   title: "Title",

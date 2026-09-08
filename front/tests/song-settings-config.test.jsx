@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 import { fireEvent, render, waitFor } from "@testing-library/react";
 import { expect, test } from "vitest";
-import { createSongFields } from "../src/pages/Library/song-settings.jsx";
+import createSongFields from "../src/pages/Library/modals/song-settings/rows.jsx";
 import { RenderFormikFields, useGetForm } from "../src/theme/ui";
 
 test("song fields use the common Formik contract and responsive cell sizes", () => {

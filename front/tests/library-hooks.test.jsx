@@ -3,9 +3,9 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { translateSaved } from "../src/i18n/runtime.js";
-import useLibraryFileImport from "../src/pages/Library/hooks/useFileImport.js";
-import useLibraryRoomSync, { capParticipantSongs } from "../src/pages/Library/hooks/useRoomSync.js";
-import useLibrarySongActions, { releaseSongMedia } from "../src/pages/Library/hooks/useSongActions.js";
+import useLibraryFileImport from "../src/pages/Library/hooks/use-fileImport.js";
+import useLibraryRoomSync, { capParticipantSongs } from "../src/pages/Library/hooks/use-room-sync.js";
+import useLibrarySongActions, { releaseSongMedia } from "../src/pages/Library/hooks/use-song-actions.js";
 import { resolveVisibleSongs } from "../src/pages/Library/utils.js";
 
 const api = vi.hoisted(() => ({

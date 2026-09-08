@@ -1,7 +1,8 @@
 /* @vitest-environment jsdom */
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { AddSongsModal, SelectedFilePreview } from "../src/pages/Library/modals.jsx";
+import AddSongsModal from "../src/pages/Library/modals/add-song/index.jsx";
+import SelectedFilePreview from "../src/pages/Library/modals/add-song/select-file-preview.jsx";
 
 beforeEach(() => {
   URL.createObjectURL = vi.fn((file) => `blob:${file.name}`);

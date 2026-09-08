@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 import { fireEvent, render } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
-import LibrarySongCard from "../src/pages/Library/songs-grid/song-card.jsx";
+import LibrarySongCard from "../src/pages/Library/songs-grid/card/index.jsx";
 import { verify } from "./helpers/assertions.mjs";
 import { mockUseI18nWithFallback } from "./helpers/mocks.mjs";
 

@@ -52,18 +52,16 @@ vi.mock("../src/theme/ui", () => ({
     <button aria-label={label} {...props}>
       {Icon ? <Icon /> : null}
     </button>
-  )
-}));
-vi.mock("../src/pages/Karaoke/components/waveform-timeline", () => ({
-  default: ({ onChange }) => <button data-testid="timeline" onClick={() => onChange(3)} />
+  ),
+  Waveform: ({ onChange }) => <button data-testid="timeline" onClick={() => onChange(3)} />
 }));
 import RotaryKnob from "../src/theme/ui/RotaryKnob/index.jsx";
 import { getRotaryDragValue, getRotaryPointerValue, getRotaryWheelValue } from "../src/theme/ui/RotaryKnob/utils.js";
-import ConsoleCenter, { noteRangeLabel } from "../src/pages/Karaoke/components/console/center.jsx";
-import MixerPanel from "../src/pages/Karaoke/components/console/mixer.jsx";
-import SongStrip from "../src/pages/Karaoke/components/console/song-strip.jsx";
-import ToolsPanel from "../src/pages/Karaoke/components/console/tools.jsx";
-import KaraokeStageActions from "../src/pages/Karaoke/components/karaoke-stage-actions.jsx";
+import ConsoleCenter, { noteRangeLabel } from "../src/pages/Karaoke/console/center/index.jsx";
+import MixerPanel from "../src/pages/Karaoke/console/mixer.jsx";
+import SongStrip from "../src/pages/Karaoke/console/song-strip.jsx";
+import ToolsPanel from "../src/pages/Karaoke/console/tools.jsx";
+import KaraokeStageActions from "../src/pages/Karaoke/actions.jsx";
 test("rotary calculations preserve VST sensitivity, direction and limits", () => {
   expect(getRotaryDragValue({ value: 0.5, lastY: 100, clientY: 10, min: 0, max: 1 })).toBe(1);
   expect(getRotaryDragValue({ value: 0.5, lastY: 100, clientY: 10, min: 0, max: 1, fine: true })).toBe(0.6);

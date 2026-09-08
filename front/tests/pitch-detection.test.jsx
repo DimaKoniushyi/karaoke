@@ -34,7 +34,7 @@ let usePitchDetection;
 let frames;
 beforeEach(async () => {
   vi.resetModules();
-  ({ default: usePitchDetection } = await import("../src/pages/Karaoke/hooks/usePitchDetection"));
+  ({ default: usePitchDetection } = await import("../src/pages/Karaoke/performance-stage/usePitchDetection"));
   frames = [];
   mocks.detectMidiFromAnalyser.mockReset();
   vi.stubGlobal(

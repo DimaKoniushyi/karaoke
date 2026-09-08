@@ -2,15 +2,10 @@
 import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { verify } from "./helpers/assertions.mjs";
-const mocks = vi.hoisted(() => ({ panoramaRef: { current: null }, theme: { image: "scene.jpg" } }));
-vi.mock("../src/pages/Karaoke/hooks/useKaraokePanorama", () => ({
-  default: () => ({ activeTheme: mocks.theme, panoramaRef: mocks.panoramaRef })
-}));
-import KaraokePerformanceStage from "../src/pages/Karaoke/components/karaoke-performance-stage/index.jsx";
-import KaraokeLyrics from "../src/pages/Karaoke/components/karaoke-performance-stage/karaoke-lyrics.jsx";
-import MelodyRoll from "../src/pages/Karaoke/components/karaoke-performance-stage/melody-roll.jsx";
-import AuroraWorld from "../src/pages/Karaoke/components/karaoke-performance-stage/aurora-world.jsx";
-import { normalizePianoNotes, pianoPitchRange, pianoRollFrame } from "../src/theme/features/PianoRoll/geometry.js";
+import KaraokePerformanceStage from "../src/pages/Karaoke/performance-stage/index.jsx";
+import KaraokeLyrics from "../src/pages/Karaoke/performance-stage/karaoke-lyrics/index.jsx";
+import MelodyRoll from "../src/pages/Karaoke/performance-stage/piano-roll/index.jsx";
+import { normalizePianoNotes, pianoPitchRange, pianoRollFrame } from "../src/pages/Karaoke/performance-stage/piano-roll/geometry.js";
 beforeEach(() => {
   delete globalThis.electronAPI;
   vi.spyOn(Math, "random").mockReturnValue(0.5);
@@ -122,10 +117,6 @@ test("renders exact KAR hold events without rewriting their timing", () => {
   expect(rendered[1].dataset.start).toBe("10.5");
   expect(rendered[1].dataset.end).toBe("11.25");
 });
-test("aurora world produces deterministic decoration, stars and particles", () => {
-  const { container } = render(<AuroraWorld seed={12} />);
-  expect(container.querySelector('[data-role="aurora-world"]')).not.toBeNull();
-});
 test("stage displays panorama, intro, lyrics and melody", () => {
   const { container, rerender } = render(
     <KaraokePerformanceStage
@@ -158,7 +149,7 @@ test("stage displays panorama, intro, lyrics and melody", () => {
     />
   );
   verify(
-    [container.querySelector('[data-role="panorama"]'), "not.toBeNull"],
+    [container.querySelector('[data-role="performance-stage"]'), "not.toBeNull"],
     [container.querySelector('[data-role="melody-roll"]'), "not.toBeNull"],
     [container.textContent, "toContain", "LineNext"],
     [container.textContent, "toContain", "Artist"]

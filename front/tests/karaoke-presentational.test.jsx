@@ -11,9 +11,9 @@ vi.mock("../src/api/client", () => ({
     getSongVideoUrl: (id) => `/songs/${id}/video`
   }
 }));
-import KaraokeMedia from "../src/pages/Karaoke/components/karaoke-media.jsx";
-import WaveformTimeline from "../src/pages/Karaoke/components/waveform-timeline.jsx";
-import KaraokeLyrics from "../src/pages/Karaoke/components/karaoke-performance-stage/karaoke-lyrics.jsx";
+import KaraokeMedia from "../src/pages/Karaoke/media.jsx";
+import SongStrip from "../src/pages/Karaoke/console/song-strip.jsx";
+import KaraokeLyrics from "../src/pages/Karaoke/performance-stage/karaoke-lyrics/index.jsx";
 const KaraokeLyricLine = ({ line, currentTime }) => (
   <KaraokeLyrics lyricsSync={{ text: line.text, words: line.words }} currentTime={currentTime} />
 );
@@ -194,7 +194,11 @@ test("karaoke media ignores legacy YouTube URLs and keeps the default video fall
 });
 test("waveform supports click, drag and range seeking", () => {
   const change = vi.fn();
-  const { container, rerender } = render(<WaveformTimeline value={2} duration={10} onChange={change} />);
+  const song = { id: "song", title: "Track" };
+  const renderStrip = (currentTime, duration) => (
+    <SongStrip song={song} currentTime={currentTime} duration={duration} onSeek={change} disablelabel />
+  );
+  const { container, rerender } = render(renderStrip(2, 10));
   const timeline = container.querySelector('[data-role="waveform"]');
   timeline.getBoundingClientRect = () => ({ left: 10, width: 100 });
   fireEvent.pointerDown(timeline, { clientX: 60 });
@@ -202,10 +206,10 @@ test("waveform supports click, drag and range seeking", () => {
   fireEvent.pointerMove(timeline, { clientX: 90, buttons: 0 });
   fireEvent.change(container.querySelector("input"), { target: { value: "7" } });
   expect(change).toHaveBeenCalledTimes(3);
-  rerender(<WaveformTimeline value={0} duration={0} onChange={change} />);
+  rerender(renderStrip(0, 0));
   fireEvent.pointerDown(container.querySelector('[data-role="waveform"]'), { clientX: 10 });
   expect(change).toHaveBeenCalledTimes(3);
-  rerender(<WaveformTimeline value={0} duration={10} onChange={change} />);
+  rerender(renderStrip(0, 10));
   const zeroWidth = container.querySelector('[data-role="waveform"]');
   zeroWidth.getBoundingClientRect = () => ({ left: 0, width: 0 });
   fireEvent.pointerDown(zeroWidth, { clientX: 0 });

@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import { act, render } from "@testing-library/react";
 import { expect, test, vi } from "vitest";
-import { QuantumFieldBackdrop as LibraryBackdrop } from "../src/pages/Library/animated-backdrop/index.js";
+import LibraryBackdrop from "../src/pages/Library/backdrop/index.jsx";
 
 test("library backdrop is decorative and cannot intercept controls", () => {
   const { container } = render(<LibraryBackdrop />);
@@ -45,8 +45,8 @@ test("library backdrop keeps its packaged runtime URL stable and query-free", ()
 });
 
 test("library backdrop keeps black WebGL pixels transparent over the theme artwork", () => {
-  const runtime = fs.readFileSync("src/pages/Library/animated-backdrop/qftRuntime.js", "utf8");
-  const component = fs.readFileSync("src/pages/Library/animated-backdrop/QuantumFieldBackdrop.jsx", "utf8");
+  const runtime = fs.readFileSync("src/pages/Library/backdrop/qftRuntime.js", "utf8");
+  const component = fs.readFileSync("src/pages/Library/backdrop/index.jsx", "utf8");
   expect(runtime).toContain("float overlayAlpha = clamp(visibleLight * 1.35, 0.0, 1.0);");
   expect(runtime).not.toContain("gl_FragColor = vec4(detailLift, 1.0);");
   expect(runtime).toContain("themeBackdrop.style.backgroundImage = backgroundImage;");
@@ -138,7 +138,7 @@ test("library backdrop cleans up its window message listener on unmount", () => 
 });
 
 test("library backdrop explicitly disposes iframe audio, RAF and WebGL resources", () => {
-  const runtime = fs.readFileSync("src/pages/Library/animated-backdrop/qftRuntime.js", "utf8");
+  const runtime = fs.readFileSync("src/pages/Library/backdrop/qftRuntime.js", "utf8");
   const { container, unmount } = render(<LibraryBackdrop />);
   const frame = container.querySelector("iframe");
   const postMessage = vi.spyOn(frame.contentWindow, "postMessage");

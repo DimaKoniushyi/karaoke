@@ -5,7 +5,7 @@ import { test } from "vitest";
 
 test("reachability audit follows Vite worker queries without allowlisting live code", () => {
   assert.equal(
-    fs.existsSync("src/pages/Library/animated-backdrop/qftRuntime.js"),
+    fs.existsSync("src/pages/Library/backdrop/qftRuntime.js"),
     true,
     "the visualizer worker is production code, not an audit suppression",
   );

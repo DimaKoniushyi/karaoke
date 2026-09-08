@@ -30,7 +30,7 @@ describe("production complexity budgets", () => {
   });
 
   test("hotspot allowances are named and cannot silently become a global exception", () => {
-    expect(Object.keys(FILE_COMPLEXITY_BUDGETS)).toContain("src/pages/Library/animated-backdrop/qftRuntime.js");
+    expect(Object.keys(FILE_COMPLEXITY_BUDGETS)).toContain("src/pages/Library/backdrop/qftRuntime.js");
     expect(violationsFor("src/copied-qft-runtime.js", { lines: 501, branches: 0, state: 0, effects: 0 })).toEqual([
       "src/copied-qft-runtime.js: lines=501 exceeds budget 500"
     ]);

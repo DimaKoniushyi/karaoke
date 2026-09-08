@@ -22,20 +22,20 @@ vi.mock("../src/contexts/app-settings", () => ({
 vi.mock("../src/contexts/radio", () => ({
   RadioProvider: ({ children }) => <div data-provider="radio">{children}</div>
 }));
-vi.mock("../src/pages/Karaoke/components/console/center", () => ({
+vi.mock("../src/pages/Karaoke/console/center", () => ({
   default: ({ marker }) => <span data-testid="center">{marker}</span>
 }));
-vi.mock("../src/pages/Karaoke/components/console/mixer", () => ({
+vi.mock("../src/pages/Karaoke/console/mixer", () => ({
   default: ({ marker }) => <span data-testid="mixer">{marker}</span>
 }));
-vi.mock("../src/pages/Karaoke/components/console/song-strip", () => ({
+vi.mock("../src/pages/Karaoke/console/song-strip", () => ({
   default: ({ marker }) => <span data-testid="strip">{marker}</span>
 }));
-vi.mock("../src/pages/Karaoke/components/console/tools", () => ({
+vi.mock("../src/pages/Karaoke/console/tools", () => ({
   default: ({ marker }) => <span data-testid="tools">{marker}</span>
 }));
 import ContextProviders from "../src/contexts/index.jsx";
-import KaraokeConsole from "../src/pages/Karaoke/components/console/index.jsx";
+import KaraokeConsole from "../src/pages/Karaoke/console/index.jsx";
 test("context composition preserves provider ownership order", () => {
   const result = render(
     <ContextProviders>

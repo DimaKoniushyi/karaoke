@@ -19,7 +19,7 @@ export const DEFAULT_COMPLEXITY_BUDGET = Object.freeze({
 export const FILE_COMPLEXITY_BUDGETS = Object.freeze({
   // Imported visualizer runtime is intentionally kept intact; ratchet its
   // current reviewed size without weakening the default budget for new code.
-  "src/pages/Library/animated-backdrop/qftRuntime.js": { lines: 3031, branches: 145 },
+  "src/pages/Library/backdrop/qftRuntime.js": { lines: 1286, branches: 145 },
   "src/services/onlineVoiceTransfers.js": { lines: 860, branches: 110 },
   "src/i18n/messages-ru.js": { lines: 832, branches: 0 },
   "src/i18n/messages-uk.js": { lines: 830, branches: 0 },

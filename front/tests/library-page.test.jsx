@@ -67,7 +67,7 @@ vi.mock("../src/api/client", () => ({
     cancelProcessing: mocks.cancelProcessing
   }
 }));
-vi.mock("../src/pages/Library/hooks/useFileImport", () => ({
+vi.mock("../src/pages/Library/hooks/use-fileImport", () => ({
   default: (options) => {
     mocks.importOptions = options;
     return {
@@ -78,7 +78,7 @@ vi.mock("../src/pages/Library/hooks/useFileImport", () => ({
     };
   }
 }));
-vi.mock("../src/pages/Library/hooks/useSongActions", () => ({
+vi.mock("../src/pages/Library/hooks/use-song-actions", () => ({
   default: (options) => {
     mocks.actionOptions = options;
     return {
@@ -89,7 +89,7 @@ vi.mock("../src/pages/Library/hooks/useSongActions", () => ({
     };
   }
 }));
-vi.mock("../src/pages/Library/hooks/useRoomSync", () => ({
+vi.mock("../src/pages/Library/hooks/use-room-sync", () => ({
   default: (options) => {
     mocks.roomOptions = options;
   }
@@ -99,7 +99,7 @@ vi.mock("../src/theme/ui", () => ({
   Stack: passthrough("div"),
   Grid: passthrough("div")
 }));
-vi.mock("../src/pages/Library/animated-backdrop", () => ({
+vi.mock("../src/pages/Library/backdrop", () => ({
   QuantumFieldBackdrop: () => <div data-testid="backdrop" />
 }));
 vi.mock("../src/pages/Library/hero", () => ({
@@ -149,14 +149,14 @@ vi.mock("../src/pages/Library/modals", () => ({
       </div>
     ) : null
 }));
-vi.mock("../src/pages/Library/song-settings", () => ({
+vi.mock("../src/pages/Library/modals/song-settings", () => ({
   default: ({ songId, onClose }) => (
     <button data-testid="song-settings-modal" onClick={onClose}>
       {songId}
     </button>
   )
 }));
-vi.mock("../src/pages/Karaoke/performance-analysis-modal", () => ({
+vi.mock("../src/pages/Karaoke/analysis-modal", () => ({
   default: ({ onClose, onDone, onDeleted }) => (
     <div data-testid="analysis">
       <button data-testid="analysis-close" onClick={onClose} />

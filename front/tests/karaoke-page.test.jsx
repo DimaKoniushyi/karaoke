@@ -60,7 +60,7 @@ vi.mock("../src/api/client", () => ({
     stopDirectMonitoring: mocks.stopMonitoring
   }
 }));
-vi.mock("../src/pages/Karaoke/components/karaoke-media", () => ({
+vi.mock("../src/pages/Karaoke/media", () => ({
   default: (props) => {
     mocks.mediaProps = props;
     if (!mocks.renderMedia) return <div data-testid="media" />;
@@ -72,13 +72,13 @@ vi.mock("../src/pages/Karaoke/components/karaoke-media", () => ({
     );
   }
 }));
-vi.mock("../src/pages/Karaoke/components/karaoke-performance-stage", () => ({
+vi.mock("../src/pages/Karaoke/performance-stage", () => ({
   default: (props) => {
     mocks.stageProps = props;
     return <div data-testid="stage" />;
   }
 }));
-vi.mock("../src/pages/Karaoke/components/console", () => ({
+vi.mock("../src/pages/Karaoke/console", () => ({
   default: (props) => {
     mocks.consoleProps = props;
     return (
@@ -102,7 +102,7 @@ vi.mock("../src/pages/Karaoke/components/console", () => ({
     );
   }
 }));
-vi.mock("../src/pages/Karaoke/performance-analysis-modal", () => ({
+vi.mock("../src/pages/Karaoke/analysis-modal", () => ({
   default: (props) => (
     <div data-testid="analysis-modal">
       <button data-testid="analysis-close" onClick={props.onClose} />
@@ -126,7 +126,7 @@ vi.mock("../src/pages/Karaoke/hooks/useKaraokeMediaSync", () => ({
     return { sendYouTubeCommand: vi.fn(), syncSecondaryMedia: vi.fn() };
   }
 }));
-vi.mock("../src/pages/Karaoke/hooks/usePitchDetection", () => ({
+vi.mock("../src/pages/Karaoke/performance-stage/usePitchDetection", () => ({
   default: () => ({
     sungMidi: 60,
     isPitchDetected: true,
