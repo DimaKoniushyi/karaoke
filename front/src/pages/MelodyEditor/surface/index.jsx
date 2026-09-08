@@ -1,7 +1,12 @@
 import { memo, useLayoutEffect } from "react";
 import { translateSaved as t } from "../../../i18n/runtime";
 import { Box, PianoKeyboard, StudioScrollbars } from "../../../theme/ui";
-import { filterByTimeRange, notesOverlappingWords, visibleTimeRange } from "../model";
+import {
+  filterByTimeRange,
+  notesOverlappingWords,
+  setPlayheadPosition,
+  visibleTimeRange
+} from "../model";
 import Note from "./note";
 import useScroll from "./useScroll";
 import Word from "./word";
@@ -27,9 +32,7 @@ function EditorSurface({ controller: c, transport }) {
     transport.seek((e.clientX - left - c.keyboardWidth) / c.zoom);
   };
   useLayoutEffect(() => {
-    if (c.playheadRef.current) {
-      c.playheadRef.current.style.transform = `translate3d(${transport.timeRef.current * c.zoom}px,0,0) translateX(-50%)`;
-    }
+    setPlayheadPosition(c.playheadRef, transport.timeRef.current, c.zoom, { announce: false });
   }, [c.zoom, c.playheadRef, transport.timeRef]);
   return (
     <Box sx={{ position: "relative", flex: 1, minBlockSize: 0, overflow: "hidden" }}>

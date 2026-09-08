@@ -1,11 +1,33 @@
 import { Lock, LogOut, Mic, MicOff, Sparkles, Unlock, Volume2, VolumeX } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import useHoverPopover from "../hooks/useHoverPopover";
 import { useI18n } from "../i18n";
 import { Box, IconButton, Popover, RotaryKnob, Slider, Stack, Typography } from "../theme/ui";
 import { formatPercent } from "../utils/math";
 import LiveSignalWaveform from "./LiveSignalWaveform";
 
 const key = (enabled, on, off) => `room.person.${enabled ? on : off}`;
+
+// Single source of truth for the six per-participant effect knobs: both the
+// default draft values and the rendered RotaryKnob rows are derived from
+// this list instead of hand-duplicating the same names/defaults twice.
+const EFFECT_FIELD_DEFS = [
+  { name: "volume", labelKey: "settings.appearance.volume.label", max: 2, defaultValue: 1, accent: "primary" },
+  { name: "reverb", labelKey: "karaoke.reverb", max: 1, defaultValue: 0, accent: "secondary" },
+  { name: "echo", labelKey: "karaoke.echo", max: 1, defaultValue: 0, accent: "primary" },
+  { name: "delay", labelKey: "karaoke.delay", max: 1, defaultValue: 0, accent: "secondary" },
+  {
+    name: "noise_suppression",
+    labelKey: "room.effects.noise_suppression.label",
+    max: 1,
+    defaultValue: 0.35,
+    accent: "primary"
+  },
+  { name: "octave", labelKey: "karaoke.voiceOctave", max: 1, defaultValue: 0, accent: "secondary", min: -1, step: 0.1 }
+];
+const DEFAULT_EFFECT_DRAFT = Object.fromEntries(
+  EFFECT_FIELD_DEFS.map(({ name, defaultValue }) => [name, defaultValue])
+);
 
 export default function OnlineRoomParticipant({
   person,
@@ -30,45 +52,29 @@ export default function OnlineRoomParticipant({
   onTogglePersonEffects
 }) {
   const { t } = useI18n();
-  const [volumeOpen, setVolumeOpen] = useState(false);
-  const volumeAnchorRef = useRef(null);
-  const effectsAnchorRef = useRef(null);
-  const closeTimerRef = useRef(null);
-  const effectsCloseTimerRef = useRef(null);
-  const [effectsOpen, setEffectsOpen] = useState(false);
-  const [effectDraft, setEffectDraft] = useState({
-    volume: 1,
-    reverb: 0,
-    echo: 0,
-    delay: 0,
-    noise_suppression: 0.35,
-    octave: 0
-  });
+  const {
+    open: volumeOpen,
+    setOpen: setVolumeOpen,
+    anchorRef: volumeAnchorRef,
+    show: showVolume,
+    hideSoon: closeVolumeSoon
+  } = useHoverPopover();
+  const {
+    open: effectsOpen,
+    setOpen: setEffectsOpen,
+    anchorRef: effectsAnchorRef,
+    show: showEffects,
+    hideSoon: closeEffectsSoon
+  } = useHoverPopover();
+  const [effectDraft, setEffectDraft] = useState(DEFAULT_EFFECT_DRAFT);
   const openVolume = () => {
-    clearTimeout(closeTimerRef.current);
     setEffectsOpen(false);
-    setVolumeOpen(true);
-  };
-  const closeVolumeSoon = () => {
-    clearTimeout(closeTimerRef.current);
-    closeTimerRef.current = setTimeout(() => setVolumeOpen(false), 120);
+    showVolume();
   };
   const openEffects = () => {
-    clearTimeout(effectsCloseTimerRef.current);
     setVolumeOpen(false);
-    setEffectsOpen(true);
+    showEffects();
   };
-  const closeEffectsSoon = () => {
-    clearTimeout(effectsCloseTimerRef.current);
-    effectsCloseTimerRef.current = setTimeout(() => setEffectsOpen(false), 120);
-  };
-  useEffect(
-    () => () => {
-      clearTimeout(closeTimerRef.current);
-      clearTimeout(effectsCloseTimerRef.current);
-    },
-    []
-  );
   useEffect(() => {
     if (!effectSettings) return;
     setEffectDraft((current) => ({ ...current, ...effectSettings }));
@@ -102,14 +108,17 @@ export default function OnlineRoomParticipant({
     [LogOut, t("room.leave"), onLeave]
   ];
 
-  const effectFields = [
-    ["volume", t("settings.appearance.volume.label"), 2, 1, "primary"],
-    ["reverb", t("karaoke.reverb"), 1, 0, "secondary"],
-    ["echo", t("karaoke.echo"), 1, 0, "primary"],
-    ["delay", t("karaoke.delay"), 1, 0, "secondary"],
-    ["noise_suppression", t("room.effects.noise_suppression.label"), 1, 0.35, "primary"],
-    ["octave", t("karaoke.voiceOctave"), 1, 0, "secondary", -1, 0.1]
-  ];
+  const effectFields = EFFECT_FIELD_DEFS.map(
+    ({ name, labelKey, max, defaultValue, accent, min = 0, step = 0.05 }) => [
+      name,
+      t(labelKey),
+      max,
+      defaultValue,
+      accent,
+      min,
+      step
+    ]
+  );
   const commitEffect = (name, value) => {
     const next = { ...effectDraft, [name]: value };
     setEffectDraft(next);

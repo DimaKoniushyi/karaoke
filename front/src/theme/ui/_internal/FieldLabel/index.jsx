@@ -1,8 +1,5 @@
-import { translateSaved as tr } from "../../../../i18n/runtime";
-import { Info } from "lucide-react";
-import IconButton from "../../IconButton";
-import Tooltip from "../../Tooltip";
 import cx from "../cx";
+import FieldTooltipButton from "../FieldTooltipButton";
 import "./field-label.css";
 
 export default function FieldLabel({ htmlFor, label, tooltip, required = false, className }) {
@@ -20,19 +17,7 @@ export default function FieldLabel({ htmlFor, label, tooltip, required = false, 
         )}
       </label>
 
-      {tooltip && (
-        <Tooltip title={tooltip} placement="top">
-          <IconButton
-            type="button"
-            variant="ghost"
-            size="sm"
-            aria-label={tr("common.field.more")}
-            onMouseDown={(event) => event.preventDefault()}
-          >
-            <Info size={14} />
-          </IconButton>
-        </Tooltip>
-      )}
+      <FieldTooltipButton tooltip={tooltip} />
     </div>
   );
 }

@@ -97,7 +97,7 @@ export default function RotaryKnob({
     <label
       ref={root}
       htmlFor={id}
-      className={`karaoke-effect-dial karaoke-effect-dial--${accent} ui-control`}
+      className={`ui-rotary-knob ui-rotary-knob--${accent} ui-control`}
       data-size={size}
       data-disabled={disabled || undefined}
       aria-disabled={disabled || undefined}
@@ -114,7 +114,7 @@ export default function RotaryKnob({
         if (
           disabled ||
           event.button !== 0 ||
-          event.target.closest("input, .karaoke-effect-dial__value")
+          event.target.closest("input, .ui-rotary-knob__value")
         ) {
           return;
         }
@@ -122,7 +122,7 @@ export default function RotaryKnob({
         event.preventDefault();
         event.currentTarget.setPointerCapture?.(event.pointerId);
 
-        const control = event.target.closest(".karaoke-effect-dial__control");
+        const control = event.target.closest(".ui-rotary-knob__control");
         const next = control
           ? change(
               getRotaryPointerValue({
@@ -160,10 +160,10 @@ export default function RotaryKnob({
       onPointerCancel={stopDrag}
       onLostPointerCapture={stopDrag}
     >
-      <span className="karaoke-effect-dial__label">{label}</span>
+      <span className="ui-rotary-knob__label">{label}</span>
 
       <span
-        className="karaoke-effect-dial__control"
+        className="ui-rotary-knob__control"
         aria-hidden
         onDoubleClick={(event) => {
           event.preventDefault();
@@ -172,10 +172,10 @@ export default function RotaryKnob({
           if (!disabled) commit(resetValue);
         }}
       >
-        <span className="karaoke-effect-dial__knob" />
+        <span className="ui-rotary-knob__knob" />
       </span>
 
-      <span className="karaoke-effect-dial__value">
+      <span className="ui-rotary-knob__value">
         {draft !== null ? (
           <input
             autoFocus

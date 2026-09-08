@@ -1,4 +1,6 @@
-const clamp = (value) => Math.max(0, Math.min(1, Number(value) || 0));
+import { clampWithFallback } from "../utils/math";
+
+const clamp = (value) => clampWithFallback(value, 0, 1, 0);
 
 // connectVoiceEffects is rebuilt on every settings change synced into this
 // graph (see microphoneStudioQuality.js's sync()) -- even a plain volume

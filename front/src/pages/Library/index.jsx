@@ -1,8 +1,8 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
+import PerformanceAnalysisModal from "../../components/PerformanceAnalysisModal/index.jsx";
 import { useAppDialog } from "../../contexts/AppDialog";
 import { Box, Stack } from "../../theme/ui";
-import PerformanceAnalysisModal from "../Karaoke/analysis-modal/index.jsx";
 import QuantumFieldBackdrop from "./backdrop/index.jsx";
 import LibraryHero from "./hero";
 import useLibraryRecordings from "./hooks/use-recordings";

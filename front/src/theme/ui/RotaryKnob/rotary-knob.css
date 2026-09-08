@@ -1,5 +1,5 @@
 @layer ui.components {
-  .karaoke-effect-dial {
+  .ui-rotary-knob {
     position: relative;
     align-items: center;
     justify-content: end;
@@ -10,23 +10,23 @@
     --dial-color: var(--ui-primary);
   }
 
-  .karaoke-effect-dial--secondary {
+  .ui-rotary-knob--secondary {
     --dial-color: var(--ui-secondary);
   }
 
-  .karaoke-effect-dial[data-disabled] {
+  .ui-rotary-knob[data-disabled] {
     cursor: not-allowed;
     opacity: 0.55;
   }
 
-  .karaoke-effect-dial__label {
+  .ui-rotary-knob__label {
     color: var(--ui-text);
     font-size: var(--control-font, var(--control-font-md));
     font-weight: 800;
     line-height: 1;
   }
 
-  .karaoke-effect-dial__control {
+  .ui-rotary-knob__control {
     position: relative;
     display: block;
     inline-size: var(--control-size, var(--control-lg));
@@ -46,14 +46,14 @@
       0vw 0vw var(--space-3) color-mix(in srgb, var(--dial-color) 30%, transparent);
   }
 
-  .karaoke-effect-dial__control::before {
+  .ui-rotary-knob__control::before {
     content: "";
     position: absolute;
     inset: calc(var(--space-4) * -1);
     border-radius: inherit;
   }
 
-  .karaoke-effect-dial__control::after {
+  .ui-rotary-knob__control::after {
     content: "";
     position: absolute;
     inset: var(--space-2);
@@ -66,7 +66,7 @@
         transparent 36%);
   }
 
-  .karaoke-effect-dial__knob {
+  .ui-rotary-knob__knob {
     position: absolute;
     z-index: 1;
     inset: var(--space-2);
@@ -75,7 +75,7 @@
     transition: transform var(--motion-duration-fast) linear;
   }
 
-  .karaoke-effect-dial__knob::before {
+  .ui-rotary-knob__knob::before {
     content: "";
     position: absolute;
     inset-block-start: 0vw;
@@ -92,24 +92,24 @@
     transform: translateX(-50%);
   }
 
-  .karaoke-effect-dial:active .karaoke-effect-dial__knob {
+  .ui-rotary-knob:active .ui-rotary-knob__knob {
     transition: none;
   }
 
-  .karaoke-effect-dial strong,
-  .karaoke-effect-dial__value-editor {
+  .ui-rotary-knob strong,
+  .ui-rotary-knob__value-editor {
     color: var(--ui-text);
     font-size: var(--control-font, var(--control-font-md));
     font-weight: 800;
     line-height: 1;
   }
 
-  .karaoke-effect-dial__value-editor {
+  .ui-rotary-knob__value-editor {
     display: inline-flex;
     align-items: center;
   }
 
-  .karaoke-effect-dial__value-editor input {
+  .ui-rotary-knob__value-editor input {
     inline-size: var(--control-size, var(--control-xs));
     min-block-size: var(--control-size, var(--control-xs));
     padding-inline: var(--control-pad, var(--control-pad-xs));

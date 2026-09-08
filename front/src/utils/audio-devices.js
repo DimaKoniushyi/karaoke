@@ -1,4 +1,4 @@
-import { translateSaved as t } from "../../../i18n/runtime";
+import { translateSaved as t } from "../i18n/runtime";
 
 const INPUT_AUXILIARY =
   /sound mapper|primary sound capture|первичн(?:ый|ий).*драйвер.*запис|loop[ -]?back|stereo mix|what u hear|s\/?pdif|adat/i;

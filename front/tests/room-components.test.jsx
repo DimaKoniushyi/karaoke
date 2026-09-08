@@ -134,7 +134,7 @@ describe("online room participants", () => {
     );
     fireEvent.click(screen.getByLabelText(/room.person.effects.disable/));
     fireEvent.mouseEnter(screen.getByLabelText(/room.person.effects.disable/).parentElement);
-    expect(document.querySelectorAll(".karaoke-effect-dial")).toHaveLength(6);
+    expect(document.querySelectorAll(".ui-rotary-knob")).toHaveLength(6);
     const reverb = screen.getByRole("slider", { name: "karaoke.reverb" });
     fireEvent.change(reverb, { target: { value: "0.7" } });
     fireEvent.pointerUp(reverb);

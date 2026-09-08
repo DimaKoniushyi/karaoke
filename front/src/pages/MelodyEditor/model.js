@@ -5,6 +5,16 @@ const sort = (a, b) => a.start - b.start || a.note - b.note;
 export const roundTime = (n) => Math.round(n * 1000) / 1000;
 export const cloneNotes = (notes) => notes.map((n) => ({ ...n }));
 
+// Moves the playhead DOM node directly instead of through React state --
+// this runs every animation frame during playback, and re-rendering the
+// editor at 60fps would be far more work than a transform assignment.
+export function setPlayheadPosition(ref, time, zoom, { announce = true } = {}) {
+  const node = ref?.current;
+  if (!node) return;
+  node.style.transform = `translate3d(${time * zoom}px, 0, 0) translateX(-50%)`;
+  if (announce) node.setAttribute("aria-valuenow", String(time));
+}
+
 export function normalizeNotes(notes = []) {
   const ends = new Map();
 

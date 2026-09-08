@@ -140,7 +140,6 @@ def fit_notes_to_sung_words(
     notes: list[VocalNote],
     *,
     duration: float | None = None,
-    line_end_indices: set[int] | frozenset[int] | None = None,
     word_end_limits: dict[int, float] | None = None,
     contiguous_gap: float = 0.2,
     phrase_tail: float = 0.25,
@@ -210,10 +209,12 @@ def fit_notes_to_sung_words(
             float(next_voice) - last if next_voice is not None else float("inf")
         )
         if following_start is not None and following_start > word.start:
-            if (
-                line_end_indices is not None
-                and word.index not in line_end_indices
-            ) or acoustic_gap <= contiguous_gap:
+            # A lyric line can contain an intentional breath/rest between two
+            # words. Line membership alone is not acoustic evidence that the
+            # first vowel continues through that silence; stretching to the
+            # next token in that case manufactured long notes absent from the
+            # vocal stem. Bridge only a genuinely contiguous detected phrase.
+            if acoustic_gap <= contiguous_gap:
                 target_end = following_start
             else:
                 target_end = min(following_start, last + phrase_tail)

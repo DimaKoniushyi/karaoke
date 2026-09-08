@@ -74,6 +74,17 @@ def test_monitor_statistics_reset_on_restart(control):
     assert control.snapshot()["input_latency_ms"] == 5
 
 
+def test_native_engine_frame_counters_reach_the_snapshot(control):
+    # native_wasapi.py's pump() reports captured_frames/rendered_frames on
+    # every "level" event, but the allowlist copying per-block telemetry
+    # into status used to omit them -- the native engine's own frame counts
+    # could never reach the API/frontend even though they were computed and
+    # emitted every ~100ms.
+    control.event(None, {"event": "level", "captured_frames": 48_000, "rendered_frames": 47_999})
+    assert control.snapshot()["captured_frames"] == 48_000
+    assert control.snapshot()["rendered_frames"] == 47_999
+
+
 def test_legacy_http_auto_buffer_cannot_override_saved_buffer(monkeypatch):
     current = settings(monitoring_enabled=True, noise_suppression=0.35, octave=0)
     start = Mock(return_value=current)

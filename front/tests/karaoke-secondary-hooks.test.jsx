@@ -1,32 +1,18 @@
 /* @vitest-environment jsdom */
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { stubFrameQueue } from "./helpers/browser.mjs";
 import { same, called, calledWith, verify } from "./helpers/assertions.mjs";
 const mocks = vi.hoisted(() => ({
   updateUiPreferences: vi.fn(),
   loadKaraokePreferences: vi.fn(),
-  saveKaraokePreferences: vi.fn(),
-  shuffleThemes: vi.fn(),
-  createPanoramaPath: vi.fn(),
-  getPanoramaPosition: vi.fn()
+  saveKaraokePreferences: vi.fn()
 }));
 vi.mock("../src/api/client", () => ({ api: { updateUiPreferences: mocks.updateUiPreferences } }));
-vi.mock("../src/pages/Karaoke/utils/preferences", () => ({
+vi.mock("../src/pages/Karaoke/utils/preferences", async (importOriginal) => ({
+  ...(await importOriginal()),
   loadKaraokePreferences: mocks.loadKaraokePreferences,
   saveKaraokePreferences: mocks.saveKaraokePreferences
 }));
-vi.mock("../src/assets/karaoke/themes", () => ({
-  KARAOKE_THEMES: [{ id: "fallback" }],
-  shuffleThemes: mocks.shuffleThemes
-}));
-vi.mock("../src/pages/Karaoke/utils/data", () => ({
-  createPanoramaPath: mocks.createPanoramaPath
-}));
-vi.mock("../src/pages/Karaoke/utils/panorama", () => ({
-  getPanoramaPosition: mocks.getPanoramaPosition
-}));
-import useKaraokePanorama from "../src/pages/Karaoke/hooks/useKaraokePanorama.js";
 import useKaraokePreferences from "../src/pages/Karaoke/hooks/useKaraokePreferences.js";
 import useMelodyGuide from "../src/pages/Karaoke/hooks/useMelodyGuide.js";
 beforeEach(() => {
@@ -34,9 +20,6 @@ beforeEach(() => {
   mocks.loadKaraokePreferences.mockReturnValue({});
   mocks.saveKaraokePreferences.mockReturnValue(true);
   mocks.updateUiPreferences.mockResolvedValue({});
-  mocks.shuffleThemes.mockImplementation(() => [{ id: "two" }, { id: "one" }]);
-  mocks.createPanoramaPath.mockReturnValue([1, 2, 3]);
-  mocks.getPanoramaPosition.mockReturnValue({ x: 12.3456, y: 67.891 });
 });
 afterEach(() => {
   cleanup();
@@ -44,7 +27,6 @@ afterEach(() => {
   vi.unstubAllGlobals();
   delete globalThis.AudioContext;
   delete globalThis.webkitAudioContext;
-  delete document.documentElement.dataset.performance;
 });
 describe("karaoke preferences", () => {
   test("loads defaults and persists every preference change", async () => {
@@ -135,71 +117,6 @@ describe("karaoke preferences", () => {
     act(() => result.current.setSpeed(1.1));
     await act(async () => Promise.resolve());
     expect(mocks.updateUiPreferences).toHaveBeenCalled();
-  });
-});
-describe("karaoke panorama", () => {
-  test("cycles themes for songs and animates the panorama", () => {
-    const frames = stubFrameQueue();
-    vi.spyOn(performance, "now").mockReturnValue(100);
-    const hook = renderHook(({ songId, playing }) => useKaraokePanorama(songId, playing), {
-      initialProps: { songId: "one", playing: false }
-    });
-    expect(hook.result.current.activeTheme).toEqual({ id: "one" });
-    const panorama = document.createElement("div");
-    hook.result.current.panoramaRef.current = panorama;
-    hook.rerender({ songId: "two", playing: true });
-    verify([hook.result.current.activeTheme, "toEqual", { id: "two" }], [mocks.getPanoramaPosition, "not.toHaveBeenCalled"]);
-    act(() => frames.shift()(10));
-    verify([mocks.getPanoramaPosition, "toHaveBeenLastCalledWith", -90, 240_000, [1, 2, 3]]);
-    act(() => frames.shift()(200));
-    same([panorama.style.getPropertyValue("--panorama-x"), "-12.346cqh"], [panorama.style.getPropertyValue("--panorama-y"), "67.891%"]);
-    hook.rerender({ songId: "two", playing: false });
-    expect(cancelAnimationFrame).toHaveBeenCalled();
-  });
-  test("does not animate without a panorama element", () => {
-    vi.stubGlobal("requestAnimationFrame", vi.fn());
-    const hook = renderHook(({ playing }) => useKaraokePanorama("song", playing), {
-      initialProps: { playing: false }
-    });
-    hook.rerender({ playing: true });
-    expect(requestAnimationFrame).not.toHaveBeenCalled();
-  });
-  test("resumes panorama animation from the accumulated clock", () => {
-    const frames = stubFrameQueue();
-    const now = vi.spyOn(performance, "now");
-    now.mockReturnValue(100);
-    const hook = renderHook(({ playing }) => useKaraokePanorama("song", playing), {
-      initialProps: { playing: false }
-    });
-    const panorama = document.createElement("div");
-    hook.result.current.panoramaRef.current = panorama;
-    hook.rerender({ playing: true });
-    act(() => frames.shift()(200));
-    verify([mocks.getPanoramaPosition, "toHaveBeenLastCalledWith", 100, 240_000, [1, 2, 3]]);
-    hook.rerender({ playing: false });
-    now.mockReturnValue(300);
-    hook.rerender({ playing: true });
-    act(() => frames.at(-1)(350));
-    verify([mocks.getPanoramaPosition, "toHaveBeenLastCalledWith", 150, 240_000, [1, 2, 3]]);
-  });
-  test("throttles frames in reduced-performance mode and refills themes", () => {
-    const frames = stubFrameQueue();
-    document.documentElement.dataset.performance = "reduced";
-    mocks.shuffleThemes.mockReturnValueOnce([]).mockReturnValueOnce([{ id: "refilled" }]);
-    const hook = renderHook(({ songId, playing }) => useKaraokePanorama(songId, playing), {
-      initialProps: { songId: null, playing: false }
-    });
-    expect(hook.result.current.activeTheme).toEqual({ id: "fallback" });
-    const panorama = document.createElement("div");
-    hook.result.current.panoramaRef.current = panorama;
-    hook.rerender({ songId: "song", playing: true });
-    expect(hook.result.current.activeTheme).toEqual({ id: "refilled" });
-    act(() => frames.shift()(10));
-    expect(mocks.getPanoramaPosition).not.toHaveBeenCalled();
-    act(() => frames.shift()(1000 / 15));
-    expect(mocks.getPanoramaPosition).toHaveBeenCalledTimes(1);
-    act(() => frames.shift()(80));
-    expect(mocks.getPanoramaPosition).toHaveBeenCalledTimes(1);
   });
 });
 const guideProps = (overrides = {}) => ({

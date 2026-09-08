@@ -1,7 +1,7 @@
 import { ChevronLeft, ChevronRight, Minus, Pause, Play, Plus, SkipBack, SkipForward, Square } from "lucide-react";
-import { translateSaved as t } from "../../../../i18n/runtime";
-import { Card, Grid, IconButton, Stack, Typography } from "../../../../theme/ui";
-import { clamp } from "../../../../utils/math";
+import { translateSaved as t } from "../../../i18n/runtime";
+import { Card, Grid, IconButton, Stack, Typography } from "../../../theme/ui";
+import { clamp } from "../../../utils/math";
 
 const NOTES = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
 

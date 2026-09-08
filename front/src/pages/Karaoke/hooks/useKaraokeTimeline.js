@@ -1,15 +1,11 @@
 import { useMemo } from "react";
 import { flattenLyricsNotes, shiftLyricsSync } from "../../../utils/lyrics-sync";
 import { clamp } from "../../../utils/math";
+import { formatCompactKey } from "../../../utils/music";
 import { transposeKey } from "../utils/data";
 import useMelodyGuide from "./useMelodyGuide";
 
-const formatKey = (key) =>
-  String(key || "—")
-    .replace(/\s*(major|maj)\b/gi, "maj")
-    .replace(/\s*(minor|min)\b/gi, "m")
-    .replace(/\s/g, "")
-    .replace(/mmaj$/i, "maj");
+const formatKey = (key) => formatCompactKey(key, "—");
 
 export default function useKaraokeTimeline({
   song,

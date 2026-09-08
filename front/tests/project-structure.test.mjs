@@ -15,7 +15,7 @@ test("keeps generated coverage consolidated under one canonical directory", () =
 test("keeps required production entry files in their canonical locations", () => {
   same(
     [exists("src/runtime-config.js"), true],
-    [exists("src/pages/Karaoke/performance-analysis-modal.jsx"), true],
+    [exists("src/components/PerformanceAnalysisModal/index.jsx"), true],
     [exists("src/pages/MelodyEditor/index.jsx"), true]
   );
 });

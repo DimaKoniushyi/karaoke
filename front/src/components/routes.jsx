@@ -12,15 +12,7 @@ export default function AppRoutes({ onOpenAppSettings }) {
   return (
     <Suspense
       fallback={
-        <Box
-          aria-hidden="true"
-          sx={{
-            position: "fixed",
-            inset: 0,
-            zIndex: "var(--z-overlay)"
-            // background: "var(--bg-image) center / cover no-repeat fixed, var(--color-bg-deep)"
-          }}
-        />
+        <Box aria-hidden="true" sx={{ position: "fixed", inset: 0, zIndex: "var(--z-overlay)" }} />
       }
     >
       <Routes>

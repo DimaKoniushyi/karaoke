@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import useLatestRef from "../../../hooks/useLatestRef";
 import { createRoomSyncChannel } from "../../../services/roomSyncChannel";
+import { sameId } from "../../../utils/id";
 import { formatError } from "../utils/recordingSession";
 import {
   classifyDrift,
@@ -9,7 +10,6 @@ import {
   normalizePlaybackRate
 } from "../utils/transport";
 
-const sameId = (a, b) => a != null && b != null && String(a) === String(b);
 const number = (value) => (value == null || value === "" ? NaN : Number(value));
 
 export default function useKaraokeRoomTransport({

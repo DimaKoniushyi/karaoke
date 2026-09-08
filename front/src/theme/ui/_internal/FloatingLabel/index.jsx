@@ -1,7 +1,4 @@
-import { translateSaved as tr } from "../../../../i18n/runtime";
-import { Info } from "lucide-react";
-import IconButton from "../../IconButton";
-import Tooltip from "../../Tooltip";
+import FieldTooltipButton from "../FieldTooltipButton";
 
 export default function FloatingLabel({ id, label, required = false, tooltip }) {
   if (!label) return null;
@@ -11,19 +8,7 @@ export default function FloatingLabel({ id, label, required = false, tooltip }) 
         {label}
         {required && <span aria-hidden="true"> *</span>}
       </label>
-      {tooltip && (
-        <Tooltip title={tooltip} placement="top">
-          <IconButton
-            type="button"
-            variant="ghost"
-            size="sm"
-            aria-label={tr("common.field.more")}
-            onMouseDown={(event) => event.preventDefault()}
-          >
-            <Info size={14} />
-          </IconButton>
-        </Tooltip>
-      )}
+      <FieldTooltipButton tooltip={tooltip} />
     </span>
   );
 }

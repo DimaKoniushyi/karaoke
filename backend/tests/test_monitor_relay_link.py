@@ -112,6 +112,53 @@ def test_close_flushes_a_partial_chunk_instead_of_dropping_it():
         server.close()
 
 
+def test_close_does_not_race_a_concurrent_push_from_another_thread():
+    # push() runs on the realtime audio callback thread for the PortAudio-
+    # based engines, and main() closes the relay before it stops that
+    # stream -- close()'s accumulator flush loop and a still-running push()
+    # used to mutate the same dict/buffers with no synchronization at all,
+    # risking a "dictionary changed size during iteration" crash or a torn
+    # flushed frame.
+    server, port = make_server()
+    link = None
+    client = None
+    stop = threading.Event()
+    errors: list = []
+
+    def hammer():
+        stream_id = 0
+        while not stop.is_set():
+            try:
+                link.push(stream_id, 1000.0, np.ones(3, dtype=np.float32))
+            except Exception as exc:  # pragma: no cover - only on a real race
+                errors.append(exc)
+                return
+            stream_id = (stream_id + 1) % 8  # churns new accumulator keys too
+
+    try:
+        server.settimeout(2.0)
+        link = RelayLink(port, sample_rate=1000.0)
+        client, _ = server.accept()
+        client.settimeout(2.0)
+        assert wait_until(lambda: link.connected)
+
+        pusher = threading.Thread(target=hammer, daemon=True)
+        pusher.start()
+        time.sleep(0.05)
+        link.close()
+        stop.set()
+        pusher.join(timeout=2.0)
+
+        assert errors == []
+    finally:
+        stop.set()
+        if link is not None:
+            link.close()
+        if client is not None:
+            client.close()
+        server.close()
+
+
 def test_push_is_a_silent_no_op_before_the_connection_completes():
     link = RelayLink(port=1, sample_rate=1000.0, connect_timeout=0.05)
     try:

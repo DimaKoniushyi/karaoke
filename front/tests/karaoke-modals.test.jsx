@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import React from "react";
 import { beforeEach, expect, test, vi } from "vitest";
-import PerformanceAnalysisModal, { formatRecordingDate, getRecordingList } from "../src/pages/Karaoke/analysis-modal/index.jsx";
+import PerformanceAnalysisModal, { formatRecordingDate, getRecordingList } from "../src/components/PerformanceAnalysisModal/index.jsx";
 const mocks = vi.hoisted(() => ({
   runAnalysis: vi.fn(),
   deleteRecording: vi.fn(),

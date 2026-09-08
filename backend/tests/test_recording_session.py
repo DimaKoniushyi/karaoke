@@ -440,6 +440,24 @@ def test_start_writer_closes_descriptor_and_cleans_failed_file(monkeypatch, tmp_
     assert not temporary.exists()
 
 
+def test_cleanup_temporary_file_tolerates_a_still_open_handle(monkeypatch, tmp_path):
+    # missing_ok=True only suppresses "file not found", not Windows holding
+    # the handle open (WinError 32) because a timed-out writer thread never
+    # actually exited. This runs from close(), itself called from a bare
+    # `finally:` in stop_recording() -- letting it propagate would replace
+    # whatever response was already in flight and skip the cleanup right
+    # after it, just because a small leaked temp file couldn't be deleted.
+    session, _stream = make_session(monkeypatch)
+    session._temporary_path = tmp_path / "still-open.wav"
+
+    def locked_unlink(self, missing_ok=False):
+        raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+
+    monkeypatch.setattr(Path, "unlink", locked_unlink)
+    session._cleanup_temporary_file()  # must not raise
+    assert session._temporary_path is None
+
+
 def test_session_lifecycle_cleans_resources_on_errors(monkeypatch, tmp_path):
     session, stream = make_session(monkeypatch)
     start_writer, stop_writer, cleanup = Mock(), Mock(), Mock()
@@ -498,6 +516,37 @@ def test_stop_and_save_publishes_atomic_recording(monkeypatch, tmp_path):
     stream.close.assert_called_once_with()
 
     raises(RuntimeError, lambda: session.stop_and_save(destination), match='already closed')
+
+
+def test_stop_and_save_survives_a_locked_temp_file_after_a_successful_publish(monkeypatch, tmp_path, caplog):
+    # The recording is already successfully published to out_path by the
+    # time the redundant temp copy is cleaned up -- a transient "file still
+    # open" OSError deleting it (Windows, e.g. an AV/indexer scan) must not
+    # propagate and make stop_recording() delete the just-published
+    # recording and report failure for a take that actually succeeded.
+    session, _stream = make_session(monkeypatch, sample_rate=4)
+    temporary, destination = tmp_path / 'temporary.wav', tmp_path / 'library' / 'take.wav'
+    temporary.write_bytes(b"audio")
+    session._temporary_path = temporary
+    session._frames_written = 8
+    session._writer_thread = Mock(is_alive=Mock(return_value=False))
+
+    real_unlink = Path.unlink
+
+    def locked_unlink(self, missing_ok=False):
+        if self == temporary:
+            raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", locked_unlink)
+
+    with caplog.at_level("WARNING"):
+        duration, sample_rate = session.stop_and_save(destination)
+
+    assert (duration, sample_rate) == (2.0, 4)
+    assert destination.read_bytes() == b"audio"
+    assert session._temporary_path is None
+    assert temporary.exists()  # could not actually be deleted, but that's harmless
 
 
 def test_stop_and_save_reports_writer_failure(monkeypatch, tmp_path, caplog):
@@ -975,6 +1024,66 @@ def test_close_defers_storage_release_until_a_stuck_writer_thread_actually_exits
         if reservation.release.called:
             break
         time.sleep(0.02)
+    reservation.release.assert_called_once_with()
+
+
+def test_close_serializes_concurrent_callers_instead_of_racing_the_fast_path(monkeypatch):
+    # _stop_writer() unconditionally resets self._writer_thread to None once
+    # it returns, even when the writer is still actually alive (its own
+    # join() timed out). A second, concurrent close() caller (e.g. app
+    # shutdown's close_all_sessions() racing an in-flight /recording/stop
+    # for the same session) used to take an "already closed" fast path that
+    # read that already-None self._writer_thread and release the storage
+    # reservation immediately instead of waiting for the still-running
+    # writer like the real, in-progress close() call does.
+    session, _stream = make_session(monkeypatch)
+    reservation = Mock()
+    session._storage_reservations = [reservation]
+    session._writer_thread = Mock(is_alive=Mock(return_value=True))
+
+    entered = threading.Event()
+    release_first = threading.Event()
+
+    def fake_stop_writer():
+        entered.set()
+        release_first.wait(2)
+        # Mirrors the real _stop_writer(): unconditionally nulls this even
+        # though the writer_thread close() itself already captured is still
+        # "alive" in this test.
+        session._writer_thread = None
+
+    monkeypatch.setattr(session, "_stop_writer", fake_stop_writer)
+    monkeypatch.setattr(session, "_cleanup_temporary_file", Mock())
+    monkeypatch.setattr(session, "stop_capture", Mock())
+
+    first_returned = threading.Event()
+    second_returned = threading.Event()
+
+    def first_close():
+        session.close()
+        first_returned.set()
+
+    def second_close():
+        entered.wait(2)
+        session.close()
+        second_returned.set()
+
+    first = threading.Thread(target=first_close, daemon=True)
+    second = threading.Thread(target=second_close, daemon=True)
+    first.start()
+    assert entered.wait(2)
+    second.start()
+    time.sleep(0.05)
+    # The second caller must block behind the first (still in flight)
+    # instead of racing past it via the old fast path.
+    assert not second_returned.is_set()
+    assert reservation.release.call_count == 0
+
+    release_first.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+    assert first_returned.is_set() and second_returned.is_set()
+    assert session._storage_reservations == []
     reservation.release.assert_called_once_with()
 
 

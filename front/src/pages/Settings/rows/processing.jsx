@@ -1,7 +1,7 @@
 import { translateSaved } from "../../../i18n/runtime";
 import ModelStatus from "../ModelStatus";
 
-export default function rows({ tr = translateSaved } = {}) {
+export default function processingRows({ tr = translateSaved } = {}) {
   return [
     {
       type: "SelectField",

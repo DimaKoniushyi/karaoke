@@ -55,6 +55,25 @@ def test_reference_quality_measures_total_note_duration_inside_each_word():
     assert metrics.note_duration_ratio == 0.5
 
 
+def test_reference_quality_compares_each_note_in_a_word_not_only_the_total():
+    reference = document(("слово", 1.0, 2.0, 60))
+    reference["words"][0]["notes"] = [
+        {"note": 60, "start": 1.0, "end": 1.2},
+        {"note": 62, "start": 1.2, "end": 2.0},
+    ]
+    candidate = document(("слово", 1.0, 2.0, 60))
+    candidate["words"][0]["notes"] = [
+        {"note": 60, "start": 1.0, "end": 1.5},
+        {"note": 65, "start": 1.5, "end": 2.0},
+    ]
+
+    metrics = compare_lyrics_documents(reference, candidate)
+
+    assert metrics.pitch_match_ratio == 0.5
+    assert metrics.note_duration_mae_seconds == 0.3
+    assert metrics.note_count_ratio == 1.0
+
+
 def test_reference_quality_accepts_punctuation_and_case_differences():
     reference = document(("Моё", 1.0, 1.5, 60), ("сердце!", 1.6, 2.2, 62))
     candidate = document(("моё", 1.0, 1.5, 60), ("СЕРДЦЕ", 1.6, 2.2, 62))
@@ -112,8 +131,9 @@ def test_reference_runner_forwards_the_requested_processing_mode(tmp_path, monke
                 json.dumps(payload, ensure_ascii=False), encoding="utf-8"
             )
 
-    run_audio_v2_reference.run_one(
+    result = run_audio_v2_reference.run_one(
         Pipeline(), reference_dir, processing_mode="quality"
     )
 
     assert captured[0].processing_mode == "quality"
+    assert result["note_count_ratio"] == 1.0

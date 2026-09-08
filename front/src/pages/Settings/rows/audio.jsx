@@ -4,7 +4,7 @@ import { translateSaved } from "../../../i18n/runtime";
 import { Stack, Switch } from "../../../theme/ui";
 import { formatPercent } from "../../../utils/math";
 
-export default function rows({ settings: { audio }, run, tr = translateSaved }) {
+export default function audioRows({ settings: { audio }, run, tr = translateSaved }) {
   const status = audio.monitorStatus;
   const running = status?.state === "running";
   const input = status?.input_latency_ms;

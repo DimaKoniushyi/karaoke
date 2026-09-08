@@ -4,6 +4,7 @@ import copy
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from itertools import zip_longest
 from typing import Any
 
 from .lyrics_document import validate_lyrics_document
@@ -18,6 +19,7 @@ class ReferenceQuality:
     pitch_match_ratio: float
     note_duration_mae_seconds: float | None
     note_duration_ratio: float | None
+    note_count_ratio: float | None
     matched_words: int
     reference_words: int
 
@@ -54,9 +56,32 @@ def _note_duration(word: dict[str, Any]) -> float:
     )
 
 
+def _note_durations(word: dict[str, Any]) -> tuple[float, ...]:
+    return tuple(
+        max(0.0, float(note["end"]) - float(note["start"]))
+        for note in word.get("notes", [])
+    )
+
+
 def _pitch_distance(left: float, right: float) -> float:
     difference = abs(left - right) % 12
     return min(difference, 12 - difference)
+
+
+def _ordered_pitch_matches(left: tuple[float, ...], right: tuple[float, ...]) -> int:
+    """Return fuzzy pitch-class LCS length while preserving melodic order."""
+    if not left or not right:
+        return 0
+    previous = [0] * (len(right) + 1)
+    for expected_note in left:
+        current = [0]
+        for index, actual_note in enumerate(right, start=1):
+            if _pitch_distance(expected_note, actual_note) <= 1.0:
+                current.append(previous[index - 1] + 1)
+            else:
+                current.append(max(previous[index], current[-1]))
+        previous = current
+    return previous[-1]
 
 
 def compare_lyrics_documents(
@@ -82,19 +107,17 @@ def compare_lyrics_documents(
         (_notes(expected["words"][left]), _notes(actual["words"][right]))
         for left, right in pairs
     ]
-    pitch_pairs = [(left, right) for left, right in pitch_pairs if left and right]
-    pitch_matches = sum(
-        any(_pitch_distance(expected_note, actual_note) <= 1.0
-            for expected_note in left for actual_note in right)
-        for left, right in pitch_pairs
-    )
+    pitch_matches = sum(_ordered_pitch_matches(left, right) for left, right in pitch_pairs)
+    expected_note_count = sum(len(left) for left, _right in pitch_pairs)
+    actual_note_count = sum(len(right) for _left, right in pitch_pairs)
     note_duration_pairs = [
-        (
-            _note_duration(expected["words"][left]),
-            _note_duration(actual["words"][right]),
-        )
+        (expected_duration, actual_duration)
         for left, right in pairs
-        if _note_duration(expected["words"][left]) > 0
+        for expected_duration, actual_duration in zip_longest(
+            _note_durations(expected["words"][left]),
+            _note_durations(actual["words"][right]),
+            fillvalue=0.0,
+        )
     ]
     note_duration_errors = [
         abs(expected_duration - actual_duration)
@@ -110,7 +133,7 @@ def compare_lyrics_documents(
             round(sum(onset_errors) / len(onset_errors), 6) if onset_errors else None
         ),
         onset_p95_seconds=_percentile(onset_errors, 0.95),
-        pitch_match_ratio=round(pitch_matches / max(1, len(pitch_pairs)), 6),
+        pitch_match_ratio=round(pitch_matches / max(1, expected_note_count), 6),
         note_duration_mae_seconds=(
             round(sum(note_duration_errors) / len(note_duration_errors), 6)
             if note_duration_errors else None
@@ -118,6 +141,10 @@ def compare_lyrics_documents(
         note_duration_ratio=(
             round(actual_note_duration / expected_note_duration, 6)
             if expected_note_duration else None
+        ),
+        note_count_ratio=(
+            round(actual_note_count / expected_note_count, 6)
+            if expected_note_count else None
         ),
         matched_words=len({left for left, _right in pairs}),
         reference_words=reference_words,

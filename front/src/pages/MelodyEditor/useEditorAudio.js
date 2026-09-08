@@ -3,8 +3,10 @@ import { api } from "../../api/client";
 import { translateSaved as t } from "../../i18n/runtime";
 import { getErrorMessage } from "../../utils/errors";
 import { clamp } from "../../utils/math";
+import { midiToFrequency } from "../../utils/music";
+import { setPlayheadPosition } from "./model";
 
-const frequency = (midi) => 440 * 2 ** ((Number(midi) - 69) / 12);
+const frequency = (midi) => midiToFrequency(midi) ?? 0;
 
 const noteAt = (notes, time) => {
   let low = 0;
@@ -153,10 +155,7 @@ export default function useEditorAudio({
       if (master && !master.paused) {
         const current = master.currentTime;
         timeRef.current = current;
-        if (playheadRef.current) {
-          playheadRef.current.style.transform = `translate3d(${current * zoom}px, 0, 0) translateX(-50%)`;
-          playheadRef.current.setAttribute("aria-valuenow", String(current));
-        }
+        setPlayheadPosition(playheadRef, current, zoom);
         if (vocals && Math.abs(vocals.currentTime - current) > 0.08) vocals.currentTime = current;
         const note = noteAt(orderedNotes, current);
         if (note?.note !== activeMidi) {
@@ -189,10 +188,7 @@ export default function useEditorAudio({
         if (audio) audio.currentTime = next;
       });
       timeRef.current = next;
-      if (playheadRef.current) {
-        playheadRef.current.style.transform = `translate3d(${next * zoom}px, 0, 0) translateX(-50%)`;
-        playheadRef.current.setAttribute("aria-valuenow", String(next));
-      }
+      setPlayheadPosition(playheadRef, next, zoom);
       setTime(next);
       const note = noteAt(orderedNotes, next);
       if (!playing && note) tone(note.note);

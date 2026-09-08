@@ -14,7 +14,7 @@ vi.mock("../src/theme/ui", () => ({
     />
   ),
   RotaryKnob: ({ label, value, onChange }) => (
-    <label className="karaoke-effect-dial">
+    <label className="ui-rotary-knob">
       {label}
       <input type="range" aria-label={label} value={value} onChange={(event) => onChange(Number(event.target.value))} />
     </label>
@@ -57,7 +57,7 @@ vi.mock("../src/theme/ui", () => ({
 }));
 import RotaryKnob from "../src/theme/ui/RotaryKnob/index.jsx";
 import { getRotaryDragValue, getRotaryPointerValue, getRotaryWheelValue } from "../src/theme/ui/RotaryKnob/utils.js";
-import ConsoleCenter, { noteRangeLabel } from "../src/pages/Karaoke/console/center/index.jsx";
+import ConsoleCenter, { noteRangeLabel } from "../src/pages/Karaoke/console/center.jsx";
 import MixerPanel from "../src/pages/Karaoke/console/mixer.jsx";
 import SongStrip from "../src/pages/Karaoke/console/song-strip.jsx";
 import ToolsPanel from "../src/pages/Karaoke/console/tools.jsx";
@@ -162,7 +162,7 @@ test("rotary knob supports cumulative VST drag, fine adjustment and reset", () =
   expect(change.mock.calls[0][0]).toBeCloseTo(0.6);
   expect(change.mock.calls[1][0]).toBeCloseTo(0.62);
   expect(commit).toHaveBeenLastCalledWith(0.62);
-  fireEvent.doubleClick(view.container.querySelector(".karaoke-effect-dial__control"));
+  fireEvent.doubleClick(view.container.querySelector(".ui-rotary-knob__control"));
   expect(change).toHaveBeenLastCalledWith(0.25);
   expect(commit).toHaveBeenLastCalledWith(0.25);
 });
@@ -170,7 +170,7 @@ test("rotary knob jumps to the clicked arc and accepts an exact percentage", () 
   const change = vi.fn();
   const commit = vi.fn();
   const view = render(<RotaryKnob label="Noise" value={0.2} onChange={change} onCommit={commit} />);
-  const control = view.container.querySelector(".karaoke-effect-dial__control");
+  const control = view.container.querySelector(".ui-rotary-knob__control");
   control.getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, height: 100 });
   fireEvent.pointerDown(control, { button: 0, clientX: 100, clientY: 50, pointerId: 4 });
   fireEvent.pointerUp(view.container.querySelector("label"), { pointerId: 4 });
@@ -257,7 +257,7 @@ test("mixer changes and commits volumes and effects", () => {
   fireEvent.change(slider, { target: { value: "0.8" } });
   fireEvent.pointerUp(slider, { currentTarget: { value: "0.8" } });
   fireEvent.keyUp(slider, { currentTarget: { value: "0.8" } });
-  fireEvent.change(container.querySelector(".karaoke-effect-dial input"), {
+  fireEvent.change(container.querySelector(".ui-rotary-knob input"), {
     target: { value: "0.6" }
   });
   fireEvent.click(view.getByLabelText(/Чую себе|Слышу себя/));

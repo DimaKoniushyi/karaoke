@@ -1,11 +1,11 @@
 import { BarChart3, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../../../api/client";
-import { AudioPlayer } from "../../../components/AudioPlayer";
-import { useAppDialog } from "../../../contexts/AppDialog";
-import useExclusiveAsyncAction from "../../../hooks/useExclusiveAsyncAction";
-import useMountedRef from "../../../hooks/useMountedRef";
-import { translateSaved as t } from "../../../i18n/runtime";
+import { api } from "../../api/client";
+import { useAppDialog } from "../../contexts/AppDialog";
+import useExclusiveAsyncAction from "../../hooks/useExclusiveAsyncAction";
+import useMountedRef from "../../hooks/useMountedRef";
+import { translateSaved as t } from "../../i18n/runtime";
+import { normalizeAnalysisResult } from "../../pages/Karaoke/utils/analysis";
 import {
   Button,
   IconButton,
@@ -13,9 +13,9 @@ import {
   ModalCarouselNavigation,
   Stack,
   Typography
-} from "../../../theme/ui";
-import { getErrorMessage } from "../../../utils/errors";
-import { normalizeAnalysisResult } from "../utils/analysis";
+} from "../../theme/ui";
+import { getErrorMessage } from "../../utils/errors";
+import { AudioPlayer } from "../AudioPlayer";
 import Summary from "./summary";
 
 export const getRecordingList = (recordings, recordingId) => {

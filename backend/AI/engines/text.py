@@ -225,6 +225,10 @@ _REPEATED_HYPHEN_WORD_RE = re.compile(
     r"(?<!\w)([^\W\d_]+)[\-‐‑‒–—]\1(?!\w)",
     flags=re.IGNORECASE | re.UNICODE,
 )
+_SUNG_VOCALISATION_RE = re.compile(
+    r"^[^\W\d_]{1,2}(?:[\-‐‑‒–—][^\W\d_]{1,2}){2,}$",
+    flags=re.UNICODE,
+)
 
 
 def normalize_lyrics_text(text: str) -> str:
@@ -236,6 +240,8 @@ def normalize_lyrics_text(text: str) -> str:
         has_latin = any("a" <= char.casefold() <= "z" for char in token)
         if has_cyrillic and has_latin:
             token = token.translate(_LATIN_CYRILLIC_HOMOGLYPHS)
+        if _SUNG_VOCALISATION_RE.fullmatch(token):
+            return re.sub(r"[\-‐‑‒–—]", " ", token)
         return _REPEATED_HYPHEN_WORD_RE.sub(r"\1 \1", token)
 
     return re.sub(r"\S+", clean_token, text)

@@ -4,10 +4,9 @@ import { api } from "../../api/client";
 import { usePolling } from "../../hooks/usePolling";
 import { queryKeys } from "../../query-client";
 import { POLLING_INTERVALS } from "../../runtime-config";
+import { sameId } from "../../utils/id";
 import KaraokeLoadState from "./karaoke-load-state";
 import KaraokeSession from "./karaoke-session";
-
-const sameId = (a, b) => a != null && b != null && String(a) === String(b);
 
 function useRoutedSong(songs, songId) {
   const list = Array.isArray(songs) ? songs : [];

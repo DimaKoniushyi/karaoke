@@ -6,12 +6,12 @@ import useAppSettings from "../../hooks/useAppSettings";
 import { usePolling } from "../../hooks/usePolling";
 import { translateSaved as tr } from "../../i18n/runtime";
 import { POLLING_INTERVALS as POLL } from "../../runtime-config";
+import { createInputDeviceOptions, createOutputDeviceOptions } from "../../utils/audio-devices";
 import { AUDIO_SETTINGS_CHANGED_EVENT } from "../../utils/audioSettingsEvents";
 import { getErrorMessage } from "../../utils/errors";
 import { getLightingStatus } from "../../utils/platform";
 import { applyTheme } from "../../utils/theme";
 import { findMatchingBrowserOutput } from "../Karaoke/utils/audio-settings";
-import { createInputDeviceOptions, createOutputDeviceOptions } from "../Karaoke/utils/devices";
 
 const MME_SENTINEL = "mme";
 const emit = (detail) => dispatchEvent(new CustomEvent(AUDIO_SETTINGS_CHANGED_EVENT, { detail }));

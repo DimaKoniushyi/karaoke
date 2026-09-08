@@ -1,5 +1,6 @@
 import { closeAudioContext, closeAudioContextQuietly } from "../utils/audio-context";
 import { AUDIO_SETTINGS_CHANGED_EVENT } from "../utils/audioSettingsEvents";
+import { clampWithFallback } from "../utils/math";
 import { connectMicrophoneChannelStrip } from "./microphoneChannelStrip";
 import { connectVoiceEffects } from "./voiceEffects";
 
@@ -50,9 +51,8 @@ export function createStudioMicrophoneGraph(rawStream, options = {}) {
       noiseSuppression: options.noiseSuppression ?? 0.35,
       realtime: true
     });
-    const clamp = (value, maximum = 1) => Math.max(0, Math.min(maximum, Number(value) || 0));
     processedBus.connect(finalOutput);
-    finalOutput.gain.value = clamp(options.volume ?? 1, 2);
+    finalOutput.gain.value = clampWithFallback(options.volume ?? 1, 0, 2, 0);
     finalOutput.connect(destination);
     // Keep an immediate dry path in the effects stream. Reverb/echo are mixed
     // alongside it, never inserted before it, so enabling studio effects does
@@ -120,7 +120,7 @@ export function createStudioMicrophoneGraph(rawStream, options = {}) {
       // volume change (or a monitoring toggle re-applying the same,
       // already-active effects -- see setMonitoring) now costs one gain
       // assignment instead of tearing down and reconnecting every node.
-      finalOutput.gain.value = clamp(effects.volume ?? finalOutput.gain.value ?? 1, 2);
+      finalOutput.gain.value = clampWithFallback(effects.volume ?? finalOutput.gain.value ?? 1, 0, 2, 0);
       const key = `${effects.reverb ?? 0}|${effects.echo ?? 0}|${effects.delay ?? 0}`;
       if (key === effectsKey && effectGraph) return true;
       clearEffects();

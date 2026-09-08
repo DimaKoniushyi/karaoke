@@ -141,6 +141,14 @@ class RecordingSession:
         self._closed = False
         self._paused = False
         self._stop_lock = threading.Lock()
+        # A separate lock from _stop_lock (which stop_capture() -- called
+        # from inside close() -- acquires on its own; reusing the same lock
+        # here would self-deadlock). Guards close() itself so a concurrent
+        # caller (e.g. app shutdown's close_all_sessions() racing an
+        # in-flight /recording/stop request for the same session) fully
+        # waits out the first call instead of taking the "already closed"
+        # fast path early -- see close()'s own comment.
+        self._close_lock = threading.Lock()
         self._monitoring_enabled = monitoring_enabled
         self._monitor_owner = monitor_owner
         self._monitor_mode = monitor_mode
@@ -452,7 +460,22 @@ class RecordingSession:
 
     def _cleanup_temporary_file(self) -> None:
         if self._temporary_path is not None:
-            self._temporary_path.unlink(missing_ok=True)
+            try:
+                self._temporary_path.unlink(missing_ok=True)
+            except OSError:
+                # missing_ok only suppresses "file not found" -- not Windows
+                # holding the handle open (WinError 32) because the writer
+                # thread that had it open timed out in _stop_writer() instead
+                # of actually exiting. This runs from close(), itself called
+                # from a bare `finally:` in stop_recording() -- letting this
+                # propagate would replace whatever response/exception was
+                # already in flight there and skip the cleanup right after it
+                # (popping/signaling _finalizing_recordings), just because a
+                # small leaked temp file couldn't be deleted yet.
+                logger.warning(
+                    "Could not delete temporary recording file (likely still open): %s",
+                    self._temporary_path, exc_info=True,
+                )
             self._temporary_path = None
 
     def start(self) -> None:
@@ -519,17 +542,29 @@ class RecordingSession:
         return [dict(segment) for segment in self._playback_segments]
 
     def close(self) -> None:
-        if self._closed:
-            self._release_storage_reservations(self._writer_thread)
-            return
-        self._closed = True
-        writer_thread = self._writer_thread
-        try:
-            self.stop_capture()
-            self._stop_writer()
-            self._cleanup_temporary_file()
-        finally:
-            self._release_storage_reservations(writer_thread)
+        # _stop_writer() unconditionally resets self._writer_thread to None
+        # once it returns -- even when its own join() timed out and the
+        # thread is still actually alive, still writing bytes. A concurrent
+        # second caller that took an "already closed" fast path here used to
+        # read that already-None self._writer_thread and release the storage
+        # reservation immediately, racing the still-running writer instead
+        # of waiting for it like the real close() call below does. Holding
+        # this lock for the whole method instead makes a concurrent caller
+        # fully wait out the first call -- by the time it gets in here,
+        # _storage_reservations is already correctly emptied (synchronously,
+        # or via the background release_when_done() below), so it becomes a
+        # plain no-op rather than needing its own fast path at all.
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+            writer_thread = self._writer_thread
+            try:
+                self.stop_capture()
+                self._stop_writer()
+                self._cleanup_temporary_file()
+            finally:
+                self._release_storage_reservations(writer_thread)
 
     def _release_storage_reservations(self, writer_thread: threading.Thread | None) -> None:
         reservations, self._storage_reservations = self._storage_reservations, []
@@ -621,8 +656,16 @@ class RecordingSession:
             os.replace(publish_path, out_path)
         finally:
             publish_path.unlink(missing_ok=True)
-        self._temporary_path.unlink(missing_ok=True)
-        self._temporary_path = None
+        # The recording is already successfully published to out_path by
+        # this point -- this is just removing the now-redundant temp copy.
+        # A raw unlink() here used to let a transient "file still open"
+        # OSError (Windows, e.g. an AV/indexer scan) propagate out of this
+        # already-successful save, straight into stop_recording()'s
+        # `except Exception: ... out_path.unlink(missing_ok=True); raise`,
+        # which deleted the just-published recording and reported failure
+        # for a take that had actually completed fine. _cleanup_temporary_
+        # file() already tolerates exactly this instead of raising.
+        self._cleanup_temporary_file()
         duration_sec = self._frames_written / float(self.sample_rate) if self.sample_rate else 0.0
         return duration_sec, self.sample_rate
 

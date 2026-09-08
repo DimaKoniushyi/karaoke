@@ -194,6 +194,21 @@ def test_callback_failure_stops_native_output_instead_of_replaying_old_block(dll
     stream.close()
 
 
+def test_callback_failure_with_no_message_still_reports_something(dll):
+    # str(error) is "" for an exception raised with no message (a bare
+    # `raise ValueError()` or a failed `assert`) -- pump()'s
+    # `if callback_error:` check must not treat that empty string as "no
+    # callback error happened" and fall back to the generic device-error
+    # text, losing the fact that a real callback exception occurred at all.
+    stats = {}
+    stream = native_wasapi.NativeWasapiStream(options(), stats)
+    stream.start(Mock(side_effect=ValueError()))
+    samples = (ct.c_float * 4)()
+    assert stream.callback(samples, samples, 4) == 0
+    assert stats["callback_error"]
+    stream.close()
+
+
 def test_start_failure_and_idempotent_cleanup(dll):
     stream = native_wasapi.NativeWasapiStream(options(), {})
     dll.wm_start.return_value = 0
@@ -216,6 +231,23 @@ def test_native_pump_failure_is_reported(dll):
     stream.error.value = b"Audio device disconnected"
     dll.wm_pump.return_value = 0
     with pytest.raises(RuntimeError, match="disconnected"):
+        stream.pump()
+    stream.close()
+
+
+def test_native_pump_failure_surfaces_the_real_dsp_callback_error(dll):
+    # monitor.cpp only ever reports back a fixed "Microphone processing
+    # callback failed" string for a DSP-callback failure -- process() (see
+    # test_callback_failure_stops_native_output_instead_of_replaying_old_block
+    # above) already captured the real Python exception into statistics
+    # first, and pump() must prefer that over the generic device-error text
+    # a caller would otherwise see instead of the actual reason.
+    stats = {}
+    stream = native_wasapi.NativeWasapiStream(options(), stats)
+    stream.error.value = b"Microphone processing callback failed"
+    stats["callback_error"] = "gate: division by zero"
+    dll.wm_pump.return_value = 0
+    with pytest.raises(RuntimeError, match="division by zero"):
         stream.pump()
     stream.close()
 

@@ -1,16 +1,15 @@
 import { AlertCircle } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import PerformanceAnalysisModal from "../../components/PerformanceAnalysisModal";
 import { useRadio } from "../../contexts/radio";
 import useLatestRef from "../../hooks/useLatestRef";
 import { Box, Card, Stack, Typography } from "../../theme/ui";
 import { isHotkeyScopeActive, shouldIgnoreHotkey } from "../../utils/hotkeys";
 import KaraokeStageActions from "./actions";
-import PerformanceAnalysisModal from "./analysis-modal";
 import KaraokeConsole from "./console";
 import useKaraokeSceneFlow from "./hooks/useKaraokeSceneFlow";
 import KaraokeMedia from "./media";
 import KaraokePerformanceStage from "./performance-stage";
-
 
 const HOTKEYS = { ArrowLeft: -5, ArrowRight: 5 };
 

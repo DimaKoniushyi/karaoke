@@ -15,7 +15,7 @@ vi.mock("../src/utils/audio-preferences", () => ({
 }));
 import useAudioOutputRouting from "../src/pages/Karaoke/hooks/useAudioOutputRouting.js";
 import useMicrophoneSettings from "../src/pages/Karaoke/hooks/useMicrophoneSettings.js";
-import { createOutputDeviceOptions } from "../src/pages/Karaoke/utils/devices.js";
+import { createOutputDeviceOptions } from "../src/utils/audio-devices.js";
 beforeEach(() => {
   Object.values(mocks).forEach((mock) => mock.mockReset());
   mocks.releaseDirectMonitoring.mockResolvedValue(undefined);

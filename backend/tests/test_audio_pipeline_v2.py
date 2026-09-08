@@ -394,6 +394,20 @@ def test_symbolic_quality_reuses_the_fast_stem_profile():
     assert AudioPipelineV2._separation_processing_mode("fast") == "fast"
 
 
+def test_symbolic_quality_is_skipped_when_physical_notes_cover_the_song():
+    words = [
+        Word(index * 0.5, index * 0.5 + 0.4, f"word-{index}", index=index)
+        for index in range(20)
+    ]
+    notes = [
+        VocalNote(word.start, word.end, 60, word_index=word.index)
+        for word in words[:-1]
+    ]
+
+    assert AudioPipelineV2._needs_symbolic_model(words, notes) is False
+    assert AudioPipelineV2._needs_symbolic_model(words, notes[:10]) is True
+
+
 def test_fast_processing_keeps_small_analysis_models_warm_between_songs():
     assert AudioPipelineV2._keeps_analysis_models_warm("fast") is True
     assert AudioPipelineV2._keeps_analysis_models_warm("auto") is True

@@ -65,6 +65,7 @@ def run_one(
         "pitch_match_ratio": quality.pitch_match_ratio,
         "note_duration_mae_seconds": quality.note_duration_mae_seconds,
         "note_duration_ratio": quality.note_duration_ratio,
+        "note_count_ratio": quality.note_count_ratio,
     }
     print(json.dumps(result, ensure_ascii=False), flush=True)
     return result

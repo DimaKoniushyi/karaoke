@@ -102,13 +102,29 @@ class NativeWasapiStream:
                          np.ctypeslib.as_array(output, shape=(frames, 1)), frames, None, None)
                 return 1
             except Exception as error:
-                self.statistics["callback_error"] = str(error)
+                # str(error) is "" for an exception raised with no message
+                # (a bare `raise ValueError()`/failed `assert`) -- falling
+                # back to repr() keeps pump()'s `if callback_error:` check
+                # truthy so it still reports that a real callback exception
+                # happened, instead of losing it to the generic device-error
+                # text below just because this one had no message.
+                self.statistics["callback_error"] = str(error) or repr(error)
                 return 0
         self.callback = Process(process)
         self._check(self.dll.wm_start(self.handle, self.callback, self.error, len(self.error)))
 
     def pump(self):
-        self._check(self.dll.wm_pump(self.handle, 20, ct.byref(self.stats), self.error, len(self.error)))
+        success = self.dll.wm_pump(self.handle, 20, ct.byref(self.stats), self.error, len(self.error))
+        if not success:
+            # process() (below) already captured the real Python exception
+            # when the failure originated in the DSP callback -- monitor.cpp
+            # only ever reports back the fixed string "Microphone processing
+            # callback failed" for that case, which _check()'s generic error
+            # text would otherwise surface instead, losing the actual reason.
+            callback_error = self.statistics.get("callback_error")
+            if callback_error:
+                raise RuntimeError(callback_error)
+            self._check(False)
         self.statistics.update(
             glitch_count=self.stats.discontinuities,
             queue_underruns=self.stats.underruns,

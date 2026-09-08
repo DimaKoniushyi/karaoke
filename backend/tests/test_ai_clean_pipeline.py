@@ -356,6 +356,15 @@ def test_catalog_text_repairs_mixed_cyrillic_homoglyphs_and_sung_repetition():
     ]
 
 
+def test_catalog_text_splits_a_sung_vocalisation_but_keeps_a_lexical_hyphen():
+    import AI.engines.text as text_engine
+
+    cleaned = text_engine.normalize_lyrics_text("О-оу-и-я-и-ё\nчто-то")
+
+    assert cleaned == "О оу и я и ё\nчто-то"
+    assert tokenize(cleaned) == ["О", "оу", "и", "я", "и", "ё", "что-то"]
+
+
 def test_lyrics_discovery_falls_back_to_verified_ukrainian_catalog(monkeypatch):
     search = '<a href="/songs/42.html">Лови момент</a>'
     detail = '''

@@ -7,7 +7,7 @@ from .models import PitchFrame
 PITCH_STABILIZER_VERSION = "clean-v1"
 
 
-def stabilize_pitch(frames: list[PitchFrame], max_octave_jump=10.5) -> list[PitchFrame]:
+def stabilize_pitch(frames: list[PitchFrame], max_octave_jump=1.5) -> list[PitchFrame]:
     if len(frames) < 3:
         return list(frames)
     # A song's pitch track runs to thousands of frames, so the smoothing

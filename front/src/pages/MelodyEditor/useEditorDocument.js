@@ -2,8 +2,8 @@ import { useCallback, useEffect, useReducer, useState } from "react";
 import { api } from "../../api/client";
 import { translateSaved as t } from "../../i18n/runtime";
 import { getErrorMessage } from "../../utils/errors";
-import { prepareEditorNotes } from "../../workers/editor-client";
 import { documentReducer, initialDocument, serializeNotes, serializeWordBounds } from "./model";
+import { prepareEditorNotes } from "./workers/editor-client";
 
 export default function useEditorDocument({ songId, confirm, notify }) {
   const [song, setSong] = useState(null);

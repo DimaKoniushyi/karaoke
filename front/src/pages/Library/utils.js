@@ -1,12 +1,14 @@
 import { translateSaved as tr } from "../../i18n/runtime";
+import { sameId } from "../../utils/id";
 import { clamp } from "../../utils/math";
+import { formatCompactKey } from "../../utils/music";
 import { formatSafeDate } from "../../utils/time-format";
 
 const ACTIVE = new Set(["processing", "queued", "cancelling"]);
 const array = (value) => (Array.isArray(value) ? value : []);
 const text = (value) => String(value ?? "").trim();
 
-export const sameId = (a, b) => a != null && b != null && String(a) === String(b);
+export { sameId };
 
 export const SONG_DROPZONE_ACCEPT = {
   "audio/*": [".mp3", ".wav", ".flac", ".m4a", ".ogg"],
@@ -134,9 +136,4 @@ export const getSongCardState = (song) => {
   return { status, isWorking: isProcessingActive(status), isReady: status === "done" };
 };
 
-export const formatSongKey = (value) => {
-  const key = typeof value === "string" ? text(value) : "";
-  return key
-    ? key.replace(/\s+minor$/i, "m").replace(/\s+major$/i, "maj")
-    : tr("library.theTonalityIsDetermined");
-};
+export const formatSongKey = (value) => formatCompactKey(value, tr("library.theTonalityIsDetermined"));

@@ -2,7 +2,7 @@ import fc from "fast-check";
 import { describe, expect, test } from "vitest";
 import { normalizeNotes } from "../src/pages/MelodyEditor/model.js";
 import { lyricsNoteFillPercent, mergeAdjacentLyricsNotes } from "../src/utils/lyrics-sync.js";
-import { prepareEditorNotes } from "../src/workers/editor-computation.js";
+import { prepareEditorNotes } from "../src/pages/MelodyEditor/workers/editor-computation.js";
 
 const finiteTime = fc.double({ min: 0, max: 600, noNaN: true, noDefaultInfinity: true });
 const duration = fc.double({ min: 0.001, max: 20, noNaN: true, noDefaultInfinity: true });

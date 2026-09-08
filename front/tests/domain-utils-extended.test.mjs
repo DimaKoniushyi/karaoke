@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { describe, test, vi } from "vitest";
 import { translateSaved } from "../src/i18n/runtime.js";
 import { getAnalysisFeedback, normalizeAnalysisResult, normalizeAnalysisSection } from "../src/pages/Karaoke/utils/analysis.js";
-import { createPanoramaPath, getYouTubeVideoId, playbackGain, transposeKey, youTubeEmbedUrl } from "../src/pages/Karaoke/utils/data.js";
+import { playbackGain, transposeKey } from "../src/pages/Karaoke/utils/data.js";
 import {
   createBrowserDeviceOptions,
   createBufferSizeOptions,
   createIndexedDeviceOptions,
   createInputDeviceOptions
-} from "../src/pages/Karaoke/utils/devices.js";
+} from "../src/utils/audio-devices.js";
 import {
   detectMidiFromAnalyser,
   findBestPitchLag,
@@ -175,7 +175,7 @@ describe("analysis normalization and feedback", () => {
   });
 });
 describe("karaoke data contracts", () => {
-  test("parses keys, gain and YouTube URLs", () => {
+  test("parses keys and gain", () => {
     equal([transposeKey("Db minor", 2), "D# minor"]);
     const sharpKeys = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
     sharpKeys.forEach((expected, shift) => assert.equal(transposeKey(" C ", shift), expected));
@@ -210,47 +210,6 @@ describe("karaoke data contracts", () => {
       [playbackGain(0.5), 0.25],
       [playbackGain(-2), 0],
       [playbackGain("bad"), 0]
-    );
-    for (const url of [
-      "https://youtu.be/abcdefghijk",
-      "http://youtu.be/abcdefghijk",
-      "https://www.youtube.com/watch?v=abcdefghijk",
-      "https://youtube-nocookie.com/embed/abcdefghijk",
-      "https://privacy.youtube-nocookie.com/live/abcdefghijk",
-      "https://m.youtube.com/shorts/abcdefghijk",
-      "https://youtube.com/embed/abcdefghijk",
-      "https://evilwww.youtube.com/watch?v=abcdefghijk"
-    ])
-      equal([getYouTubeVideoId(url), "abcdefghijk"]);
-    for (const url of [
-      null,
-      "",
-      "bad",
-      "ftp://youtu.be/abcdefghijk",
-      "https://example.com/abcdefghijk",
-      "https://youtube.com/watch?v=xabcdefghijk",
-      "https://youtube.com/watch?v=abcdefghijkx",
-      "https://youtube.com/watch",
-      "https://youtube.com/prefix/embed/abcdefghijk"
-    ])
-      equal([getYouTubeVideoId(url), null]);
-    equal([
-      youTubeEmbedUrl(" abcdefghijk "),
-      "https://www.youtube.com/embed/abcdefghijk?enablejsapi=1&playsinline=1&controls=0&disablekb=1&fs=0&iv_load_policy=3&cc_load_policy=0&rel=0&modestbranding=1&mute=1"
-    ]);
-    for (const id of ["bad", "xabcdefghijk", "abcdefghijkx", null, 7]) equal([youTubeEmbedUrl(id), null]);
-    deepEqual(
-      [createPanoramaPath(() => 0), { xPhaseA: 0, xPhaseB: 0, xPhaseC: 0, yPhaseA: 0, yPhaseB: 0 }],
-      [
-        createPanoramaPath(() => 0.25),
-        {
-          xPhaseA: Math.PI / 2,
-          xPhaseB: Math.PI / 2,
-          xPhaseC: Math.PI / 2,
-          yPhaseA: Math.PI / 2,
-          yPhaseB: Math.PI / 2
-        }
-      ]
     );
   });
 });

@@ -102,7 +102,7 @@ vi.mock("../src/pages/Karaoke/console", () => ({
     );
   }
 }));
-vi.mock("../src/pages/Karaoke/analysis-modal", () => ({
+vi.mock("../src/components/PerformanceAnalysisModal", () => ({
   default: (props) => (
     <div data-testid="analysis-modal">
       <button data-testid="analysis-close" onClick={props.onClose} />

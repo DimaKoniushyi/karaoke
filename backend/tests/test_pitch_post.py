@@ -18,6 +18,16 @@ def test_stabilize_pitch_smooths_a_single_frame_spike_using_its_voiced_neighbors
     assert [item.frequency for item in result] == [100.0, 100.0, 100.0, 100.0, 100.0]
 
 
+def test_stabilize_pitch_removes_a_single_frame_two_semitone_glitch_by_default():
+    base = 440.0
+    two_semitones_up = base * (2 ** (2 / 12))
+    frames = [frame(0.0, base), frame(0.01, two_semitones_up), frame(0.02, base)]
+
+    result = stabilize_pitch(frames)
+
+    assert result[1].frequency == base
+
+
 def test_stabilize_pitch_leaves_the_first_and_last_frame_untouched():
     frames = [frame(0.0, 999.0), frame(0.1, 500.0), frame(0.2, 999.0)]
     result = stabilize_pitch(frames)

@@ -108,10 +108,29 @@ def test_silent_word_far_from_pitch_stays_without_an_invented_note():
     assert all(note.word_index != 0 for note in fitted_notes)
 
 
-def test_note_inside_the_same_lyric_line_extends_to_the_next_word_across_a_pause():
+def test_note_inside_the_same_lyric_line_extends_to_a_contiguous_next_word():
     words = [
         Word(1.0, 1.2, "никто", index=0),
-        Word(3.0, 3.2, "не", index=1),
+        Word(1.35, 1.55, "не", index=1),
+    ]
+    notes = [
+        VocalNote(1.0, 1.2, 60, word_index=0),
+        VocalNote(1.35, 1.55, 62, word_index=1),
+    ]
+
+    fitted_words, fitted_notes = fit_notes_to_sung_words(
+        words,
+        notes,
+    )
+
+    assert fitted_words[0].end == 1.35
+    assert fitted_notes[0].end == 1.35
+
+
+def test_physical_note_is_not_stretched_across_a_real_silence_inside_a_line():
+    words = [
+        Word(1.0, 1.2, "первое", index=0),
+        Word(3.0, 3.2, "второе", index=1),
     ]
     notes = [
         VocalNote(1.0, 1.2, 60, word_index=0),
@@ -121,11 +140,11 @@ def test_note_inside_the_same_lyric_line_extends_to_the_next_word_across_a_pause
     fitted_words, fitted_notes = fit_notes_to_sung_words(
         words,
         notes,
-        line_end_indices={1},
+        phrase_tail=0.25,
     )
 
-    assert fitted_words[0].end == 3.0
-    assert fitted_notes[0].end == 3.0
+    assert fitted_words[0].end == 1.45
+    assert fitted_notes[0].end == 1.45
 
 
 def test_line_final_word_cannot_claim_a_disconnected_later_vocal_interval():
@@ -167,7 +186,6 @@ def test_fitted_line_final_note_respects_a_measured_voice_end_limit():
     fitted_words, fitted_notes = fit_notes_to_sung_words(
         words,
         notes,
-        line_end_indices={0},
         word_end_limits={0: 75.56},
     )
 

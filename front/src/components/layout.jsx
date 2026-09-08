@@ -1,7 +1,8 @@
 import { Cog, Radio, Volume2 } from "lucide-react";
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { useRadio } from "../contexts/radio";
+import useHoverPopover from "../hooks/useHoverPopover";
 import { useOnlineRoomNavigation } from "../hooks/useOnlineRoomNavigation";
 import { useI18n } from "../i18n";
 import { Box, IconButton, Popover, Slider, Stack } from "../theme/ui";
@@ -24,21 +25,13 @@ const useBlackout = () => {
 function FloatingControls({ openSettings }) {
   const { t } = useI18n();
   const radio = useRadio();
-  const radioAnchorRef = useRef(null);
-  const radioCloseTimerRef = useRef(null);
-  const [radioVolumeOpen, setRadioVolumeOpen] = useState(false);
+  const { open: radioVolumeOpen, setOpen: setRadioVolumeOpen, anchorRef: radioAnchorRef, show, hideSoon: hideRadioVolumeSoon } = useHoverPopover();
   const showRadioVolume = () => {
-    clearTimeout(radioCloseTimerRef.current);
-    if (radio.isPlaying) setRadioVolumeOpen(true);
+    if (radio.isPlaying) show();
   };
-  const hideRadioVolumeSoon = () => {
-    clearTimeout(radioCloseTimerRef.current);
-    radioCloseTimerRef.current = setTimeout(() => setRadioVolumeOpen(false), 120);
-  };
-  useEffect(() => () => clearTimeout(radioCloseTimerRef.current), []);
   useEffect(() => {
     if (!radio.isPlaying) setRadioVolumeOpen(false);
-  }, [radio.isPlaying]);
+  }, [radio.isPlaying, setRadioVolumeOpen]);
   const radioLabel =
     radio.error ||
     t(radio.isPlaying ? "radio.disable" : "radio.enable", { station: radio.station.name });
@@ -124,7 +117,6 @@ export default function AppLayout() {
         flexDirection: "column",
         minBlockSize: "100vh",
         backgroundColor: "var(--color-bg-deep)",
-        // backgroundImage: "var(--bg-image)",
         backgroundPosition: "center",
         backgroundSize: "cover",
         backgroundRepeat: "no-repeat",

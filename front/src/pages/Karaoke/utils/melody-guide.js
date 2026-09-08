@@ -1,13 +1,7 @@
 import { clamp01 } from "../../../utils/math";
+import { midiToFrequency } from "../../../utils/music";
 
-const A4_MIDI = 69;
-const A4_FREQUENCY = 440;
-
-export function midiToFrequency(midi) {
-  const value = Number(midi);
-  if (!Number.isFinite(value)) return null;
-  return A4_FREQUENCY * 2 ** ((value - A4_MIDI) / 12);
-}
+export { midiToFrequency };
 
 export function findActiveMelodyNote(notes, position) {
   const time = Number(position);

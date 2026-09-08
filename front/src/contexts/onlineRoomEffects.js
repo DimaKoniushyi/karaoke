@@ -1,7 +1,7 @@
+import { TERMINAL_TRANSFER_STAGES } from "../services/onlineVoiceTransferProtocol";
 import { clamp } from "../utils/math";
 
 const ROOM_TRANSFER_BROADCAST_INTERVAL_MS = 500;
-const TERMINAL_TRANSFER_STAGES = new Set(["complete", "error", "cancelled"]);
 export const PARTICIPANT_EFFECT_LIMITS = Object.freeze({
   volume: 2,
   reverb: 1,

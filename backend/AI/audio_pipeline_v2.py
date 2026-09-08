@@ -212,6 +212,19 @@ class AudioPipelineV2:
         return str(processing_mode or "auto").strip().lower() == "quality"
 
     @staticmethod
+    def _needs_symbolic_model(
+        words: list[Word], notes: list[VocalNote] | tuple[VocalNote, ...]
+    ) -> bool:
+        """Reserve the heavy score model for genuinely incomplete pitch tracks."""
+        if not words:
+            return False
+        covered = {
+            note.word_index for note in notes if note.word_index is not None
+        }
+        coverage = sum(word.index in covered for word in words) / len(words)
+        return coverage < 0.95
+
+    @staticmethod
     def _separation_processing_mode(processing_mode: str | None) -> str:
         # The symbolic quality pass operates on the isolated vocal melody;
         # the slower separation tuning did not improve its reference metrics
@@ -497,10 +510,12 @@ class AudioPipelineV2:
                     words,
                     physical_notes,
                     duration=song_duration,
-                    line_end_indices=line_end_indices,
                     word_end_limits=word_end_limits,
                 )
-                if self._uses_symbolic_model(request.processing_mode):
+                if (
+                    self._uses_symbolic_model(request.processing_mode)
+                    and self._needs_symbolic_model(words, physical_notes)
+                ):
                     if score_lines:
                         final = score_lines[-1]
                         score_lines[-1] = ScoreLine(
