@@ -120,6 +120,38 @@ describe("central microphone capture", () => {
     expect(graph.close).toHaveBeenCalledOnce();
   });
 
+  test("closes an orphaned entry once its own last lease releases, even after a replacement became active", async () => {
+    // resolve() replaces `active` outright (a brand new entry/graph) when the
+    // previous one's physical device died, instead of reusing it. A caller
+    // still holding a lease on that superseded entry must still get its
+    // graph closed when it eventually releases -- skipping that because the
+    // entry is no longer `active` used to leak its whole Web Audio graph
+    // (AudioContext included) forever.
+    const { acquireMicrophone } = await import("../src/services/microphoneCapture.js");
+    const firstGraph = graph;
+    const firstLease = await acquireMicrophone();
+
+    firstGraph.rawStream.getAudioTracks = () => [{ readyState: "ended" }];
+    const secondGraph = {
+      ...firstGraph,
+      close: vi.fn().mockResolvedValue(undefined),
+      rawStream: { id: "raw2", getAudioTracks: () => [{ readyState: "live" }] }
+    };
+    mocks.createGraph.mockReturnValueOnce(secondGraph);
+    getUserMedia = vi.fn().mockResolvedValueOnce({ id: "second" });
+    navigator.mediaDevices.getUserMedia = getUserMedia;
+
+    const secondLease = await acquireMicrophone();
+    expect(mocks.createGraph).toHaveBeenCalledTimes(2);
+
+    await firstLease.release();
+    expect(firstGraph.close).toHaveBeenCalledOnce();
+    expect(secondGraph.close).not.toHaveBeenCalled();
+
+    await secondLease.release();
+    expect(secondGraph.close).toHaveBeenCalledOnce();
+  });
+
   test("falls back to the default input when the selected device disappeared", async () => {
     getUserMedia = vi.fn().mockRejectedValueOnce(new Error("missing device")).mockResolvedValueOnce({ id: "fallback" });
     navigator.mediaDevices.getUserMedia = getUserMedia;

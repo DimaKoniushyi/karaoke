@@ -125,6 +125,18 @@ export async function createRelayVoiceGraph({ connectTimeoutMs = DEFAULT_CONNECT
   const { socket, firstFrame } = await connectRelaySocket(connectTimeoutMs);
   let context;
   try {
+    // connectRelaySocket() clears socket.onmessage once it resolves, and the
+    // relay keeps sending frames continuously (~every 5ms) the whole time --
+    // without a handler here, anything that arrives during the async work
+    // below (module load + two AudioWorkletNode constructions) would be
+    // silently dropped, since a WebSocket does not buffer for a caller that
+    // isn't listening. Queue raw frames here and replay them once dry/wet
+    // are actually ready to receive, instead of losing that startup window.
+    const pending = [];
+    socket.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) pending.push(event.data);
+    };
+
     // Requesting the source rate avoids any resampling work when it matches
     // the browser's own hardware rate (commonly true -- both usually settle
     // on 48kHz). A browser that cannot honor this falls back to its own
@@ -144,6 +156,13 @@ export async function createRelayVoiceGraph({ connectTimeoutMs = DEFAULT_CONNECT
       target.node.port.postMessage(frame.samples, [frame.samples.buffer]);
     };
     deliver(firstFrame);
+    for (const buffer of pending) {
+      try {
+        deliver(parseFrame(buffer));
+      } catch {
+        // A malformed frame is dropped rather than tearing down the call.
+      }
+    }
 
     socket.onmessage = (event) => {
       if (!(event.data instanceof ArrayBuffer)) return;

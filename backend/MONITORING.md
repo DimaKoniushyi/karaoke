@@ -30,21 +30,16 @@ once per auto-driver configuration; format probes occur in the child. Settings
 snapshots, never SQLAlchemy sessions/entities, cross to the hardware thread.
 Effect-only edits coalesce into live updates after startup without restarting DSP.
 
-## WASAPI modes and fallback
+## WASAPI mode
 
-The default remains shared mode so another microphone user or the Chromium backing
-track is not unexpectedly locked out. Settings → Audio offers explicit selection:
-
-- Shared.
-- Exclusive capture with shared output (may prevent another application capturing).
-- Full exclusive (may also prevent the backing track playing).
-
-Exclusive requests fall back to shared/host-neutral candidates if rejected.
-The choice applies to the next start and current-process restarts; it is not a new
-persisted machine preference. Candidate formats prefer native endpoint rates.
-Fallback never deliberately selects a smaller explicit buffer after sustained
-callback glitches. Automatic periodic return to a smaller buffer is intentionally
-omitted: a manual buffer choice/retry avoids unrequested interruptions while singing.
+Monitoring always opens the device in shared mode, on every path (solo self-
+monitoring, recording, and the online room) -- exclusive mode is not offered
+and is not planned; it seizes the device from every other app (and every
+other stream in this app), which this project deliberately never asks for.
+Candidate formats prefer native endpoint rates. Fallback never deliberately
+selects a smaller explicit buffer after sustained callback glitches.
+Automatic periodic return to a smaller buffer is intentionally omitted: a
+manual buffer choice/retry avoids unrequested interruptions while singing.
 
 ## Verification and remaining hardware check
 

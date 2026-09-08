@@ -46,7 +46,10 @@ export async function createRoomVoiceCapture(streams, getPositionSec) {
     resume: () => recorder.state === "paused" && recorder.resume(),
     stop: () =>
       new Promise((resolve) => {
+        let settled = false;
         const finish = async () => {
+          if (settled) return;
+          settled = true;
           sources.forEach((source) => source.disconnect?.());
           destination?.stream.getTracks?.().forEach((track) => track.stop());
           await Promise.resolve(context?.close?.()).catch(() => {});
@@ -59,7 +62,17 @@ export async function createRoomVoiceCapture(streams, getPositionSec) {
         if (recorder.state === "inactive") finish();
         else {
           recorder.addEventListener("stop", finish, { once: true });
-          recorder.stop();
+          // A recorder that errors instead of stopping, or one whose "stop"
+          // event never arrives for some other reason, must not hang the
+          // caller (finalizing the take) forever -- fall back to whatever
+          // chunks were already captured instead of waiting indefinitely.
+          recorder.addEventListener("error", finish, { once: true });
+          setTimeout(finish, 5000);
+          try {
+            recorder.stop();
+          } catch {
+            finish();
+          }
         }
       })
   };

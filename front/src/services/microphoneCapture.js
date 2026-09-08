@@ -125,8 +125,15 @@ export async function acquireMicrophone(preferredDeviceId = "", { disabledEffect
       released = true;
       await enqueue(async () => {
         entry.users = Math.max(0, entry.users - 1);
-        if (entry.users || active !== entry) return;
-        active = null;
+        if (entry.users) return;
+        // Once this entry's own last lease is gone it must always close --
+        // not only while it's still the current `active`. resolve() replaces
+        // `active` outright (not reusing this entry) when the device died,
+        // so a caller still holding an older lease at that moment finds
+        // `active !== entry` here; skipping the close in that case used to
+        // leak this entry's whole Web Audio graph (AudioContext included)
+        // forever, since nothing else ever references it again.
+        if (active === entry) active = null;
         await entry.graph.close();
       });
     }

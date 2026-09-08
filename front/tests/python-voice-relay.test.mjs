@@ -128,6 +128,43 @@ describe("python voice relay", () => {
     expect(Array.from(dryNode.port.postMessage.mock.calls[1][0])).toEqual([5]);
   });
 
+  test("buffers frames that arrive while the AudioWorklet module is still loading", async () => {
+    // connectRelaySocket() clears socket.onmessage once it resolves on the
+    // first frame; the relay keeps sending frames continuously the whole
+    // time, so anything arriving during the async addModule()/node-creation
+    // gap that follows used to be silently dropped instead of queued.
+    let resolveAddModule;
+    class SlowAudioContext extends FakeAudioContext {
+      constructor(options) {
+        super(options);
+        this.audioWorklet = {
+          addModule: vi.fn(() => new Promise((resolve) => { resolveAddModule = resolve; }))
+        };
+      }
+    }
+    vi.stubGlobal("AudioContext", SlowAudioContext);
+
+    const promise = createRelayVoiceGraph({ connectTimeoutMs: 500 });
+    await Promise.resolve();
+    await Promise.resolve();
+    const socket = FakeWebSocket.instances[0];
+    socket.onmessage({ data: encodeFrame(STREAM_DRY, 48000, [1]) });
+
+    // Let the continuation run up to (and pause at) the pending addModule().
+    for (let tick = 0; tick < 10 && !resolveAddModule; tick += 1) await Promise.resolve();
+    expect(resolveAddModule).toBeTruthy();
+
+    socket.onmessage({ data: encodeFrame(STREAM_WET, 48000, [2, 3]) });
+    resolveAddModule();
+    const graph = await promise;
+
+    const [dryNode, wetNode] = FakeAudioWorkletNode.instances;
+    expect(dryNode.port.postMessage).toHaveBeenCalledTimes(1);
+    expect(wetNode.port.postMessage).toHaveBeenCalledTimes(1);
+    expect(Array.from(wetNode.port.postMessage.mock.calls[0][0])).toEqual([2, 3]);
+    await graph.close();
+  });
+
   test("rejects when the relay closes before sending any frame", async () => {
     const promise = createRelayVoiceGraph({ connectTimeoutMs: 500 });
     await Promise.resolve();
