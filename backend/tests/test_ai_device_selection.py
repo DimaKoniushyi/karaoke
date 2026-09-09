@@ -31,13 +31,16 @@ def test_cpu_runtime_loads_pitch_without_inspecting_cuda(monkeypatch):
     _cpu_plan(monkeypatch)
     _fake_torch(monkeypatch)
     torchfcpe = ModuleType("torchfcpe")
-    torchfcpe.spawn_bundled_infer_model = Mock(return_value=object())
+    model = Mock()
+    model.eval.return_value = model
+    torchfcpe.spawn_bundled_infer_model = Mock(return_value=model)
     monkeypatch.setitem(sys.modules, "torchfcpe", torchfcpe)
 
     estimator = pitch.FCPEPitchEstimator()
     estimator._load()
 
     torchfcpe.spawn_bundled_infer_model.assert_called_once_with(device="cpu")
+    model.eval.assert_called_once_with()
 
 
 def test_cpu_runtime_loads_ctc_language_role_without_inspecting_cuda(monkeypatch):

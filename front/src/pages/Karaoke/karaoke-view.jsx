@@ -11,33 +11,53 @@ import useKaraokeSceneFlow from "./hooks/useKaraokeSceneFlow";
 import KaraokeMedia from "./media";
 import KaraokePerformanceStage from "./performance-stage";
 
-const HOTKEYS = { ArrowLeft: -5, ArrowRight: 5 };
+const SEEK_DELTA = { "seek-backward": -5, "seek-forward": 5 };
 
-function useHotkeys(scopeRef, { currentTime, duration, onTogglePlay, onSeek, onStop }) {
+// Pure key -> command classification, kept separate from useHotkeys so it
+// can be unit-tested without mounting a component or touching the DOM.
+export function getKaraokeHotkeyAction(event, scope) {
+  if (
+    event?.code === "Space" &&
+    !event.defaultPrevented &&
+    !event.isComposing &&
+    !event.repeat &&
+    isHotkeyScopeActive(scope)
+  ) {
+    return "toggle-playback";
+  }
+  if (shouldIgnoreHotkey(event, scope)) return null;
+  if (event.code === "Escape") return "stop";
+  if (event.code === "ArrowLeft") return "seek-backward";
+  if (event.code === "ArrowRight") return "seek-forward";
+  return null;
+}
+
+export function useHotkeys(scopeRef, { currentTime, duration, onTogglePlay, onSeek, onStop }) {
   const handlers = useLatestRef({ currentTime, duration, onTogglePlay, onSeek, onStop });
 
   useEffect(() => {
     const onKeyDown = (event) => {
-      const scope = scopeRef.current;
-      if (event.code === "Space" && !event.defaultPrevented && !event.isComposing && !event.repeat && isHotkeyScopeActive(scope)) {
+      const action = getKaraokeHotkeyAction(event, scopeRef.current);
+      if (action === "toggle-playback") {
         event.preventDefault();
-        handlers.current.onTogglePlay?.();
-        return;
+        return handlers.current.onTogglePlay?.();
       }
-      if (shouldIgnoreHotkey(event, scope)) return;
-      if (event.code === "Escape") return handlers.current.onStop?.();
-      const delta = HOTKEYS[event.code];
-      if (!delta) return;
-      event.preventDefault();
-      const { currentTime: time, duration: length, onSeek: seek } = handlers.current;
-      seek?.(Math.min(Math.max(0, Number(length) || 0), Math.max(0, (Number(time) || 0) + delta)));
+      if (action === "stop") return handlers.current.onStop?.();
+      if (action === "seek-backward" || action === "seek-forward") {
+        event.preventDefault();
+        const { currentTime: time, duration: length, onSeek: seek } = handlers.current;
+        const delta = SEEK_DELTA[action];
+        seek?.(
+          Math.min(Math.max(0, Number(length) || 0), Math.max(0, (Number(time) || 0) + delta))
+        );
+      }
     };
     globalThis.addEventListener?.("keydown", onKeyDown);
     return () => globalThis.removeEventListener?.("keydown", onKeyDown);
   }, [handlers, scopeRef]);
 }
 
-function useControls(autoHideEnabled) {
+export function useControls(autoHideEnabled) {
   const [visible, setVisible] = useState(true);
   const activity = useRef(Date.now());
   const pointer = useRef([NaN, NaN]);
@@ -79,7 +99,7 @@ function useControls(autoHideEnabled) {
   return { controlsVisible: visible, hideControls, revealControls, showControls };
 }
 
-function useStageLayout(ref) {
+export function useStageLayout(ref) {
   useEffect(() => {
     const shell = globalThis.document?.querySelector?.(".karaoke-app-shell");
     const stage = ref.current;

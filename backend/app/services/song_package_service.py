@@ -20,7 +20,13 @@ import config
 import models
 from AI.lyrics_document import flatten_word_notes, validate_lyrics_document
 from AI.version import AI_BUILD_ID
-from app.services import revision_cache, song_artifacts, song_service, storage_budget_service
+from app.services import (
+    revision_cache,
+    song_artifacts,
+    song_package_validation,
+    song_service,
+    storage_budget_service,
+)
 from app.services.db_utils import commit_refresh
 from app.utils.atomic_files import atomic_write
 from app.utils.hashing import sha256_file, sha256_stream
@@ -384,20 +390,6 @@ def _read_manifest(archive: zipfile.ZipFile) -> dict[str, object]:
 
 
 
-def _archive_json(archive: zipfile.ZipFile, name: str, *, max_bytes: int = MAX_MANIFEST_BYTES) -> object:
-    try:
-        info = archive.getinfo(name)
-    except KeyError as exc:
-        raise ValueError(f"Song package is missing required artifact: {name}") from exc
-    if info.file_size > max_bytes: raise ValueError(f"Song package artifact is too large: {name}")
-    with archive.open(info) as stream: payload = stream.read(max_bytes + 1)
-    if len(payload) > max_bytes: raise ValueError(f"Song package artifact is too large: {name}")
-    try:
-        return json.loads(payload)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ValueError(f"Song package artifact is invalid JSON: {name}") from exc
-
-
 def _archive_revision(archive: zipfile.ZipFile, manifest: dict[str, object]) -> str:
     artifacts: dict[str, str] = {}
     for relative in (*REVISION_ARTIFACTS, "instrumental.flac", "vocals.flac"):
@@ -430,18 +422,6 @@ def _number(value: object) -> float | None:
     except ValueError:
         return None
     return number if number == number else None
-
-
-def _valid_note(item: object) -> bool:
-    if not isinstance(item, dict): return False
-    start, end, midi = _number(item.get('start')), _number(item.get('end')), _number(item.get('note'))
-    return start is not None and end is not None and midi is not None and start >= 0 and end > start and 0 <= midi <= 127
-
-
-def _valid_word(item: object) -> bool:
-    if not isinstance(item, dict): return False
-    start, end, text = _number(item.get('start')), _number(item.get('end')), str(item.get('word', item.get('text', ''))).strip()
-    return bool(text) and start is not None and end is not None and start >= 0 and end > start
 
 
 def _validate_wav_member(archive: zipfile.ZipFile, name: str) -> float:
@@ -512,19 +492,6 @@ def _required_member(archive: zipfile.ZipFile, key: str) -> zipfile.ZipInfo:
         raise ValueError(f"Song package manifest points to missing artifact: {key}") from exc
 
 
-def _validate_timeline_artifacts(archive: zipfile.ZipFile, mode: object) -> None:
-    lyrics_sync = _archive_json(archive, "output/lyricsSync.json", max_bytes=16 * 1024 * 1024)
-    if not isinstance(lyrics_sync, dict):
-        raise ValueError("Song package lyricsSync.json is structurally invalid")
-    try:
-        validate_lyrics_document(lyrics_sync)
-    except ValueError as exc:
-        raise ValueError("Song package lyricsSync.json is structurally invalid") from exc
-    words, notes = lyrics_sync.get("words", []), flatten_word_notes(lyrics_sync)
-    if mode == "melody" and not notes: raise ValueError("Melody package has no vocal notes")
-    if mode == "lyrics" and not words: raise ValueError("Lyrics package has no timed words")
-
-
 def _validate_semantic_package(archive: zipfile.ZipFile, members: list[zipfile.ZipInfo], manifest: dict[str, object]) -> None:
     if manifest.get("package_schema_version") != PACKAGE_SCHEMA_VERSION: raise ValueError("Unsupported or missing song package schema version")
     mode = manifest.get("karaoke_mode")
@@ -540,7 +507,7 @@ def _validate_semantic_package(archive: zipfile.ZipFile, members: list[zipfile.Z
     _validate_archive_audio(archive, _required_member(archive, "vocals"), label="vocals")
     source = _source_member(members)
     _validate_archive_audio(archive, source, label="source")
-    _validate_timeline_artifacts(archive, mode)
+    song_package_validation.validate_timeline_artifacts(archive, mode)
 
 
 def _package_identity(manifest: dict[str, object]) -> tuple[str, str]:

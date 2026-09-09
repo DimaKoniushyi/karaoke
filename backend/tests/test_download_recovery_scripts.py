@@ -304,9 +304,16 @@ def test_audio_monitor_is_an_internal_backend_mode_not_a_second_python_executabl
     assert_contains(runner, '"--audio-monitor"', "monitor_worker.main()")
 
 
-def test_backend_packaging_bundles_and_smokes_parselmouth():
+def test_backend_packaging_does_not_bundle_or_smoke_legacy_parselmouth():
     build = project_text("scripts/build-installer.ps1", encoding="utf-8-sig")
     runner = project_text("backend/run.py", encoding="utf-8-sig")
 
-    assert_contains(build, '"--collect-all","parselmouth"', "backend-v5-parselmouth-psola")
-    assert_contains(runner, "import parselmouth", "parselmouth.PRAAT_VERSION")
+    assert_excludes(build, '"--collect-all","parselmouth"', "parselmouth-psola")
+    assert_excludes(runner, "import parselmouth", "parselmouth.PRAAT_VERSION")
+
+
+def test_torch_only_backend_package_explicitly_excludes_other_ml_frameworks():
+    build = project_text("scripts/build-installer.ps1", encoding="utf-8-sig")
+
+    for module in ("tensorflow", "tf_keras", "keras", "jax", "flax"):
+        assert f'"--exclude-module","{module}"' in build

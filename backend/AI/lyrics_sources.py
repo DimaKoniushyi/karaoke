@@ -288,6 +288,42 @@ def _select_reprise_candidate_at_time(
     return 0
 
 
+def _retime_arrangement_lines(
+    timed_lines: tuple[TimedLine, ...] | list[TimedLine],
+    selected_lines: tuple[str, ...] | list[str],
+    *,
+    duration: float,
+) -> tuple[TimedLine, ...]:
+    """Keep unchanged provider timings and estimate only a rearranged tail."""
+    original = tuple(timed_lines)
+    selected = tuple(selected_lines)
+    common = 0
+    while (
+        common < len(original)
+        and common < len(selected)
+        and _identity(original[common].text) == _identity(selected[common])
+    ):
+        common += 1
+    result = list(original[:common])
+    if common >= len(selected):
+        return tuple(result)
+    if common < len(original):
+        tail_start = original[common].start
+    elif original:
+        tail_start = original[-1].start
+    else:
+        tail_start = 0.0
+    tail = selected[common:]
+    weights = [max(1, len(_lyrics_tokens(line))) for line in tail]
+    available = max(0.0, float(duration) - tail_start)
+    total = max(1, sum(weights))
+    consumed = 0
+    for line, weight in zip(tail, weights, strict=True):
+        result.append(TimedLine(tail_start + available * consumed / total, line))
+        consumed += weight
+    return tuple(result)
+
+
 _CYRILLIC_LATIN = str.maketrans({
     "а": "a", "б": "b", "в": "v", "г": "g", "ґ": "g", "д": "d",
     "е": "e", "ё": "e", "є": "ye", "ж": "zh", "з": "z", "и": "i",
@@ -461,6 +497,7 @@ def discover_lyrics(
     artist: str | None = None,
     *_args,
     complete: bool = False,
+    duration_seconds: float | None = None,
     **_kwargs,
 ) -> LyricsDiscovery | None:
     track = " ".join(str(title or "").replace("_", " ").split())
@@ -469,6 +506,29 @@ def discover_lyrics(
         return None
     query = f"{performer} - {track}" if performer else track
     deadline = time.monotonic() + LOOKUP_BUDGET_SECONDS
+    if performer and duration_seconds is not None and float(duration_seconds) > 0:
+        exact_params = {
+            "track_name": track,
+            "artist_name": performer,
+            "duration": round(float(duration_seconds)),
+        }
+        exact_url = "https://lrclib.net/api/get?" + urllib.parse.urlencode(exact_params)
+        try:
+            exact_row = json.loads(_request_before(exact_url, "utf-8", deadline))
+        except (OSError, TypeError, ValueError):
+            exact_row = None
+        if isinstance(exact_row, dict) and (
+            result := _lrclib_result(
+                [exact_row],
+                title=track,
+                artist=performer,
+                query=query,
+            )
+        ):
+            if complete:
+                alternate = _musixmatch(performer, track, query, deadline)
+                return _select_complete_lyrics((result, alternate)) if alternate else result
+            return result
     params = {"track_name": track, "artist_name": performer} if performer else {"track_name": track}
     url = "https://lrclib.net/api/search?" + urllib.parse.urlencode(params)
     try:
@@ -501,4 +561,9 @@ def discover_lyrics(
             return result
     if time.monotonic() >= deadline:
         return None
+    if complete:
+        if result := _musixmatch(performer, track, query, deadline):
+            return result
+        if time.monotonic() >= deadline:
+            return None
     return _pisni(performer, track, query, deadline)

@@ -14,6 +14,42 @@ SBOM_DIR = ROOT / "generated/sbom"
 OUTPUT = SBOM_DIR / "release.cdx.json"
 
 
+def _package_identity(value: str) -> str:
+    return re.sub(r"[-_.]+", "-", value).casefold()
+
+
+def _backend_lock_versions(lock_text: str) -> dict[str, str]:
+    versions: dict[str, str] = {}
+    for raw_line in lock_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, separator, version = line.partition("==")
+        if not separator or not name.strip() or not version.strip():
+            raise ValueError(f"Invalid reviewed backend lock entry: {raw_line!r}")
+        versions[_package_identity(name.strip())] = version.strip()
+    return versions
+
+
+def _filter_backend_packages(
+    packages: list[dict[str, str]], lock_text: str
+) -> list[dict[str, str]]:
+    """Keep only exact packages declared by the reviewed reproducible lock."""
+    expected = _backend_lock_versions(lock_text)
+    selected = [
+        package
+        for package in packages
+        if expected.get(_package_identity(package["name"])) == package["version"]
+    ]
+    found = {_package_identity(package["name"]) for package in selected}
+    if missing := sorted(expected.keys() - found):
+        raise ValueError(
+            "Backend SBOM input does not match requirements-lock.in; missing exact "
+            f"packages: {', '.join(missing)}"
+        )
+    return selected
+
+
 def _component(ecosystem: str, package: dict[str, str]) -> dict[str, object]:
     name, version, license_name = package["name"], package["version"], package["license"]
     namespace = "pypi" if ecosystem == "backend" else "npm"
@@ -55,7 +91,29 @@ def _native_components(version: str) -> list[dict[str, object]]:
         {"type": "framework", "name": "KeyboardLighting", "version": version, "licenses": [{"license": {"name": "LicenseRef-A&D-Voice"}}]},
         {"type": "library", "name": "hidapi", "version": "d3013f0", "licenses": [{"license": {"name": "BSD-3-Clause"}}]},
         {"type": "library", "name": "wooting-rgb-sdk", "version": "1.8.0", "licenses": [{"license": {"name": "MPL-2.0"}}]},
-        {"type": "application", "name": "Music-Source-Separation-Training", "version": msst_version, "licenses": [{"license": {"name": "LicenseRef-MSST-Upstream"}}]},
+        {
+            "type": "application",
+            "name": "Music-Source-Separation-Training",
+            "version": msst_version,
+            "licenses": [{"license": {"name": "MIT"}}],
+            "externalReferences": [{
+                "type": "license",
+                "url": (
+                    "https://github.com/ZFTurbo/Music-Source-Separation-Training/"
+                    f"blob/{msst_version}/LICENSE"
+                ),
+            }],
+        },
+        {
+            "type": "machine-learning-model",
+            "name": "fcpe",
+            "version": "torchfcpe-0.0.4",
+            "licenses": [{"license": {"name": "MIT"}}],
+            "externalReferences": [{
+                "type": "license",
+                "url": "https://github.com/CNChTu/FCPE/blob/main/LICENSE",
+            }],
+        },
     ]
     try:
         from AI.model_registry import MODELS
@@ -65,7 +123,11 @@ def _native_components(version: str) -> list[dict[str, object]]:
                 "type": "machine-learning-model",
                 "name": model.key,
                 "version": model.revision,
-                "licenses": [{"license": {"name": "LicenseRef-Model-Upstream"}}],
+                "licenses": [{"license": {"name": model.license}}],
+                "externalReferences": [{
+                    "type": "license",
+                    "url": model.license_url,
+                }],
             }
             if model.sha256:
                 component["hashes"] = [{"alg": "SHA-256", "content": model.sha256}]
@@ -84,7 +146,13 @@ def main() -> int:
         if not path.is_file():
             raise FileNotFoundError(f"SBOM input is missing: {path}")
         source = json.loads(path.read_text(encoding="utf-8"))
-        for package in source["packages"]:
+        packages = source["packages"]
+        if ecosystem == "backend":
+            lock_text = (ROOT / "backend/requirements-lock.in").read_text(
+                encoding="utf-8"
+            )
+            packages = _filter_backend_packages(packages, lock_text)
+        for package in packages:
             if not package.get("license") or package["license"] == "UNKNOWN":
                 unknown.append(f"{ecosystem}:{package['name']}@{package['version']}")
             components.append(_component(ecosystem, package))

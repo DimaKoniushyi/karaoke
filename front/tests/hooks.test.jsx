@@ -2,7 +2,7 @@
 import { useRef } from "react";
 import { act, cleanup, render, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { same, notCalled, verify } from "./helpers/assertions.mjs";
+import { same, verify } from "./helpers/assertions.mjs";
 const apiMocks = vi.hoisted(() => ({
   getResult: vi.fn(),
   getHealth: vi.fn(),
@@ -19,12 +19,20 @@ import useMountedRef from "../src/hooks/useMountedRef.js";
 import { shouldSchedulePoll, usePolling } from "../src/hooks/usePolling.js";
 import { translateSaved } from "../src/i18n/runtime.js";
 import useSongCover from "../src/hooks/useSongCover.js";
-import useKaraokeControls from "../src/pages/Karaoke/hooks/useKaraokeControls.js";
-import useKaraokeHotkeys, { dispatchKaraokeHotkey } from "../src/pages/Karaoke/hooks/useKaraokeHotkeys.js";
+import { useControls, useHotkeys, useStageLayout } from "../src/pages/Karaoke/karaoke-view.jsx";
 import { isHotkeyScopeActive } from "../src/utils/hotkeys.js";
-import useKaraokeResult from "../src/pages/Karaoke/hooks/useKaraokeResult.js";
-import useKaraokeStageLayout from "../src/pages/Karaoke/hooks/useKaraokeStageLayout.js";
-import { getKaraokeStageLayout } from "../src/pages/Karaoke/utils/layout.js";
+import { useKaraokeResult } from "../src/pages/Karaoke/index.jsx";
+
+// Mirrors the CSS math inlined into karaoke-view.jsx's useStageLayout --
+// there is no longer a standalone pure function to import, so this is the
+// test's own reference implementation for computing expected values.
+function expectedStageLayout({ mainWidth, mainHeight, stageWidth, stageHeight, currentNavExtra }) {
+  return {
+    navExtra: Math.max(0, mainHeight + currentNavExtra - (mainWidth * 9) / 16),
+    videoWidth: Math.ceil(Math.max(stageWidth, (stageHeight * 16) / 9)) + 2,
+    videoHeight: Math.ceil(Math.max(stageHeight, (stageWidth * 9) / 16)) + 2
+  };
+}
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
@@ -356,7 +364,7 @@ describe("navigation and karaoke hooks", () => {
     const clearInterval = vi.spyOn(window, "clearInterval");
     const addEvent = vi.spyOn(document, "addEventListener");
     const removeEvent = vi.spyOn(document, "removeEventListener");
-    const { result, rerender, unmount } = renderHook(({ enabled }) => useKaraokeControls({ autoHideEnabled: enabled }), {
+    const { result, rerender, unmount } = renderHook(({ enabled }) => useControls(enabled), {
       initialProps: { enabled: true }
     });
     expect(setInterval).toHaveBeenCalledOnce();
@@ -425,30 +433,19 @@ describe("navigation and karaoke hooks", () => {
     expect(clearInterval).toHaveBeenCalled();
     verify([removeEvent, "toHaveBeenCalledWith", "fullscreenchange", fullscreenRegistration[1]]);
   });
-  test("fullscreen respects a disabled auto-hide preference", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-    const setInterval = vi.spyOn(window, "setInterval");
-    const { result, rerender } = renderHook(({ isFullscreen }) => useKaraokeControls({ autoHideEnabled: false, isFullscreen }), {
-      initialProps: { isFullscreen: false }
-    });
-    expect(setInterval).not.toHaveBeenCalled();
-    rerender({ isFullscreen: true });
-    expect(setInterval).not.toHaveBeenCalled();
-    expect(result.current.controlsVisible).toBe(true);
-    rerender({ isFullscreen: false });
-    expect(result.current.controlsVisible).toBe(true);
-  });
-  test("enables control auto-hide by default", () => {
+  test("does not auto-hide when no autoHideEnabled value is given", () => {
+    // useControls no longer takes an isFullscreen prop -- fullscreen only
+    // ever reveals controls via the real "fullscreenchange" DOM event
+    // (covered by the previous test), independent of auto-hide.
     vi.useFakeTimers();
     const setInterval = vi.spyOn(window, "setInterval");
-    renderHook(() => useKaraokeControls());
-    expect(setInterval).toHaveBeenCalledWith(expect.any(Function), 250);
+    renderHook(() => useControls());
+    expect(setInterval).not.toHaveBeenCalled();
   });
   test("renders controls as visible before mount effects run", () => {
     const snapshots = [];
     const Probe = () => {
-      snapshots.push(useKaraokeControls({ autoHideEnabled: false }));
+      snapshots.push(useControls(false));
       return null;
     };
     render(<Probe />);
@@ -464,8 +461,7 @@ describe("navigation and karaoke hooks", () => {
     const removeEvent = vi.spyOn(window, "removeEventListener");
     const hook = renderHook(
       ({ scopeRef }) =>
-        useKaraokeHotkeys({
-          scopeRef,
+        useHotkeys(scopeRef, {
           currentTime: 3,
           duration: 6,
           onTogglePlay: toggle,
@@ -494,32 +490,6 @@ describe("navigation and karaoke hooks", () => {
     expect(keydownRegistration).toBeDefined();
     hook.unmount();
     expect(removeEvent).toHaveBeenCalledWith("keydown", expect.any(Function));
-  });
-  test("dispatches every karaoke command with optional callbacks", () => {
-    const toggle = vi.fn();
-    const seek = vi.fn();
-    const stop = vi.fn();
-    const context = {
-      currentTime: 3,
-      duration: 6,
-      onTogglePlay: toggle,
-      onSeek: seek,
-      onStop: stop
-    };
-    dispatchKaraokeHotkey("toggle-playback", context);
-    expect(toggle).toHaveBeenCalledOnce();
-    notCalled(seek, stop);
-    dispatchKaraokeHotkey("seek-backward", context);
-    verify([seek.mock.calls, "toEqual", [[0]]], [stop, "not.toHaveBeenCalled"]);
-    dispatchKaraokeHotkey("seek-forward", context);
-    verify([seek.mock.calls, "toEqual", [[0], [6]]], [stop, "not.toHaveBeenCalled"]);
-    dispatchKaraokeHotkey("stop", context);
-    expect(stop).toHaveBeenCalledOnce();
-    dispatchKaraokeHotkey("unknown", context);
-    expect(stop).toHaveBeenCalledTimes(2);
-    for (const action of ["toggle-playback", "seek-backward", "seek-forward", "stop"]) {
-      verify([() => dispatchKaraokeHotkey(action, { currentTime: 0, duration: 0 }), "not.toThrow"]);
-    }
   });
   test("loads, rejects and resets karaoke results safely", async () => {
     let resolve;
@@ -625,9 +595,9 @@ describe("navigation and karaoke hooks", () => {
     };
     const { unmount } = renderHook(() => {
       const stageRef = useRef(stage);
-      useKaraokeStageLayout(stageRef);
+      useStageLayout(stageRef);
     });
-    const expected = getKaraokeStageLayout({
+    const expected = expectedStageLayout({
       mainWidth: 1000,
       mainHeight: 700,
       stageWidth: 800,
@@ -661,13 +631,13 @@ describe("navigation and karaoke hooks", () => {
     const detachedMain = document.createElement("main");
     const stageWithoutShell = document.createElement("section");
     detachedMain.append(stageWithoutShell);
-    verify([() => renderHook(() => useKaraokeStageLayout({ current: stageWithoutShell })), "not.toThrow"]);
+    verify([() => renderHook(() => useStageLayout({ current: stageWithoutShell })), "not.toThrow"]);
     const shell = document.createElement("div");
     shell.className = "karaoke-app-shell";
     document.body.append(shell);
-    verify([() => renderHook(() => useKaraokeStageLayout({ current: null })), "not.toThrow"]);
+    verify([() => renderHook(() => useStageLayout({ current: null })), "not.toThrow"]);
     const detachedStage = document.createElement("section");
-    verify([() => renderHook(() => useKaraokeStageLayout({ current: detachedStage })), "not.toThrow"]);
+    verify([() => renderHook(() => useStageLayout({ current: detachedStage })), "not.toThrow"]);
     expect(observe).not.toHaveBeenCalled();
     shell.remove();
   });
@@ -693,7 +663,7 @@ describe("navigation and karaoke hooks", () => {
       observe() {}
       disconnect() {}
     };
-    const hook = renderHook(({ stageRef }) => useKaraokeStageLayout(stageRef), {
+    const hook = renderHook(({ stageRef }) => useStageLayout(stageRef), {
       initialProps: { stageRef: { current: stages[0] } }
     });
     verify([stages[0].style.getPropertyValue("--karaoke-video-width"), "not.toBe", ""]);

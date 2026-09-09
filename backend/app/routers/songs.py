@@ -2,7 +2,6 @@
 
 import asyncio
 import base64
-import difflib
 import tempfile
 import zipfile
 from collections.abc import Callable
@@ -39,6 +38,7 @@ from app.services import (
     song_artifacts,
     song_editor_service,
     song_package_service,
+    song_lyrics,
     song_service,
     storage_budget_service,
 )
@@ -677,34 +677,6 @@ def get_result(song: SongDependency, response: Response):
     )
 
 
-def _carry_forward_word_notes(previous: list[Any], words: list[dict[str, Any]]) -> None:
-    """Reassign notes from the previously-saved words onto the freshly-submitted
-    ones by matching word TEXT via sequence alignment, not raw array position.
-    Editing lyrics text can insert/remove words anywhere in the list, which
-    would shift every later word's index — matching by content keeps each
-    unchanged word's notes attached to that same word instead of sliding them
-    onto whichever word now happens to sit at its old index. A matched pair's
-    notes are only carried over if its timing is also unchanged, since a
-    same-text match with different timing is more likely a re-estimated word
-    than the same take."""
-    previous_texts = [
-        str(word.get("text", "")).strip().casefold() if isinstance(word, dict) else ""
-        for word in previous
-    ]
-    new_texts = [str(word.get("text", "")).strip().casefold() for word in words]
-    matcher = difflib.SequenceMatcher(None, previous_texts, new_texts, autojunk=False)
-    for tag, i1, i2, j1, _j2 in matcher.get_opcodes():
-        if tag != "equal": continue
-        for offset in range(i2 - i1):
-            old, word = previous[i1 + offset], words[j1 + offset]
-            same_interval = (
-                isinstance(old, dict)
-                and old.get("start") == word.get("start")
-                and old.get("end") == word.get("end")
-            )
-            if same_interval: word["notes"] = [dict(note) for note in old.get("notes", [])]
-
-
 @router.put("/{song_id}/lyrics")
 def update_lyrics(body: schemas.LyricsUpdate, song: SongDependency, db: Session = Depends(get_db)):
     if not song_service.is_done(song) or not song.output_dir: raise HTTPException(status_code=409, detail="Song has not been processed yet")
@@ -724,7 +696,7 @@ def update_lyrics(body: schemas.LyricsUpdate, song: SongDependency, db: Session 
                 word["text"] = str(word.pop("word", word.get("text", ""))).strip()
                 word["notes"] = []
                 words.append(word)
-            _carry_forward_word_notes(previous, words)
+            song_lyrics.carry_forward_word_notes(previous, words)
             updated = {**current, "text": trusted_text, "words": words, "edited": True}
             write_json(lyrics_path, ai_bridge.validate_lyrics_document(updated))
             song_package_service.invalidate_content_revision(song)

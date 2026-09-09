@@ -13,7 +13,7 @@ class PitchEstimator(ABC):
 
 class Transcriber(ABC):
     @abstractmethod
-    def transcribe(self, audio, language): ...
+    def transcribe(self, audio, language, *, context: str = ""): ...
 
 
 class Aligner(ABC):

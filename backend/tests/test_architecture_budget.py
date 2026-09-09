@@ -11,6 +11,65 @@ def test_production_architecture_budget_is_enforced():
     assert failures == []
 
 
+def test_text_alignment_engine_stays_within_its_architecture_budget():
+    errors, _warnings = audit_architecture.audit_file(
+        audit_architecture.ROOT / "AI" / "engines" / "text.py"
+    )
+
+    assert errors == []
+
+
+def test_songs_router_stays_within_its_architecture_budget():
+    errors, _warnings = audit_architecture.audit_file(
+        audit_architecture.ROOT / "app" / "routers" / "songs.py"
+    )
+
+    assert errors == []
+
+
+def test_song_package_service_stays_within_its_architecture_budget():
+    errors, _warnings = audit_architecture.audit_file(
+        audit_architecture.ROOT / "app" / "services" / "song_package_service.py"
+    )
+
+    assert errors == []
+
+
+def test_kfn_dataset_service_stays_within_its_architecture_budget():
+    errors, _warnings = audit_architecture.audit_file(
+        audit_architecture.ROOT / "app" / "services" / "kfn_dataset_service.py"
+    )
+
+    assert errors == []
+
+
+def test_monitor_worker_stays_within_its_architecture_budget():
+    errors, _warnings = audit_architecture.audit_file(
+        audit_architecture.ROOT / "app" / "services" / "monitor_worker.py"
+    )
+
+    assert errors == []
+
+
+def test_pipeline_service_stays_within_its_architecture_budget():
+    errors, _warnings = audit_architecture.audit_file(
+        audit_architecture.ROOT / "app" / "services" / "pipeline_service.py"
+    )
+
+    assert errors == []
+
+
+def test_metadata_enrichment_service_stays_within_its_architecture_budget():
+    errors, _warnings = audit_architecture.audit_file(
+        audit_architecture.ROOT
+        / "app"
+        / "services"
+        / "metadata_enrichment_service.py"
+    )
+
+    assert errors == []
+
+
 def test_new_module_and_function_use_default_budgets(tmp_path: Path):
     module = tmp_path / "oversized.py"
     body = "\n".join(["def oversized():", *["    value = 1"] * 81, "    return value"])

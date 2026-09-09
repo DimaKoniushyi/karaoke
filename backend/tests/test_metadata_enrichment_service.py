@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, call
 
 from app.services import metadata_enrichment_service as metadata
+from app.services import metadata_media_process
 from tests._shared import patch_attrs, raises
 
 
@@ -290,7 +291,7 @@ def test_training_media_starts_in_a_dedicated_spawn_process(monkeypatch, tmp_pat
             return process
 
     get_context = Mock(return_value=FakeContext())
-    monkeypatch.setattr(metadata.multiprocessing, "get_context", get_context)
+    monkeypatch.setattr(metadata_media_process.multiprocessing, "get_context", get_context)
 
     process = metadata.start_training_media_process(
         "Song",

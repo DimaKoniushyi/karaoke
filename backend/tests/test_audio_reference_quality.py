@@ -84,6 +84,16 @@ def test_reference_quality_accepts_punctuation_and_case_differences():
     assert metrics.matched_word_ratio == 1.0
 
 
+def test_reference_quality_accepts_yo_and_mixed_script_provider_artifacts():
+    reference = document(("Все", 1.0, 1.5, 60), ("Hо", 1.6, 2.2, 62))
+    candidate = document(("Всё", 1.0, 1.5, 60), ("Но", 1.6, 2.2, 62))
+
+    metrics = compare_lyrics_documents(reference, candidate)
+
+    assert metrics.token_similarity == 1.0
+    assert metrics.matched_word_ratio == 1.0
+
+
 def test_reference_quality_treats_the_same_melody_in_another_octave_as_a_match():
     reference = document(("строка", 1.0, 1.5, 67))
     candidate = document(("строка", 1.0, 1.5, 55))
@@ -96,9 +106,7 @@ def test_reference_quality_treats_the_same_melody_in_another_octave_as_a_match()
 def test_reference_quality_matches_a_shared_pitch_inside_a_melisma():
     reference = document(("лампа", 1.0, 2.0, 67))
     candidate = document(("лампа", 1.0, 2.0, 55))
-    candidate["words"][0]["notes"].insert(
-        0, {"note": 45, "start": 1.0, "end": 1.4}
-    )
+    candidate["words"][0]["notes"].insert(0, {"note": 45, "start": 1.0, "end": 1.4})
     candidate["words"][0]["notes"][1]["start"] = 1.4
 
     metrics = compare_lyrics_documents(reference, candidate)
@@ -123,17 +131,13 @@ def test_reference_runner_forwards_the_requested_processing_mode(tmp_path, monke
     class Pipeline:
         def run(self, request):
             captured.append(request)
-            output = (
-                tmp_path / "generated" / "diagnostics" / "audio-v2-pipeline" / "Song"
-            )
+            output = tmp_path / "generated" / "diagnostics" / "audio-v2-pipeline" / "Song"
             output.mkdir(parents=True, exist_ok=True)
             (output / "lyricsSync.json").write_text(
                 json.dumps(payload, ensure_ascii=False), encoding="utf-8"
             )
 
-    result = run_audio_v2_reference.run_one(
-        Pipeline(), reference_dir, processing_mode="quality"
-    )
+    result = run_audio_v2_reference.run_one(Pipeline(), reference_dir, processing_mode="quality")
 
     assert captured[0].processing_mode == "quality"
     assert result["note_count_ratio"] == 1.0

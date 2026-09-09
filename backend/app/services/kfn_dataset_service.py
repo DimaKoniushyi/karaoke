@@ -376,6 +376,17 @@ def _refine_kfn_vocals(document, target: Path):
     }
 
 
+def _embedded_audio_entry(container):
+    return next(
+        (
+            entry
+            for entry in container.entries
+            if entry.kind == 2 and not entry.payload.startswith(b"MThd")
+        ),
+        None,
+    )
+
+
 def prepare_kfn_file(
     path: str | Path,
     *,
@@ -455,14 +466,7 @@ def prepare_kfn_file(
         with source.open("rb") as source_stream:
             digest = hashlib.file_digest(source_stream, "sha256").hexdigest()
         reference = kar_dataset_service._lyrics_payload(document, "kfn")
-        audio_entry = next(
-            (
-                entry
-                for entry in container.entries
-                if entry.kind == 2 and not entry.payload.startswith(b"MThd")
-            ),
-            None,
-        )
+        audio_entry = _embedded_audio_entry(container)
         audio_ready = bool(audio_entry and _write_embedded_audio(audio_entry, target))
         warnings = [] if audio_ready else ["В KFN не найдена пригодная встроенная аудиодорожка"]
         comparison = {

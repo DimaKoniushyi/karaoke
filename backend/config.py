@@ -257,6 +257,17 @@ def apply_storage_paths(
 
 def configure_ai_resource_environment(*, force: bool = False) -> None:
     """Point the AI core at resources declared by the backend model registry."""
+    # Every production inference engine in this project is PyTorch-based.
+    # Transformers otherwise auto-detects the installed TensorFlow/Flax
+    # packages and initializes those runtimes inside each spawned alignment
+    # worker, adding seconds of startup and hundreds of MB of needless memory.
+    os.environ.setdefault("USE_TORCH", "1")
+    os.environ.setdefault("USE_TF", "0")
+    os.environ.setdefault("USE_FLAX", "0")
+    # HF_HOME/HUGGINGFACE_HUB_CACHE are configured centrally above. Keeping
+    # the removed legacy variable makes current Transformers emit a warning
+    # in every spawned inference worker.
+    os.environ.pop("TRANSFORMERS_CACHE", None)
     msst = EXTERNAL_ENGINES_DIR / "msst"
     msst_config = msst / "configs" / "KimberleyJensen" / "config_vocals_mel_band_roformer_kj.yaml"
 

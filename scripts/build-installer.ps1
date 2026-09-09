@@ -215,7 +215,7 @@ $LegacyV23SchemaVersion = "2026.08.11-v23-parallel-safe"
 
 # Increment ONLY the component whose OUTPUT FORMAT/BUILD RULES changed.
 # Never bump all of these just because build-installer.ps1 itself changed.
-$BackendSchemaVersion   = "backend-v5-parselmouth-psola-monitor-onedir-v1"
+$BackendSchemaVersion   = "backend-v6-torch-only-monitor-onedir-v1"
 $AsioSchemaVersion      = "asio-v1"
 $FrontendSchemaVersion  = "frontend-v1"
 $ModelsSchemaVersion    = "models-7z-v2"
@@ -1988,7 +1988,6 @@ function Build-Backend {
             "--collect-submodules","rotary_embedding_torch",
             "--collect-all","qwen_asr",
             "--collect-all","nagisa",
-            "--collect-all","parselmouth",
             "--collect-all","yt_dlp",
             "--collect-all","yt_dlp_ejs",
             "--collect-data","torchfcpe",
@@ -1996,6 +1995,11 @@ function Build-Backend {
             "--exclude-module","_tkinter",
             "--exclude-module","idlelib",
             "--exclude-module","turtledemo",
+            "--exclude-module","tensorflow",
+            "--exclude-module","tf_keras",
+            "--exclude-module","keras",
+            "--exclude-module","jax",
+            "--exclude-module","flax",
             "run.py"
         )
 

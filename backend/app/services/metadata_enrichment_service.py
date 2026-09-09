@@ -7,11 +7,10 @@ import html
 import io
 import json
 import logging
-import multiprocessing
 import os
-import queue
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 import urllib.parse
@@ -25,7 +24,13 @@ from sqlalchemy import select
 import config
 import models
 from app import repositories
-from app.services import background_task_supervisor, revision_cache, song_service
+from app.services import (
+    background_task_supervisor,
+    metadata_enrichment_runner,
+    metadata_media_process,
+    revision_cache,
+    song_service,
+)
 from app.services.db_utils import commit
 from database import SessionLocal
 
@@ -89,78 +94,7 @@ _validated_video_urls: set[str] = set()
 _lock = threading.Lock()
 
 
-def _training_media_process_entry(
-    results,
-    title: str,
-    artist: str | None,
-    output_dir: str,
-    expected_duration: float | None,
-) -> None:
-    try:
-        results.put((
-            "ok",
-            prepare_training_media(
-                title,
-                artist,
-                Path(output_dir),
-                expected_duration=expected_duration,
-            ),
-        ))
-    except BaseException as exc:  # child-process boundary
-        results.put(("error", f"{type(exc).__name__}: {exc}"))
-
-
-class TrainingMediaProcess:
-    def __init__(
-        self,
-        title: str,
-        artist: str | None,
-        output_dir: Path,
-        *,
-        expected_duration: float | None = None,
-    ) -> None:
-        context = multiprocessing.get_context("spawn")
-        self._results = context.Queue(1)
-        self._process = context.Process(
-            target=_training_media_process_entry,
-            args=(self._results, title, artist, str(output_dir), expected_duration),
-            daemon=True,
-            name="audio-v2-media",
-        )
-        self._process.start()
-
-    @property
-    def pid(self) -> int | None:
-        return self._process.pid
-
-    def result(self, *, cancelled=None) -> dict[str, object]:
-        while True:
-            if callable(cancelled) and cancelled():
-                self.close()
-                raise RuntimeError("Media preparation cancelled")
-            try:
-                status, payload = self._results.get(timeout=0.25)
-            except queue.Empty:
-                if self._process.is_alive():
-                    continue
-                raise RuntimeError(
-                    f"Media preparation process exited with {self._process.exitcode}"
-                ) from None
-            self._process.join(timeout=1)
-            if status != "ok":
-                raise RuntimeError(str(payload))
-            return dict(payload)
-
-    def close(self) -> None:
-        if self._process.is_alive():
-            self._process.terminate()
-            self._process.join(timeout=2)
-        if self._process.is_alive() and hasattr(self._process, "kill"):
-            self._process.kill()
-            self._process.join(timeout=2)
-        with contextlib.suppress(OSError, ValueError):
-            self._results.close()
-            self._results.cancel_join_thread()
+TrainingMediaProcess = metadata_media_process.TrainingMediaProcess
 
 
 def start_training_media_process(
@@ -170,7 +104,7 @@ def start_training_media_process(
     *,
     expected_duration: float | None = None,
 ) -> TrainingMediaProcess:
-    return TrainingMediaProcess(
+    return metadata_media_process.start(
         title,
         artist,
         output_dir,
@@ -703,107 +637,7 @@ def prepare_training_media(
 
 
 def enrich_song(song_id: str) -> None:
-    db = SessionLocal()
-    try:
-        song = repositories.get_song(db, song_id)
-        if song is None: return
-        genre = None
-        video_id = None
-        video_changed = False
-        stale_local_clip_locked = False
-        try:
-            if not song.genre: genre = _itunes_genre(song.title, song.artist)
-        except Exception as exc:  # Network metadata is optional.
-            logger.info("Genre lookup skipped for %s: %s", song_id, exc)
-        try:
-            output_dir = song_service.resolve_output_dir(song)
-            if song.video_url == LOCAL_VIDEO_URL:
-                with song_service.song_content_lock(song_id), song_service.library_write_lock():
-                    local_clip = resolve_local_video(song)
-                    source_file = output_dir / LOCAL_VIDEO_SOURCE_NAME
-                    if local_clip is None or not source_file.is_file():
-                        if local_clip is not None:
-                            try:
-                                local_clip.unlink(missing_ok=True)
-                            except OSError as exc:
-                                stale_local_clip_locked = True
-                                logger.info("Stale local clip is still in use for %s: %s", song_id, exc)
-                        source_file.unlink(missing_ok=True)
-                        song.video_url = None
-                        video_changed = True
-            existing_id = _youtube_id_from_url(song.video_url)
-            if existing_id and song.video_url not in _validated_video_urls:
-                existing_url = song.video_url
-                if not isinstance(existing_url, str):
-                    existing_url = ""
-                quality = _youtube_video_is_acceptable(existing_id, song.title, song.artist)
-                if quality is True:
-                    _validated_video_urls.add(existing_url)
-                elif quality is False:
-                    song.video_url = None
-                    video_changed = True
-            if existing_id and song.video_url:
-                video_id = existing_id
-            elif not song.video_url and not stale_local_clip_locked:
-                video_id = _youtube_video_id(song.title, song.artist)
-        except Exception as exc:  # Network metadata is optional.
-            logger.info("Music video lookup skipped for %s: %s", song_id, exc)
-        if genre and not song.genre: song.genre = genre
-        if genre or video_changed:
-            commit(db)
-            revision_cache.invalidate(song)
-    finally:
-        db.close()
-
-    if not video_id: return
-    expected_duration = None
-    try:
-        metadata_path = output_dir / "metadata.json"
-        if metadata_path.is_file():
-            metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-            expected_duration = float(metadata_payload.get("duration") or 0) or None
-    except (OSError, ValueError, TypeError, json.JSONDecodeError):
-        expected_duration = None
-    # Network download and FFmpeg normalization can take minutes. Keep their
-    # open files in a sibling staging directory, never inside the song
-    # directory and never while holding its content lock. Deletion can
-    # therefore win immediately; only the final rename is serialized. The
-    # first DB session above is already committed and closed by this point
-    # (its only job was the short, local genre/video-cleanup lookups) --
-    # holding it open for the download too would reserve a SQLite
-    # connection for minutes for no reason, so a second, short-lived
-    # session is opened below only for the final re-check + write.
-    output_dir.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix=f".{output_dir.name}-metadata-", dir=output_dir.parent
-    ) as staging_name:
-        staging = Path(staging_name)
-        downloaded = _download_youtube_video(
-            video_id,
-            staging,
-            expected_duration=expected_duration,
-        )
-        db = SessionLocal()
-        try:
-            with song_service.song_content_lock(song_id), song_service.library_write_lock():
-                current = repositories.get_song(db, song_id)
-                if current is None:
-                    return
-                if downloaded:
-                    output_dir = song_service.resolve_output_dir(current)
-                    output_dir.mkdir(parents=True, exist_ok=True)
-                    os.replace(staging / LOCAL_VIDEO_NAME, output_dir / LOCAL_VIDEO_NAME)
-                    os.replace(
-                        staging / LOCAL_VIDEO_SOURCE_NAME,
-                        output_dir / LOCAL_VIDEO_SOURCE_NAME,
-                    )
-                next_video_url = LOCAL_VIDEO_URL if downloaded else None
-                if current.video_url != next_video_url:
-                    current.video_url = next_video_url
-                    commit(db)
-                    revision_cache.invalidate(current)
-        finally:
-            db.close()
+    metadata_enrichment_runner.enrich(sys.modules[__name__], song_id)
 
 
 def enqueue(song_id: str) -> bool:

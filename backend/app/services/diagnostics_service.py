@@ -140,7 +140,6 @@ def versions() -> dict:
         ("torchfcpe", "torchfcpe"),
         ("librosa", "librosa"),
         ("soundfile", "soundfile"),
-        ("parselmouth", "praat-parselmouth"),
     ):
         try:
             components[display] = importlib.metadata.version(package)

@@ -159,6 +159,34 @@ def _read_live_updates() -> None:
         return
 
 
+def _update_level_report(level_source, time_info) -> None:
+    rms, peak = (
+        (
+            float(np.sqrt(np.mean(np.square(level_source)))),
+            float(np.max(np.abs(level_source))),
+        )
+        if len(level_source)
+        else (0.0, 0.0)
+    )
+    adc_time = getattr(time_info, "inputBufferAdcTime", 0.0) or 0.0
+    dac_time = getattr(time_info, "outputBufferDacTime", 0.0) or 0.0
+    real_latency_ms = (
+        (dac_time - adc_time) * 1000
+        if adc_time and dac_time and dac_time > adc_time
+        else None
+    )
+    _level.update(
+        {
+            "rms_db": round(20 * np.log10(rms) if rms > 0 else -120.0, 1),
+            "clipping": peak >= 0.99,
+            "silent": rms < 10 ** (-50 / 20),
+            "real_latency_ms": (
+                round(real_latency_ms, 3) if real_latency_ms is not None else None
+            ),
+        }
+    )
+
+
 def _audio_callback(gain: float, sample_rate: float = 44_100, statistics=None, relay: RelayLink | None = None):
     statistics = {} if statistics is None else statistics
     quality = StudioMicrophoneProcessor(sample_rate, 1)
@@ -217,40 +245,14 @@ def _audio_callback(gain: float, sample_rate: float = 44_100, statistics=None, r
         for channel in range(outdata.shape[1]): outdata[:, channel] = monitor_output
         if compute_started - level_state["reported_at"] >= _LEVEL_INTERVAL_SEC:
             level_state["reported_at"] = compute_started
-            rms, peak = (
-                (float(np.sqrt(np.mean(np.square(level_source)))), float(np.max(np.abs(level_source))))
-                if len(level_source) else (0.0, 0.0)
-            )
-            # The real mic-to-speaker round trip, timestamped by the audio
-            # driver itself (ADC capture time vs. the DAC time this same
-            # block is scheduled to play at) -- covers the whole path
-            # including the DSP above, unlike the requested-buffer-size
-            # latency PortAudio reports at stream open. Not every host API
-            # fills both timestamps in, so this is None rather than a
-            # misleading 0 when they are missing.
-            adc_time = getattr(time_info, "inputBufferAdcTime", 0.0) or 0.0
-            dac_time = getattr(time_info, "outputBufferDacTime", 0.0) or 0.0
-            real_latency_ms = (dac_time - adc_time) * 1000 if adc_time and dac_time and dac_time > adc_time else None
-            _level.update(
-                {
-                    "rms_db": round(20 * np.log10(rms) if rms > 0 else -120.0, 1),
-                    "clipping": peak >= 0.99,
-                    "silent": rms < 10 ** (-50 / 20),
-                    "real_latency_ms": round(real_latency_ms, 3) if real_latency_ms is not None else None,
-                }
-            )
+            _update_level_report(level_source, time_info)
         statistics["dsp_compute_ms"] = round((time.perf_counter() - compute_started) * 1000, 3)
 
     return callback
 
 
-def main() -> int:
-    global _live_params
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True)
-    options = json.loads(parser.parse_args().config)
-    gain = float(options["gain"])
-    _live_params = {
+def _live_options(options: dict[str, Any], gain: float) -> dict[str, float]:
+    return {
         "volume": gain,
         "reverb": float(options.get("reverb", 0.0)),
         "echo": float(options.get("echo", 0.0)),
@@ -259,9 +261,68 @@ def main() -> int:
         "octave": float(options.get("octave", 0.0)),
         "dry_monitor": float(options.get("dry_monitor", 0.0)),
     }
+
+
+def _pump_reports(stream, chosen_engine: str, failed: threading.Event, statistics) -> None:
+    reported = time.monotonic()
+    while _running and not failed.is_set():
+        if chosen_engine == "wasapi-native-shared":
+            stream.pump()
+            if time.monotonic() - reported < 0.1:
+                continue
+            reported = time.monotonic()
+        elif failed.wait(0.1):
+            break
+        raw_engaged = (
+            _native_stream_target["raw_eligible"]
+            and _live_params.get("dry_monitor", 0.0) >= 0.5
+        )
+        level_report = (
+            {
+                "rms_db": -120.0,
+                "clipping": False,
+                "silent": True,
+                "real_latency_ms": None,
+            }
+            if raw_engaged
+            else _level
+        )
+        reported_statistics = (
+            {**statistics, "dsp_compute_ms": None}
+            if raw_engaged
+            else statistics
+        )
+        _queue_report({"event": "level", **level_report, **reported_statistics})
+    if failed.is_set():
+        raise RuntimeError(
+            statistics.get(
+                "callback_error",
+                "Monitoring callback failed; selected settings were not changed",
+            )
+        )
+
+
+def _configure_native_stream_target(stream, chosen_engine: str, relay) -> None:
+    is_native = chosen_engine == "wasapi-native-shared"
+    _native_stream_target["stream"] = stream if is_native else None
+    _native_stream_target["raw_eligible"] = is_native and relay is None
+    if (
+        _native_stream_target["raw_eligible"]
+        and _live_params.get("dry_monitor", 0.0) >= 0.5
+    ):
+        with contextlib.suppress(Exception):
+            stream.set_raw(True)
+
+
+def main() -> int:
+    global _live_params
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    options = json.loads(parser.parse_args().config)
+    gain = float(options["gain"])
+    _live_params = _live_options(options, gain)
     threading.Thread(target=_read_live_updates, daemon=True).start()
     threading.Thread(target=_report_loop, daemon=True).start()
-
     failed = threading.Event()
     statistics = {"glitch_count": 0}
     stream: Any = None
@@ -318,53 +379,9 @@ def main() -> int:
                         getattr(stream, method)()
                 stream = None
             raise
-        # The native-only raw pass-through (Engine::raw_active) skips the
-        # Python callback entirely, which also skips this module's own
-        # relay.push() calls -- arming it while a room relay is attached
-        # would silently starve whichever peer is listening. Only ever
-        # eligible for the one engine that actually has the C++-side support.
-        # The stream reference itself is still kept with a relay attached, so
-        # a live volume change (unrelated to raw mode) still reaches it.
-        is_native = chosen_engine == "wasapi-native-shared"
-        _native_stream_target["stream"] = stream if is_native else None
-        _native_stream_target["raw_eligible"] = is_native and relay is None
-        if _native_stream_target["raw_eligible"] and _live_params.get("dry_monitor", 0.0) >= 0.5:
-            with contextlib.suppress(Exception):
-                stream.set_raw(True)
+        _configure_native_stream_target(stream, chosen_engine, relay)
         _emit({"event": "started", **details})
-        reported = time.monotonic()
-        while _running and not failed.is_set():
-            if chosen_engine == "wasapi-native-shared":
-                stream.pump()
-                if time.monotonic() - reported < .1:
-                    continue
-                reported = time.monotonic()
-            elif failed.wait(.1):
-                break
-            # The native raw pass-through (see above) skips this module's own
-            # Python callback entirely -- _level (rms_db/clipping/silent/
-            # real_latency_ms) and dsp_compute_ms are only ever updated
-            # inside that callback, so while raw is engaged they would
-            # otherwise silently keep reporting whatever they last were
-            # before raw turned on, misleading (a frozen, plausible-looking
-            # number) rather than merely unavailable.
-            raw_engaged = (
-                _native_stream_target["raw_eligible"] and _live_params.get("dry_monitor", 0.0) >= 0.5
-            )
-            # rms_db/clipping/silent feed a strict response schema
-            # (SignalQualityOut: non-nullable float/bool) elsewhere, so this
-            # reuses the project's own existing "no real signal data yet"
-            # sentinel (see audio_service._EMPTY_MONITOR_SIGNAL) rather than
-            # None -- real_latency_ms/dsp_compute_ms aren't schema-bound and
-            # can just be None.
-            level_report = (
-                {"rms_db": -120.0, "clipping": False, "silent": True, "real_latency_ms": None}
-                if raw_engaged else _level
-            )
-            reported_statistics = {**statistics, "dsp_compute_ms": None} if raw_engaged else statistics
-            _queue_report({"event": "level", **level_report, **reported_statistics})
-        if failed.is_set():
-            raise RuntimeError(statistics.get("callback_error", "Monitoring callback failed; selected settings were not changed"))
+        _pump_reports(stream, chosen_engine, failed, statistics)
     except Exception as exc:  # The parent converts this into a friendly API error.
         _emit({"event": "error", "message": str(exc)})
         return 1

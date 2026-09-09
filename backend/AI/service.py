@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import threading
 
-from .audio_pipeline_v2 import AudioPipelineV2, AudioPipelineV2Request
+from .audio_pipeline_v2 import (
+    AudioPipelineV2,
+    AudioPipelineV2Request,
+    AudioPipelineV2Result,
+)
 from .config import CoreConfig
 from .engines.autocorrelation_pitch import AutocorrelationPitchEstimator
 from .errors import ConfigurationError
-from .pipeline import KaraokePipeline, PipelineResult
 from .pitch_post import stabilize_pitch
 from .runtime import get_runtime_plan
 
@@ -14,12 +17,10 @@ from .runtime import get_runtime_plan
 class AICoreService:
     def __init__(self, config: CoreConfig | None = None):
         self.config = config or CoreConfig.from_env()
-        # Ordinary audio uploads have their own implementation.  The legacy
-        # KaraokePipeline is retained only for the explicit "reprocess the
-        # already generated vocals" operation and is never called by
-        # process_song().
+        # Ordinary audio uploads and melody reprocessing share the same clean
+        # audio-v2 implementation.  Reprocessing must never route an already
+        # correct package back through the legacy karaoke pipeline.
         self.pipeline = AudioPipelineV2(self.config)
-        self._reprocessor: KaraokePipeline | None = None
         # Deliberately separate from self.pipeline.engines.pitch (FCPE): that
         # instance also builds every song's reference melody, a much larger
         # blast radius than scoring one user's recording. Only analyze_pitch
@@ -34,17 +35,15 @@ class AICoreService:
         self._max_concurrent = self.config.max_concurrent_jobs
         self._lock = threading.Semaphore(self._max_concurrent)
 
-    def process_song(self, source_path, output_dir, **options) -> PipelineResult:
+    def process_song(self, source_path, output_dir, **options) -> AudioPipelineV2Result:
         with self._lock:
             return self.pipeline.run(
                 AudioPipelineV2Request(source_path, output_dir, **options)
             )
 
-    def reprocess_song(self, output_dir, **options) -> PipelineResult:
+    def reprocess_song(self, output_dir, **options) -> AudioPipelineV2Result:
         with self._lock:
-            if self._reprocessor is None:
-                self._reprocessor = KaraokePipeline(self.config)
-            return self._reprocessor.reprocess(output_dir, **options)
+            return self.pipeline.reprocess_song(output_dir, **options)
 
     def analyze_pitch(self, audio_path):
         with self._lock:
@@ -75,9 +74,6 @@ class AICoreService:
             self._lock.acquire()
         try:
             self.pipeline.close()
-            if (reprocessor := getattr(self, "_reprocessor", None)) is not None:
-                reprocessor.close()
-                self._reprocessor = None
         finally:
             for _ in range(self._max_concurrent):
                 self._lock.release()

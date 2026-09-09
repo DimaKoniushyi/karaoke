@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test, vi } from "vitest";
-import { getKaraokeHotkeyAction } from "../src/pages/Karaoke/utils/hotkeys.js";
+import { getKaraokeHotkeyAction } from "../src/pages/Karaoke/karaoke-view.jsx";
 import { equal } from "./helpers/assertions.mjs";
 const loadHotkeys = async () => {
   vi.resetModules();

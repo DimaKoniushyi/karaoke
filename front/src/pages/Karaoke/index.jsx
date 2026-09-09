@@ -29,7 +29,7 @@ function useRoutedSong(songs, songId) {
   return listed || (sameId(loaded?.id, songId) ? loaded : null);
 }
 
-function useKaraokeResult(song) {
+export function useKaraokeResult(song) {
   const [state, setState] = useState({ result: null, loading: false, error: null });
   const { id, status, updated_at: updatedAt } = song || {};
 

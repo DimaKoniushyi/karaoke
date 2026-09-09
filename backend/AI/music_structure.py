@@ -72,7 +72,7 @@ def find_section_reprise(
     for ratio in (0.9, 0.95, 1.0, 1.05, 1.1):
         width = max(4, round(template.shape[1] * ratio))
         for start in range(search_lower, search_upper - width + 1):
-            candidate = _resample_frames(matrix[:, start:start + width], template.shape[1])
+            candidate = _resample_frames(matrix[:, start : start + width], template.shape[1])
             similarity = float(reference @ _normalized(candidate))
             if best is None or similarity > best.similarity:
                 best = SectionReprise(
@@ -84,3 +84,41 @@ def find_section_reprise(
     if best is None or best.similarity < minimum_similarity:
         return None
     return best
+
+
+def find_partial_section_reprise(
+    features: np.ndarray,
+    *,
+    frames_per_second: float,
+    template_start: float,
+    template_end: float,
+    search_start: float,
+    search_end: float,
+    minimum_similarity: float = 0.4,
+    start_tolerance_seconds: float = 2.0,
+) -> SectionReprise | None:
+    """Find a truncated reprise only when independent short windows agree."""
+    matrix = np.asarray(features, dtype=np.float32)
+    if matrix.ndim != 2:
+        return None
+    harmonic = matrix[:12] if matrix.shape[0] >= 12 else matrix
+    if template_end - template_start < 12.0:
+        return None
+    matches = [
+        find_section_reprise(
+            harmonic,
+            frames_per_second=frames_per_second,
+            template_start=template_start,
+            template_end=template_start + seconds,
+            search_start=search_start,
+            search_end=search_end,
+            minimum_similarity=minimum_similarity,
+        )
+        for seconds in (8.0, 12.0)
+    ]
+    if any(match is None for match in matches):
+        return None
+    short, long = matches
+    if abs(short.start - long.start) > start_tolerance_seconds:
+        return None
+    return long

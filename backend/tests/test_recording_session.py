@@ -1084,6 +1084,9 @@ def test_close_serializes_concurrent_callers_instead_of_racing_the_fast_path(mon
     second.join(timeout=2)
     assert first_returned.is_set() and second_returned.is_set()
     assert session._storage_reservations == []
+    deadline = time.monotonic() + 1.0
+    while reservation.release.call_count == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
     reservation.release.assert_called_once_with()
 
 

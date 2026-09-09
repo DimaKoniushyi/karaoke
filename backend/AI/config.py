@@ -23,7 +23,7 @@ class CoreConfig:
     min_note_sec: float = 0.07
     min_voiced_confidence: float = 0.38
     split_note_semitones: float = 0.78
-    max_gap_sec: float = 0.05
+    max_gap_sec: float = 0.08
     allow_fallback: bool = False
     validate_cached_artifacts: bool = True
     # How many songs AICoreService will run through the pipeline (or
@@ -53,7 +53,7 @@ class CoreConfig:
             min_note_sec=_value("KARAOKE_AI_MIN_NOTE_SEC", 0.07, float),
             min_voiced_confidence=_value("KARAOKE_AI_MIN_CONFIDENCE", 0.38, float),
             split_note_semitones=_value("KARAOKE_AI_SPLIT_SEMITONES", 0.78, float),
-            max_gap_sec=_value("KARAOKE_AI_MAX_GAP_SEC", 0.05, float),
+            max_gap_sec=_value("KARAOKE_AI_MAX_GAP_SEC", 0.08, float),
             allow_fallback=os.getenv("KARAOKE_AI_ALLOW_FALLBACK", "0").lower() in {"1", "true"},
             max_concurrent_jobs=_value("KARAOKE_AI_MAX_CONCURRENT_JOBS", 1, int),
         )

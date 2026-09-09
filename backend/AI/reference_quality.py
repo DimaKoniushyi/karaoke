@@ -7,6 +7,7 @@ from difflib import SequenceMatcher
 from itertools import zip_longest
 from typing import Any
 
+from .engines.text import normalize_lyrics_text
 from .lyrics_document import validate_lyrics_document
 
 
@@ -25,7 +26,8 @@ class ReferenceQuality:
 
 
 def _identity(value: object) -> str:
-    return " ".join(re.findall(r"[\w']+", str(value).casefold(), flags=re.UNICODE))
+    normalized = normalize_lyrics_text(str(value)).casefold().replace("ё", "е")
+    return " ".join(re.findall(r"[\w']+", normalized, flags=re.UNICODE))
 
 
 def _word_tokens(document: dict[str, Any]) -> tuple[list[str], list[int]]:

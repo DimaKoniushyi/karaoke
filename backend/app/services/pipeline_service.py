@@ -35,6 +35,7 @@ from app.services import (
     kfn_dataset_service,
     metadata_enrichment_service,
     model_install_service,
+    pipeline_job_runner,
     revision_cache,
     song_service,
     storage_budget_service,
@@ -111,8 +112,6 @@ def _limit_background_native_threads() -> Iterator[None]:
         return
     with threadpool_limits(limits=limit):
         yield
-
-
 
 def _apply_source_metadata(song: models.Song) -> None:
     try:
@@ -1004,90 +1003,10 @@ def _run_symbolic_job(
     *,
     reuse_existing_audio: bool = False,
 ) -> None:
-    capture: _ProgressCapture | None = None
-    heartbeat_stop: threading.Event | None = None
-    heartbeat_thread: threading.Thread | None = None
-    slot_acquired = False
-    succeeded = False
-    started_at = time.monotonic()
-    try:
-        slot_acquired = _acquire_processing_slot(song_id)
-        if not slot_acquired:
-            return
-        _log_processing_started(song_id, "karaoke-file", False)
-        _update_progress(
-            song_id,
-            status=models.SongStatus.PROCESSING,
-            percent=0.0,
-            step_label="Подготавливаем karaoke-файл",
-        )
-        _begin_runtime_progress(song_id)
-        heartbeat_stop, heartbeat_thread = _start_progress_heartbeat(song_id)
-        capture = _create_progress_capture(song_id, out_dir)
-        progress = _create_ai_progress_callback(song_id, capture)
-        _update_progress(song_id, step_label="Проверка AI-моделей", percent=1.0)
-        model_install_service.ensure_ready_sync(cancelled=lambda: _is_cancelled(song_id))
-        _configure_ai_runtime()
-        source = Path(source_path)
-        prepare = (
-            kfn_dataset_service.prepare_kfn_file
-            if source.suffix.casefold() == ".kfn"
-            else kar_dataset_service.prepare_kar_file
-        )
-        artist_override, title_override = _load_song_identity(song_id)
-        result = prepare(
-            source,
-            original_filename=_load_original_filename(song_id),
-            title_override=title_override,
-            artist_override=artist_override,
-            output_root=out_dir.parent,
-            target_dir=out_dir,
-            progress=progress,
-            cancelled=lambda: _is_cancelled(song_id),
-            reuse_existing_audio=reuse_existing_audio,
-        )
-        if result.get("status") != "ready" or result.get("stems_status") != "ready":
-            details = "; ".join(str(item) for item in result.get("warnings", []) if item)
-            raise ValueError(details or "Не удалось получить оригинал, голос и минусовку")
-        succeeded = True
-    except ProcessingCancelled:
-        _update_progress(song_id, status=models.SongStatus.CANCELLED, step_label="Отменено")
-        return
-    except Exception as exc:  # noqa: BLE001 - background worker boundary
-        if _is_cancelled(song_id):
-            _update_progress(song_id, status=models.SongStatus.CANCELLED, step_label="Отменено")
-            return
-        _write_pipeline_error(song_id, capture, exc)
-        _update_progress(
-            song_id,
-            status=models.SongStatus.ERROR,
-            error_message=_format_processing_error(exc),
-        )
-        return
-    finally:
-        cleanup_succeeded = False
-        try:
-            if capture is not None:
-                capture.close()
-            _stop_progress_heartbeat(heartbeat_stop, heartbeat_thread)
-            _end_runtime_progress(song_id)
-            cleanup_succeeded = True
-        except Exception:
-            # See the identical comment in _run_job's finally block: without
-            # this, a cleanup failure here replaces whatever the try/except
-            # above already decided and skips _finalize_processed_job below,
-            # silently stranding the song's DB row at PROCESSING forever.
-            logger.exception("Song processing cleanup failed: song_id=%s", song_id)
-        finally:
-            if slot_acquired and (not succeeded or not cleanup_succeeded):
-                _release_processing_slot(song_id)
-
-    try:
-        _finalize_processed_job(song_id, out_dir, retain_source=True)
-    finally:
-        if slot_acquired:
-            _release_processing_slot(song_id)
-    _log_processing_finished(song_id, started_at)
+    pipeline_job_runner.run_symbolic(
+        sys.modules[__name__], song_id, source_path, out_dir,
+        reuse_existing_audio=reuse_existing_audio,
+    )
 
 
 def _load_original_filename(song_id: str) -> str:
@@ -1113,155 +1032,12 @@ def _load_song_genre(song_id: str) -> str | None:
 
 
 def _run_job(song_id: str, processing_mode: str = "auto", *, reuse_vocals: bool = False) -> None:
-    paths = _load_job_paths(song_id)
-    if paths is None or _is_cancelled(song_id): return
-    if _reject_full_process_if_source_retired(song_id, reuse_vocals=reuse_vocals): return
-    source_path, out_dir = paths
-    recover_orphaned_backups(out_dir)
-    if Path(source_path).suffix.casefold() in config.ALLOWED_KARAOKE_EXTENSIONS:
-        if reuse_vocals:
-            _run_symbolic_job(
-                song_id,
-                source_path,
-                out_dir,
-                reuse_existing_audio=True,
-            )
-        else:
-            _run_symbolic_job(song_id, source_path, out_dir)
-        return
-    artist, title = _load_song_identity(song_id)
-    genre = _load_song_genre(song_id)
-    lyrics_path, bpm_override, key_override = _load_ai_inputs(song_id, out_dir)
-
-    capture: _ProgressCapture | None = None
-    heartbeat_stop: threading.Event | None = None
-    heartbeat_thread: threading.Thread | None = None
-    slot_acquired = False
-    pipeline_succeeded = False
-    media_process: metadata_enrichment_service.TrainingMediaProcess | None = None
-    started_at = time.monotonic()
-    try:
-        slot_acquired = _acquire_processing_slot(song_id)
-        if not slot_acquired: return
-        _log_processing_started(song_id, processing_mode, reuse_vocals)
-        _update_progress(song_id, status=models.SongStatus.PROCESSING, percent=0.0, step_label="0/13")
-        _begin_runtime_progress(song_id)
-        heartbeat_stop, heartbeat_thread = _start_progress_heartbeat(song_id)
-        capture = _create_progress_capture(song_id, out_dir)
-        if not reuse_vocals and artist and title:
-            # Network media work is independent of GPU separation, lyric
-            # lookup and metadata lookup. Start it immediately so downloading
-            # a full clip does not extend the critical path at the end.
-            source_duration = None
-            with contextlib.suppress(RuntimeError, OSError, ValueError):
-                source_duration = float(sf.info(source_path).duration) or None
-            media_process = metadata_enrichment_service.start_training_media_process(
-                title,
-                artist,
-                out_dir,
-                expected_duration=source_duration,
-            )
-        resume_media_only = (
-            not reuse_vocals and _audio_artifacts_waiting_for_media(out_dir)
-        )
-        result = None
-        if resume_media_only:
-            _update_progress(
-                song_id,
-                step_label="Повторно загружаем и проверяем клип",
-                percent=98.0,
-            )
-            capture.write(
-                "[backend] Valid AI artifacts found; retrying media only\n"
-            )
-        else:
-            _ensure_cover_extracted(source_path, out_dir)
-            # Lower this process's priority/thread count BEFORE the disk- and
-            # CPU-heavy model download/unpack below, not after -- previously
-            # the very first processing run (the common case needing an
-            # install at all) did that work fully unthrottled, the one time
-            # it was heaviest.
-            runtime_plan = _configure_ai_runtime()
-            _update_progress(song_id, step_label="Проверка AI-моделей", percent=1.0)
-            model_install_service.ensure_ready_sync(cancelled=lambda: _is_cancelled(song_id))
-            capture.write(
-                f"[backend] AI build={AI_BUILD_ID} pipeline={AudioPipelineV2.VERSION} "
-                f"decoder={NOTE_DECODER_VERSION} pitch={PITCH_STABILIZER_VERSION}\n"
-            )
-            capture.write(f"[backend] AI module={Path(__file__).resolve()}\n")
-            for line in format_runtime_plan(runtime_plan):
-                capture.write(f"[backend] AI runtime: {line}\n")
-
-            with _limit_background_native_threads():
-                result = _invoke_ai_pipeline(
-                    song_id, source_path, out_dir, lyrics_path, artist, title, genre,
-                    bpm_override, key_override, processing_mode, capture,
-                    reuse_vocals=reuse_vocals,
-                )
-        if not reuse_vocals:
-            _complete_audio_media(
-                song_id,
-                out_dir,
-                artist=artist,
-                title=title,
-                prepared=(
-                    media_process.result(cancelled=lambda: _is_cancelled(song_id))
-                    if media_process else None
-                ),
-            )
-        result_warnings = getattr(result, "warnings", ())
-        for warning in result_warnings if isinstance(result_warnings, (list, tuple)) else ():
-            logger.warning("Song processing warning: song_id=%s warning=%s", song_id, warning)
-        result_reports = getattr(result, "reports", ())
-        _write_stage_reports(
-            capture, result_reports if isinstance(result_reports, (list, tuple)) else ()
-        )
-        pipeline_succeeded = True
-    except ProcessingCancelled:
-        _update_progress(
-            song_id, status=models.SongStatus.CANCELLED, step_label="Отменено")
-        return
-    except Exception as exc:  # noqa: BLE001 — background-worker boundary
-        if _is_cancelled(song_id):
-            _update_progress(
-                song_id, status=models.SongStatus.CANCELLED, step_label="Отменено")
-            return
-        _write_pipeline_error(song_id, capture, exc)
-        _update_progress(song_id, status=models.SongStatus.ERROR,
-                         error_message=_format_processing_error(exc))
-        return
-    finally:
-        cleanup_succeeded = False
-        try:
-            if capture is not None: capture.close()
-            if lyrics_path is not None and lyrics_path.parent == config.CACHE_DIR / "trusted-lyrics":
-                lyrics_path.unlink(missing_ok=True)
-            _stop_progress_heartbeat(heartbeat_stop, heartbeat_thread)
-            _end_runtime_progress(song_id)
-            if media_process is not None:
-                media_process.close()
-            cleanup_succeeded = True
-        except Exception:
-            # An exception here (e.g. capture.close() on a full disk, or a
-            # transient Windows sharing violation unlinking lyrics_path) used
-            # to propagate straight out of this finally block, which REPLACES
-            # whatever the try/except above already decided (a normal return,
-            # or a CANCELLED/ERROR status already committed to the DB). On
-            # the success path in particular, that skipped
-            # _finalize_processed_job below entirely -- the song's DB row
-            # stayed at PROCESSING forever with no terminal status and no
-            # error_message, silently, since nothing calls logger.exception
-            # for an exception escaping a finally block this way.
-            logger.exception("Song processing cleanup failed: song_id=%s", song_id)
-        finally:
-            if slot_acquired and (not pipeline_succeeded or not cleanup_succeeded):
-                _release_processing_slot(song_id)
-
-    try:
-        _finalize_processed_job(song_id, out_dir, retain_source=True)
-    finally:
-        if slot_acquired: _release_processing_slot(song_id)
-    _log_processing_finished(song_id, started_at)
+    pipeline_job_runner.run(
+        sys.modules[__name__],
+        song_id,
+        processing_mode,
+        reuse_vocals=reuse_vocals,
+    )
 
 
 def _clear_generated_results(out_dir: Path) -> None:
@@ -1269,7 +1045,7 @@ def _clear_generated_results(out_dir: Path) -> None:
     cache.invalidate("pitch", "derivation")
     for pattern in ("*.json", "*.mid", "*.midi"):
         for path in out_dir.glob(pattern):
-            if path.name == "lyricsSync.json": continue
+            if path.name in {"lyricsSync.json", "metadata.json"}: continue
             with contextlib.suppress(OSError): path.unlink(missing_ok=True)
 
 

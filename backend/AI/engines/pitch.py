@@ -59,11 +59,13 @@ class FCPEPitchEstimator(PitchEstimator):
         if self._model is None:
             self._device = select_torch_device(torch, "pitch")
             self._model = torchfcpe.spawn_bundled_infer_model(device=self._device)
+            self._model.eval()
         else:
             device = select_torch_device(torch, "pitch")
             if device != self._device:
                 self._model.to(device)
                 self._device = device
+                self._model.eval()
         return torch, self._model
 
     def estimate(self, audio):

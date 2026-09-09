@@ -139,8 +139,6 @@ vi.mock("../src/pages/Karaoke/hooks/useMelodyGuide", () => ({
     silenceMelodyGuide: vi.fn()
   })
 }));
-vi.mock("../src/pages/Karaoke/hooks/useKaraokeHotkeys", () => ({ default: vi.fn() }));
-vi.mock("../src/pages/Karaoke/hooks/useKaraokeStageLayout", () => ({ default: vi.fn() }));
 import Karaoke from "../src/pages/Karaoke/index.jsx";
 const song = {
   id: "song",
@@ -240,7 +238,10 @@ describe("karaoke page", () => {
     same([mocks.consoleProps.timeline.lyricsOffset, 0], [mocks.stageProps.currentTime, 0]);
     fireEvent.mouseMove(page.container.querySelector('[data-role="karaoke"]'));
     fireEvent.click(page.getByTestId("preset"));
-    verify([mocks.preferences.setEffectPreset, "toHaveBeenCalledWith", "hall"], [mocks.microphone.updateMicrophoneEffects, "toHaveBeenCalled"]);
+    expect(mocks.microphone.updateMicrophoneEffects).toHaveBeenCalled();
+    await waitFor(() =>
+      expect(mocks.preferences.setEffectPreset).toHaveBeenCalledWith("hall")
+    );
     fireEvent.click(page.getByTestId("monitor"));
     await waitFor(() => expect(mocks.startMonitoring).toHaveBeenCalled());
     expect(mocks.microphone.setMonitoringEnabled).toHaveBeenCalledWith(true);
@@ -249,6 +250,11 @@ describe("karaoke page", () => {
     expect(mocks.radio.toggle).toHaveBeenCalled();
   });
   test("covers library, song, processing and result guard states", async () => {
+    // No routed songId: useRoutedSong then only ever picks a "done" song
+    // already present in the poll instead of falling back to api.getSong,
+    // so these guard cases stay on the loading/error state they're testing
+    // instead of racing a background song fetch to completion.
+    mocks.location = {};
     // The third column configures how the mocked getResult() behaves for
     // that case; null keeps the default resolved value from beforeEach
     // (irrelevant for the first five rows, since the guard above the result
@@ -282,7 +288,9 @@ describe("karaoke page", () => {
     mocks.mediaSyncOptions.currentTimeRef.current = 5;
     same([mocks.stageProps.currentTimeRef.current, 5], [mocks.mediaSyncOptions.currentTimeRef.current, 5]);
     fireEvent.click(page.getByTestId("lyrics-offset"));
-    expect(mocks.preferences.setTimingOffsets).toHaveBeenCalledWith({ [timingKey]: -4 });
+    expect(mocks.preferences.setTimingOffsets).toHaveBeenCalledWith(expect.any(Function));
+    const updater = mocks.preferences.setTimingOffsets.mock.calls.at(-1)[0];
+    expect(updater(mocks.preferences.timingOffsets)).toEqual({ [timingKey]: -4 });
   });
   test("does not apply an embedded manual alignment twice", async () => {
     mocks.getResult.mockResolvedValueOnce({
@@ -387,7 +395,11 @@ describe("karaoke page", () => {
   });
   test("uses the low-latency room stream while an online room is active", async () => {
     mocks.room.room = { host: true };
-    mocks.room.setLocalMonitoring.mockResolvedValueOnce(true);
+    // useKaraokeAudio's own mount-time cleanup effect calls
+    // setLocalMonitoring(false) before this test ever clicks anything, so a
+    // *Once value would be consumed by that call instead of the button
+    // click below -- resolve true for every call in this test instead.
+    mocks.room.setLocalMonitoring.mockResolvedValue(true);
     const page = render(<Karaoke />);
     await act(async () => Promise.resolve());
     fireEvent.click(page.getByTestId("monitor"));
@@ -400,7 +412,7 @@ describe("karaoke page", () => {
       })
     );
     expect(mocks.startMonitoring).not.toHaveBeenCalled();
-    expect(mocks.consoleProps.audio.monitoringEnabled).toBe(true);
+    await waitFor(() => expect(mocks.consoleProps.audio.monitoringEnabled).toBe(true));
   });
   test("wires console effect changes, tempo and stopping monitoring", async () => {
     // Notes/lyrics/auto-hide toggles, seek/skip and the mixer volume commit

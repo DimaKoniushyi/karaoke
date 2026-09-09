@@ -14,6 +14,50 @@ INPUT = ROOT / "backend" / "requirements-lock.in"
 LOCK = ROOT / "backend" / "requirements-lock.txt"
 
 
+def test_torch_only_ai_runtime_does_not_bundle_tensorflow_frameworks():
+    pins = {
+        line.split("==", 1)[0].strip().casefold().replace("_", "-")
+        for line in INPUT.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert pins.isdisjoint({"tensorflow", "tf-keras", "keras"})
+
+
+def test_current_pitch_pipeline_does_not_install_legacy_praat_runtime():
+    pins = {
+        line.split("==", 1)[0].strip().casefold().replace("_", "-")
+        for line in INPUT.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert "praat-parselmouth" not in pins
+
+
+def test_torch_only_runtime_does_not_keep_orphaned_tensorflow_dependencies():
+    pins = {
+        line.split("==", 1)[0].strip().casefold().replace("_", "-")
+        for line in INPUT.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert pins.isdisjoint(
+        {
+            "astunparse",
+            "gast",
+            "google-pasta",
+            "h5py",
+            "libclang",
+            "ml-dtypes",
+            "namex",
+            "opt-einsum",
+            "optree",
+            "termcolor",
+            "wrapt",
+        }
+    )
+
+
 def _logical_requirements() -> list[str]:
     result, current = [], ""
     for raw in LOCK.read_text(encoding="utf-8").splitlines():

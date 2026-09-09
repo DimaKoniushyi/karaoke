@@ -20,6 +20,7 @@ class AudioMetadata:
     genre: str | None = None
     cover_url: str | None = None
     video_url: str | None = None
+    cover_urls: tuple[str, ...] = ()
 
 
 MetadataProvider = Callable[[str, str], AudioMetadata | None]
@@ -129,9 +130,8 @@ def resolve_audio_metadata(
         genre=genre.strip() if genre and genre.strip() else None,
         cover_url=cover_url.strip() if cover_url and cover_url.strip() else None,
     )
+    cover_candidates = [result.cover_url] if result.cover_url else []
     for provider in providers:
-        if result.genre and result.cover_url and result.video_url:
-            break
         try:
             candidate = provider(result.artist, result.title)
         except Exception:
@@ -141,13 +141,16 @@ def resolve_audio_metadata(
             and _same_identity(result.title, candidate.title)
         ):
             continue
+        for candidate_url in (candidate.cover_url, *candidate.cover_urls):
+            if candidate_url and candidate_url not in cover_candidates:
+                cover_candidates.append(candidate_url)
         result = replace(
             result,
             genre=result.genre or candidate.genre,
             cover_url=result.cover_url or candidate.cover_url,
             video_url=result.video_url or candidate.video_url,
         )
-    return result
+    return replace(result, cover_urls=tuple(cover_candidates))
 
 
 def download_cover(url: str | None, destination: str | Path) -> bool:

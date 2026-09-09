@@ -262,16 +262,12 @@ def main() -> None:
     if "--verify-ai-runtime" in sys.argv:
         from pathlib import Path
 
-        import parselmouth
         import torchfcpe
 
         checkpoint = Path(torchfcpe.__file__).resolve().parent / "assets" / "fcpe_c_v001.pt"
         if not checkpoint.is_file(): raise FileNotFoundError(f"Bundled TorchFCPE checkpoint is missing: {checkpoint}")
         model = torchfcpe.spawn_bundled_infer_model(device="cpu")
-        print(
-            f"AI runtime ready: TorchFCPE={type(model).__name__} ({checkpoint}), "
-            f"Praat={parselmouth.PRAAT_VERSION}"
-        )
+        print(f"AI runtime ready: TorchFCPE={type(model).__name__} ({checkpoint})")
         return
 
     if "--verify-qwen-runtime" in sys.argv:

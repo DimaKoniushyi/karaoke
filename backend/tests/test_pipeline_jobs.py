@@ -233,15 +233,19 @@ def test_ai_progress_callback_updates_semantic_runtime_and_cancels(monkeypatch):
     raises(pipeline_service.ProcessingCancelled, lambda: callback('pitch', 50, 'raw'))
 
 
-def test_clear_generated_results_preserves_only_lyrics_sync(monkeypatch, tmp_path):
+def test_clear_generated_results_preserves_verified_lyrics_and_their_metadata(monkeypatch, tmp_path):
     cache = Mock()
     monkeypatch.setattr(pipeline_service, "StageCache", Mock(return_value=cache))
     (tmp_path / "old.json").write_text("{}", encoding="utf-8")
     (tmp_path / "old.mid").write_bytes(b"midi")
     (tmp_path / "lyricsSync.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "metadata.json").write_text("{}", encoding="utf-8")
     pipeline_service._clear_generated_results(tmp_path)
     cache.invalidate.assert_called_once_with("pitch", "derivation")
-    assert {path.name for path in tmp_path.iterdir()} == {"lyricsSync.json"}
+    assert {path.name for path in tmp_path.iterdir()} == {
+        "lyricsSync.json",
+        "metadata.json",
+    }
 
 
 def test_reprocessing_validates_owned_direct_child_and_runs_job(monkeypatch, tmp_path):
