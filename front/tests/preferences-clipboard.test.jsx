@@ -24,34 +24,31 @@ afterEach(() => vi.restoreAllMocks());
 describe("audio and UI preferences", () => {
   test("normalizes persisted audio preferences", () => {
     return importUtility("audio-preferences").then(({ DEFAULT_AUDIO_PREFERENCES, getAudioPreferences }) => {
-      verify([DEFAULT_AUDIO_PREFERENCES, "toEqual", { monitorInputDeviceId: "default", monitorOutputDeviceId: "default" }]);
+      verify([DEFAULT_AUDIO_PREFERENCES, "toEqual", { monitorInputDeviceId: "default" }]);
       expect(getAudioPreferences()).toEqual(DEFAULT_AUDIO_PREFERENCES);
-      localStorage.setItem("karaoke-audio-preferences", JSON.stringify({ monitorInputDeviceId: "mic", monitorOutputDeviceId: "" }));
-      verify([getAudioPreferences(), "toEqual", { monitorInputDeviceId: "mic", monitorOutputDeviceId: "default" }]);
+      localStorage.setItem("karaoke-audio-preferences", JSON.stringify({ monitorInputDeviceId: "mic" }));
+      verify([getAudioPreferences(), "toEqual", { monitorInputDeviceId: "mic" }]);
     });
   });
   test("audio preferences reject malformed device ids and preserve omitted values", async () => {
     const { getAudioPreferences, saveAudioPreferences } = await importUtility("audio-preferences");
-    localStorage.setItem("karaoke-audio-preferences", JSON.stringify({ monitorInputDeviceId: "mic-a", monitorOutputDeviceId: "out-a" }));
+    localStorage.setItem("karaoke-audio-preferences", JSON.stringify({ monitorInputDeviceId: "mic-a" }));
     verify([
       saveAudioPreferences({ monitorInputDeviceId: "   " }),
       "toEqual",
-      { monitorInputDeviceId: "default", monitorOutputDeviceId: "out-a" }
+      { monitorInputDeviceId: "default" }
     ]);
     expect(saveAudioPreferences(null)).toEqual(getAudioPreferences());
     verify([
-      saveAudioPreferences({ monitorInputDeviceId: 123, monitorOutputDeviceId: [] }),
+      saveAudioPreferences({ monitorInputDeviceId: 123 }),
       "toEqual",
-      { monitorInputDeviceId: "default", monitorOutputDeviceId: "default" }
+      { monitorInputDeviceId: "default" }
     ]);
   });
   test("saves device preferences and ignores obsolete controls", async () => {
     const { DEFAULT_AUDIO_PREFERENCES, saveAudioPreferences } = await importUtility("audio-preferences");
-    const changed = vi.fn();
-    window.addEventListener("audio-preferences-changed", changed);
     const saved = saveAudioPreferences({
       monitorInputDeviceId: "usb",
-      monitorOutputDeviceId: "speaker",
       monitorMode: "browser",
       monitorLatencyHint: "playback"
     });
@@ -60,12 +57,10 @@ describe("audio and UI preferences", () => {
       "toEqual",
       {
         ...DEFAULT_AUDIO_PREFERENCES,
-        monitorInputDeviceId: "usb",
-        monitorOutputDeviceId: "speaker"
+        monitorInputDeviceId: "usb"
       }
     ]);
-    sameDeep([changed.mock.calls[0][0].detail, saved], [JSON.parse(localStorage.getItem("karaoke-audio-preferences")), saved]);
-    window.removeEventListener("audio-preferences-changed", changed);
+    expect(JSON.parse(localStorage.getItem("karaoke-audio-preferences"))).toEqual(saved);
   });
   test("hydrates remote values and uploads local-only values", async () => {
     const { hydrateUiPreferences, UI_PREFERENCE_STORAGE } = await importUtility("ui-preferences");

@@ -63,6 +63,33 @@ logger = logging.getLogger(__name__)
 _MIN_AUDIO_WORD_SECONDS = 0.04
 
 
+def _note_line_start_indices(lines: list[ScoreLine]) -> frozenset[int]:
+    return frozenset(
+        line.first_word
+        for line in lines
+        if line.first_word == line.last_word
+    )
+
+
+def _word_end_limits(
+    words: list[Word],
+    *,
+    aligned_ends: dict[int, float],
+    line_end_indices: set[int] | frozenset[int],
+) -> dict[int, float]:
+    return {
+        word.index: word.end
+        for word in words
+        if (
+            word.end + 1e-6 < aligned_ends[word.index]
+            or (
+                word.index in line_end_indices
+                and aligned_ends[word.index] - word.start >= 0.5
+            )
+        )
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class AudioPipelineV2Request:
     source_path: str | Path
@@ -722,16 +749,17 @@ class AudioPipelineV2:
             voice_activity_intervals(analysis_vocals),
             line_end_indices=line_end_indices,
         )
-        word_end_limits = {
-            word.index: word.end
-            for word in words
-            if word.end + 1e-6 < aligned_ends[word.index]
-        }
+        word_end_limits = _word_end_limits(
+            words,
+            aligned_ends=aligned_ends,
+            line_end_indices=line_end_indices,
+        )
         note_options = {
             "min_note": self.config.min_note_sec,
             "split_semitones": self.config.split_note_semitones,
             "max_gap": self.config.max_gap_sec,
             "min_confidence": self.config.min_voiced_confidence,
+            "line_start_indices": _note_line_start_indices(score_lines),
         }
         physical_notes = build_vocal_notes(
             pitch,

@@ -10,6 +10,30 @@ from ..models import Word
 from .device import select_torch_device
 
 
+def _ctc_audio_windows(
+    sample_count: int,
+    sample_rate: int,
+    *,
+    max_seconds: float = 45.0,
+    overlap_seconds: float = 1.0,
+) -> list[tuple[int, int]]:
+    """Cover long audio with bounded, slightly overlapping inference windows."""
+    count = max(0, int(sample_count))
+    rate = max(1, int(sample_rate))
+    maximum = max(1, round(rate * max_seconds))
+    overlap = min(maximum - 1, max(0, round(rate * overlap_seconds)))
+    if count <= maximum:
+        return [(0, count)]
+    windows, start = [], 0
+    while start < count:
+        end = min(count, start + maximum)
+        windows.append((start, end))
+        if end >= count:
+            break
+        start = end - overlap
+    return windows
+
+
 class CTCWordAligner:
     def __init__(self, model_path, role="ctc"):
         self.model_path = str(model_path)
@@ -32,9 +56,14 @@ class CTCWordAligner:
             self._device = device
         return self._model, self._processor
 
+    def _infer_logits(self, audio, target_rate: int, model, processor):
+        import torch
+        inputs = processor(audio.numpy(), sampling_rate=target_rate, return_tensors="pt")
+        with torch.inference_mode():
+            return model(inputs.input_values.to(self._device)).logits.log_softmax(dim=-1)
+
     def _compute_logits(self, samples, rate: int):
         import torch
-        import torchaudio
 
         model, processor = self._load()
         audio = torch.as_tensor(np.asarray(samples), dtype=torch.float32)
@@ -42,10 +71,37 @@ class CTCWordAligner:
             audio = audio.mean(dim=1)
         target_rate = int(processor.feature_extractor.sampling_rate)
         if rate != target_rate:
+            import torchaudio
+
             audio = torchaudio.functional.resample(audio, rate, target_rate)
-        inputs = processor(audio.numpy(), sampling_rate=target_rate, return_tensors="pt")
-        with torch.inference_mode():
-            logits = model(inputs.input_values.to(self._device)).logits.log_softmax(dim=-1)
+        windows = _ctc_audio_windows(len(audio), target_rate)
+        window_logits = [
+            self._infer_logits(audio[start:end], target_rate, model, processor)
+            for start, end in windows
+        ]
+        if len(window_logits) == 1:
+            logits = window_logits[0]
+        else:
+            trimmed = []
+            for index, ((start, end), values) in enumerate(
+                zip(windows, window_logits, strict=True)
+            ):
+                frames = int(values.shape[1])
+                left_boundary = (
+                    start
+                    if index == 0
+                    else (start + windows[index - 1][1]) / 2
+                )
+                right_boundary = (
+                    end
+                    if index + 1 == len(windows)
+                    else (end + windows[index + 1][0]) / 2
+                )
+                scale = frames / max(1, end - start)
+                lower = max(0, min(frames, round((left_boundary - start) * scale)))
+                upper = max(lower + 1, min(frames, round((right_boundary - start) * scale)))
+                trimmed.append(values[:, lower:upper, :])
+            logits = torch.cat(trimmed, dim=1)
         duration = len(audio) / target_rate
         return logits, model, processor, duration
 

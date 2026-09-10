@@ -142,10 +142,6 @@ describe("microphone settings", () => {
       noise_suppression: 0.35,
       octave: 0
     });
-    act(() => window.dispatchEvent(new CustomEvent("audio-preferences-changed", { detail: { monitorInputDeviceId: "mic" } })));
-    expect(hook.result.current.monitorInputDeviceId).toBe("mic");
-    act(() => window.dispatchEvent(new CustomEvent("audio-preferences-changed", { detail: {} })));
-    expect(hook.result.current.monitorInputDeviceId).toBe("default");
     act(() => window.dispatchEvent(new CustomEvent("audio-settings-changed")));
     expect(hook.result.current.microphoneVolume).toBe(0.9);
     hook.rerender({ settings: null });
@@ -161,7 +157,6 @@ describe("microphone settings", () => {
     ]);
     hook.unmount();
     verify([removeEventListener, "toHaveBeenCalledWith", "audio-settings-changed", expect.any(Function)]);
-    verify([removeEventListener, "toHaveBeenCalledWith", "audio-preferences-changed", expect.any(Function)]);
   });
   test("updates settings and reports backend failures", async () => {
     const onError = vi.fn();
@@ -254,14 +249,6 @@ describe("microphone settings", () => {
     rejectUpdate(new Error("obsolete"));
     await expect(failure).resolves.toBeNull();
     expect(onError).not.toHaveBeenCalled();
-  });
-  test("uses stored input preference when an event omits details", () => {
-    mocks.getAudioPreferences
-      .mockReturnValueOnce({ monitorInputDeviceId: "initial" })
-      .mockReturnValueOnce({ monitorInputDeviceId: "fallback" });
-    const { result } = renderHook(() => useMicrophoneSettings({ audioSettings: null, onError: vi.fn() }));
-    act(() => window.dispatchEvent(new CustomEvent("audio-preferences-changed")));
-    expect(result.current.monitorInputDeviceId).toBe("fallback");
   });
 });
 const mediaRef = (setSinkId = vi.fn().mockResolvedValue(undefined)) => ({ current: { setSinkId } });

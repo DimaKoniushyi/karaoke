@@ -1,4 +1,4 @@
-import { translateSaved as t } from "../../../i18n/runtime";
+import { translateSaved as t } from "../i18n/runtime";
 
 const EMPTY_SECTIONS = Object.freeze([]);
 const PERCENT_FIELDS = [
@@ -89,7 +89,9 @@ export function getAnalysisFeedback(result) {
     .filter(([, value]) => value != null)
     .map(([key, value]) => ({ key, value }));
   const practiceMetric = metrics.length > 1 ? extreme(metrics, (a, b) => a.value < b.value) : null;
-  const scoredSections = normalized.sections.filter(({ accuracy_percent }) => accuracy_percent != null);
+  const scoredSections = normalized.sections.filter(
+    ({ accuracy_percent }) => accuracy_percent != null
+  );
   const bestSection = extreme(scoredSections, (a, b) => a.accuracy_percent > b.accuracy_percent);
   const needsPractice = extreme(scoredSections, (a, b) => a.accuracy_percent < b.accuracy_percent);
 

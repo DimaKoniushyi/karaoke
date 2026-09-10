@@ -2,9 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import useLatestRef from "../../../hooks/useLatestRef";
 import useMountedRef from "../../../hooks/useMountedRef";
 import { setGlobalRouteBlackout } from "../../../utils/route-blackout";
+import { safe } from "../utils/async";
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const safe = (task) => Promise.resolve().then(task).catch(() => false);
 const step = async (ms, active, action) => {
   await wait(ms);
   if (!active()) return false;
@@ -128,8 +128,12 @@ export default function useKaraokeSceneFlow({
     async (action) => {
       const active = beginTransition();
       if (!active) return false;
-      const preload = safe(() =>
-        Promise.all([instrumentalRef.current, vocalsRef.current].filter(Boolean).map(waitForMedia))
+      const preload = safe(
+        () =>
+          Promise.all(
+            [instrumentalRef.current, vocalsRef.current].filter(Boolean).map(waitForMedia)
+          ),
+        false
       );
 
       try {
@@ -161,7 +165,7 @@ export default function useKaraokeSceneFlow({
     const success = await runIntroTransition(() => togglePlay({ forcePlaying: true }));
     if (success) started.current = true;
     else if (resumeRadio.current && mounted.current) {
-      safe(() => turnOnRadio({ remember: false, fadeIn: true }));
+      safe(() => turnOnRadio({ remember: false, fadeIn: true }), false);
     }
     return success;
   }, [isRadioPlaying, mounted, runIntroTransition, togglePlay, turnOffRadio, turnOnRadio]);
@@ -177,7 +181,7 @@ export default function useKaraokeSceneFlow({
     const paused = await togglePlay({ forcePlaying: false });
     if (paused && resumeRadio.current) {
       setRecordingActive(false);
-      safe(() => turnOnRadio({ remember: false, fadeIn: true }));
+      safe(() => turnOnRadio({ remember: false, fadeIn: true }), false);
     }
     return paused;
   }, [isPlaying, setRecordingActive, startSong, togglePlay, turnOffRadio, turnOnRadio]);
@@ -245,7 +249,7 @@ export default function useKaraokeSceneFlow({
       if (autoStarting.current === songId) return;
 
       autoStarting.current = songId;
-      safe(() => startSongRef.current()).then((success) => {
+      safe(() => startSongRef.current(), false).then((success) => {
         if (autoStarting.current === songId) autoStarting.current = null;
         if (cancelled) return;
         if (success) autoStarted.current = songId;
@@ -264,7 +268,7 @@ export default function useKaraokeSceneFlow({
   useEffect(() => {
     if (autoStartRequested || !roomPrepared || !songId || roomRevealed.current === songId) return;
     let cancelled = false;
-    safe(() => runIntroTransition(() => !cancelled)).then((shown) => {
+    safe(() => runIntroTransition(() => !cancelled), false).then((shown) => {
       if (!cancelled && shown) roomRevealed.current = songId;
     });
     return () => {

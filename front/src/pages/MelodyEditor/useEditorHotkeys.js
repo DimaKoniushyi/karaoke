@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { isEditableHotkeyTarget } from "../../utils/hotkeys";
 
 // Global keyboard shortcuts for the note editor. A single window-level
 // listener rather than per-control handlers, since most of these (undo,
@@ -24,7 +25,9 @@ export default function useEditorHotkeys({
 }) {
   useEffect(() => {
     const hotkey = (event) => {
-      if (event.target?.closest?.("input, select, textarea, [contenteditable='true']")) return;
+      // OS key-repeat would otherwise spam save()/undo() on every auto-repeat
+      // tick while a key is held, and repeatedly flip play/pause under Space.
+      if (event.repeat || event.isComposing || isEditableHotkeyTarget(event.target)) return;
       const modifier = event.ctrlKey || event.metaKey;
       const { code } = event;
       if (modifier && code === "KeyS") save();

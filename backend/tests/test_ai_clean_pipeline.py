@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 
+import AI.engines.ctc as ctc_module
 import AI.pipeline as pipeline_module
 from AI.artifacts import publish_files_atomically
 from AI.engines.separation import MSSTMelRoformerSeparator
@@ -65,6 +66,45 @@ class Separator:
         return None
 
 
+def test_long_ctc_inference_is_split_into_bounded_overlapping_windows():
+    windows_builder = getattr(ctc_module, "_ctc_audio_windows", None)
+
+    assert callable(windows_builder)
+    windows = windows_builder(2000, 10, max_seconds=45.0, overlap_seconds=1.0)
+    assert windows[0] == (0, 450)
+    assert windows[-1][1] == 2000
+    assert all(end - start <= 450 for start, end in windows)
+    assert all(right_start < left_end for (_, left_end), (right_start, _) in zip(windows, windows[1:], strict=False))
+
+
+def test_ctc_logit_inference_uses_the_bounded_windows(monkeypatch):
+    import torch
+
+    aligner = ctc_module.CTCWordAligner("test-model")
+    aligner._device = "cpu"
+    model = object()
+    processor = SimpleNamespace(feature_extractor=SimpleNamespace(sampling_rate=10))
+    monkeypatch.setattr(aligner, "_load", Mock(return_value=(model, processor)))
+    inference = Mock(
+        side_effect=lambda audio, *_args: torch.zeros(
+            (1, max(1, len(audio) // 10), 3), dtype=torch.float32
+        )
+    )
+    monkeypatch.setattr(aligner, "_infer_logits", inference)
+
+    logits, returned_model, returned_processor, span = aligner._compute_logits(
+        np.zeros(2000, dtype=np.float32),
+        10,
+    )
+
+    assert inference.call_count == 5
+    assert max(len(call.args[0]) for call in inference.call_args_list) <= 450
+    assert logits.shape[1] > 0
+    assert returned_model is model
+    assert returned_processor is processor
+    assert span == 200.0
+
+
 def test_greedy_asr_generation_has_explicit_padding_and_no_sampling_flags():
     generation = SimpleNamespace(
         do_sample=False,
@@ -107,6 +147,30 @@ def test_greedy_asr_generation_has_explicit_padding_and_no_sampling_flags():
     assert nested_generation.top_k is None
     assert nested_generation.pad_token_id == 42
     assert nested.config.pad_token_id == 42
+
+
+def test_qwen_asr_loads_with_a_pre_sanitized_generation_config(monkeypatch):
+    from AI.engines.text import Qwen3Transcriber
+
+    captured = {}
+    generation = object()
+
+    class FakeQwen:
+        @staticmethod
+        def from_pretrained(_name, **options):
+            captured.update(options)
+            return SimpleNamespace(backend="test", model=None)
+
+    monkeypatch.setitem(sys.modules, "qwen_asr", SimpleNamespace(Qwen3ASRModel=FakeQwen))
+    monkeypatch.setattr(
+        "AI.engines.text._greedy_generation_config",
+        lambda _name: generation,
+    )
+    monkeypatch.setattr("AI.engines.text.select_torch_device", lambda *_args: "cpu")
+
+    Qwen3Transcriber("test-model")._load()
+
+    assert captured["generation_config"] is generation
 
 
 def test_model_parking_unloads_on_memory_constrained_computers(monkeypatch):
@@ -841,6 +905,73 @@ def test_timed_alignment_reuses_a_stable_repeated_line_shape_for_a_gross_outlier
     assert [word.start for word in words[4:]] == [30.0, 31.0, 35.0, 36.0]
 
 
+def test_timed_alignment_repairs_a_moderately_stretched_repeated_line():
+    tokens = ["Всё", "говорит", "нет", "пути"] * 2
+    words = [
+        Word(10.0, 10.8, "Всё", 0.9, 0),
+        Word(11.0, 11.8, "говорит", 0.9, 1),
+        Word(12.0, 12.8, "нет", 0.9, 2),
+        Word(13.0, 13.8, "пути", 0.9, 3),
+        Word(30.0, 30.8, "Всё", 0.9, 4),
+        Word(31.2, 32.0, "говорит", 0.9, 5),
+        Word(32.8, 33.6, "нет", 0.9, 6),
+        Word(34.2, 35.0, "пути", 0.9, 7),
+    ]
+
+    _repair_timed_line_outliers(words, [(10.0, 0, 4), (30.0, 4, 8)], tokens, 40.0)
+
+    assert [word.start for word in words[4:]] == [30.0, 31.0, 32.0, 33.0]
+
+
+def test_timed_alignment_repairs_collapsed_repeated_single_word_lines():
+    tokens = ["Батарейка"] * 3
+    words = [
+        Word(10.0, 10.04, "Батарейка", 0.1, 0),
+        Word(20.0, 21.6, "Батарейка", 0.9, 1),
+        Word(30.0, 30.05, "Батарейка", 0.1, 2),
+    ]
+
+    _repair_timed_line_outliers(
+        words,
+        [(10.0, 0, 1), (20.0, 1, 2), (30.0, 2, 3)],
+        tokens,
+        35.0,
+    )
+
+    assert words[0].end == pytest.approx(11.6)
+    assert words[1].end == pytest.approx(21.6)
+    assert words[2].end == pytest.approx(31.6)
+
+
+def test_timed_alignment_repairs_a_collapsed_transition_between_repeated_lines():
+    tokens = ["Hold", "la", "la"] * 3
+    words = [
+        Word(10.0, 11.5, "Hold", 0.9, 0),
+        Word(12.0, 12.5, "la", 0.9, 1),
+        Word(12.5, 14.0, "la", 0.9, 2),
+        Word(30.0, 31.5, "Hold", 0.9, 3),
+        Word(32.0, 32.5, "la", 0.9, 4),
+        Word(32.5, 34.0, "la", 0.9, 5),
+        Word(50.0, 50.05, "Hold", 0.1, 6),
+        Word(50.1, 51.0, "la", 0.2, 7),
+        Word(51.0, 53.0, "la", 0.2, 8),
+    ]
+    entries = [
+        (10.0, 0, 1),
+        (12.0, 1, 3),
+        (30.0, 3, 4),
+        (32.0, 4, 6),
+        (50.0, 6, 7),
+        (50.1, 7, 9),
+    ]
+
+    _repair_timed_line_outliers(words, entries, tokens, 52.5)
+
+    assert words[6].end == pytest.approx(51.5)
+    assert words[7].start == pytest.approx(52.0)
+    assert words[8].end <= 52.5
+
+
 def test_timed_alignment_does_not_let_a_repeated_line_claim_the_instrumental_gap():
     tokens = ["Нэнси", "и", "Сид", "Нэнси", "и", "Сид"]
     words = [
@@ -1329,6 +1460,62 @@ def test_failed_ctc_uses_safe_vocal_timing_without_heavy_qwen(monkeypatch, tmp_p
     assert "alignment route language=Russian" in capsys.readouterr().out
 
 
+def test_low_confidence_timed_ctc_is_replaced_by_a_stronger_full_alignment(monkeypatch):
+    aligner = Qwen3ForcedAligner("production-model", isolated=False)
+    timed = [
+        Word(1.0, 1.2, "первая", 0.1, 0),
+        Word(1.3, 1.5, "строка", 0.1, 1),
+    ]
+    full = [
+        Word(4.0, 4.2, "первая", 0.8, 0),
+        Word(4.3, 4.5, "строка", 0.8, 1),
+    ]
+    monkeypatch.setenv("KARAOKE_AI_CTC_RU_MODEL", "ctc-model")
+    monkeypatch.setattr("AI.engines.text.duration", lambda _audio: 10.0)
+    monkeypatch.setattr(
+        "AI.audio.read_mono", lambda _audio: (np.zeros(100, dtype=np.float32), 10)
+    )
+    monkeypatch.setattr(aligner, "_ctc_timed_lines", Mock(return_value=timed))
+    full_alignment = Mock(return_value=full)
+    monkeypatch.setattr(aligner, "_ctc_full", full_alignment)
+
+    result = aligner._align_timed_lines_local(
+        "vocals.flac",
+        "первая строка",
+        (TimedLine(1.0, "первая строка"),),
+        "Russian",
+    )
+
+    assert result == full
+    full_alignment.assert_called_once()
+
+
+def test_confident_timed_ctc_does_not_run_full_song_alignment(monkeypatch):
+    aligner = Qwen3ForcedAligner("production-model", isolated=False)
+    timed = [
+        Word(1.0, 1.2, "первая", 0.7, 0),
+        Word(1.3, 1.5, "строка", 0.7, 1),
+    ]
+    monkeypatch.setenv("KARAOKE_AI_CTC_RU_MODEL", "ctc-model")
+    monkeypatch.setattr("AI.engines.text.duration", lambda _audio: 10.0)
+    monkeypatch.setattr(
+        "AI.audio.read_mono", lambda _audio: (np.zeros(100, dtype=np.float32), 10)
+    )
+    monkeypatch.setattr(aligner, "_ctc_timed_lines", Mock(return_value=timed))
+    full_alignment = Mock(side_effect=AssertionError("must not run"))
+    monkeypatch.setattr(aligner, "_ctc_full", full_alignment)
+
+    result = aligner._align_timed_lines_local(
+        "vocals.flac",
+        "первая строка",
+        (TimedLine(1.0, "первая строка"),),
+        "Russian",
+    )
+
+    assert result == timed
+    full_alignment.assert_not_called()
+
+
 def test_coarse_line_starts_follow_vocal_time_across_an_instrumental_gap():
     starts = coarse_line_starts(
         [4, 4, 4],
@@ -1361,6 +1548,25 @@ def test_long_plain_lyrics_use_bounded_ctc_windows_before_full_song_ctc(
 
     assert result == expected
     coarse.assert_called_once()
+
+
+def test_low_confidence_bounded_ctc_falls_back_to_full_song_alignment(monkeypatch):
+    aligner = Qwen3ForcedAligner("production-model", isolated=False)
+    coarse = [Word(10.0, 10.4, "первая", 0.1, 0)]
+    full = [Word(25.0, 25.4, "первая", 0.8, 0)]
+    monkeypatch.setenv("KARAOKE_AI_CTC_RU_MODEL", "ctc-model")
+    monkeypatch.setattr("AI.engines.text.duration", lambda _audio: 180.0)
+    monkeypatch.setattr(
+        "AI.audio.read_mono", lambda _audio: (np.zeros(100, dtype=np.float32), 10)
+    )
+    monkeypatch.setattr(aligner, "_ctc_coarse_text", Mock(return_value=coarse))
+    full_alignment = Mock(return_value=full)
+    monkeypatch.setattr(aligner, "_ctc_full", full_alignment)
+
+    result = aligner._align_long_text_local("vocals.flac", "первая", "Russian")
+
+    assert result == full
+    full_alignment.assert_called_once()
 
 
 def test_unsupported_language_is_aligned_without_spawning_worker(monkeypatch, tmp_path):

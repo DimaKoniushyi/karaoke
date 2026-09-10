@@ -99,6 +99,71 @@ def _line_identity(tokens: list[str]) -> tuple[str, ...]:
     )
 
 
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return (
+        ordered[middle]
+        if len(ordered) % 2
+        else (ordered[middle - 1] + ordered[middle]) / 2
+    )
+
+
+def _repair_repeated_line_transitions(
+    words: list[Word],
+    entries: list[tuple[float, int, int]],
+    tokens: list[str],
+    span: float,
+) -> None:
+    transitions: dict[
+        tuple[tuple[str, ...], tuple[str, ...]],
+        list[tuple[int, float]],
+    ] = {}
+    for index in range(len(entries) - 1):
+        _start, lower, upper = entries[index]
+        _next_start, next_lower, next_upper = entries[index + 1]
+        key = (
+            _line_identity(tokens[lower:upper]),
+            _line_identity(tokens[next_lower:next_upper]),
+        )
+        transitions.setdefault(key, []).append(
+            (index, words[next_lower].start - words[lower].start)
+        )
+    for occurrences in transitions.values():
+        if len(occurrences) < 3:
+            continue
+        typical = _median([delta for _index, delta in occurrences])
+        if typical <= 0.2:
+            continue
+        for line_index, delta in occurrences:
+            if delta >= typical * 0.45:
+                continue
+            _start, lower, _upper = entries[line_index]
+            _next_start, next_lower, next_upper = entries[line_index + 1]
+            target = words[lower].start + typical
+            group = words[next_lower:next_upper]
+            boundary = (
+                min(span, words[entries[line_index + 2][1]].start)
+                if line_index + 2 < len(entries)
+                else span
+            )
+            if target >= boundary:
+                continue
+            source_start = group[0].start
+            source_span = max(0.01, group[-1].end - source_start)
+            scale = min(1.0, (boundary - target) / source_span)
+            words[next_lower:next_upper] = [
+                Word(
+                    target + (word.start - source_start) * scale,
+                    target + (word.end - source_start) * scale,
+                    word.text,
+                    min(word.confidence, 0.5),
+                    word.index,
+                )
+                for word in group
+            ]
+
+
 def _repeated_shape_is_outlier(template: list[Word], group: list[Word]) -> bool:
     template_span = template[-1].start - template[0].start
     current_span = group[-1].start - group[0].start
@@ -114,7 +179,7 @@ def _repeated_shape_is_outlier(template: list[Word], group: list[Word]) -> bool:
         for expected, current in zip(template, group, strict=True)
     )
     return (
-        relative_error > max(1.5, template_span * 0.45)
+        relative_error > max(1.0, template_span * 0.3)
         or not 0.6 <= current_span / template_span <= 1.6
         or current_duration > max(
             template_duration * 2.5,
@@ -192,6 +257,54 @@ def _repair_repeated_line_shapes(
             templates[identity] = list(repaired)
 
 
+def _repair_repeated_single_word_durations(
+    words: list[Word],
+    entries: list[tuple[float, int, int]],
+    tokens: list[str],
+    span: float,
+) -> None:
+    occurrences: dict[tuple[str, ...], list[tuple[int, float]]] = {}
+    for line_index, (_line_start, lower, upper) in enumerate(entries):
+        if upper - lower != 1:
+            continue
+        line_end = (
+            min(span, words[entries[line_index + 1][1]].start)
+            if line_index + 1 < len(entries)
+            else span
+        )
+        word = words[lower]
+        duration = min(word.end, line_end) - word.start
+        occurrences.setdefault(_line_identity(tokens[lower:upper]), []).append(
+            (lower, duration)
+        )
+    for repeated in occurrences.values():
+        stable = sorted(duration for _index, duration in repeated if duration >= 0.2)
+        if len(repeated) < 2 or not stable:
+            continue
+        typical = _median(stable)
+        for index, measured in repeated:
+            if measured >= 0.2:
+                continue
+            word = words[index]
+            line_index = next(
+                position
+                for position, (_start, lower, upper) in enumerate(entries)
+                if lower <= index < upper
+            )
+            line_end = (
+                min(span, words[entries[line_index + 1][1]].start)
+                if line_index + 1 < len(entries)
+                else span
+            )
+            words[index] = Word(
+                word.start,
+                min(line_end, word.start + typical),
+                word.text,
+                min(word.confidence, 0.5),
+                word.index,
+            )
+
+
 def repair_timed_line_outliers(
     words: list[Word],
     entries: list[tuple[float, int, int]],
@@ -201,4 +314,6 @@ def repair_timed_line_outliers(
     """Repair gross CTC line geometry using evidence from the same recording."""
     _repair_duplicate_onsets(words, entries, tokens, span)
     _repair_final_preposition_words(words, entries, tokens, span)
+    _repair_repeated_line_transitions(words, entries, tokens, span)
+    _repair_repeated_single_word_durations(words, entries, tokens, span)
     _repair_repeated_line_shapes(words, entries, tokens, span)

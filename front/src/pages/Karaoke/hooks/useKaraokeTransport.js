@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../../api/client";
 import { translateSaved as t } from "../../../i18n/runtime";
 import { createRoomVoiceCapture } from "../../../services/roomVoiceCapture";
+import { safe } from "../utils/async";
 import { playbackGain } from "../utils/data";
 import { finalizeRecording, formatError } from "../utils/recordingSession";
 import { clampPlaybackPosition } from "../utils/transport";
@@ -11,7 +12,6 @@ import useKaraokeRoomTransport from "./useKaraokeRoomTransport";
 export { createRoomVoiceCapture } from "../../../services/roomVoiceCapture";
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
-const safe = (task, fallback = null) => Promise.resolve().then(task).catch(() => fallback);
 // The capture device's sample clock and the instrumental's playback clock are
 // independent hardware clocks that drift apart over a take -- a single sync
 // anchor at the start isn't enough. Periodic re-anchoring bounds that drift

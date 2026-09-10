@@ -24,7 +24,9 @@ const notify = (detail) =>
 export default function useMicrophoneSettings({ audioSettings, onError }) {
   const [runtime, setRuntime] = useState(DEFAULT_RUNTIME);
   const [microphoneEffects, setMicrophoneEffects] = useState(DEFAULT_EFFECTS);
-  const [monitorInputDeviceId, setMonitorInputDeviceId] = useState(
+  // Not user-configurable yet -- read once at mount, matching the stored
+  // default until Settings grows a control for it.
+  const [monitorInputDeviceId] = useState(
     () => getAudioPreferences().monitorInputDeviceId || "default"
   );
   const confirmedEffects = useRef(DEFAULT_EFFECTS);
@@ -75,15 +77,6 @@ export default function useMicrophoneSettings({ audioSettings, onError }) {
     reportedMonitorError.current = key;
     onError?.(t("karaoke.couldNotEnableMonitoring", { 0: status.error }));
   }, [directMonitor.data, onError]);
-
-  useEffect(() => {
-    const sync = (event) => {
-      const next = event.detail || getAudioPreferences();
-      setMonitorInputDeviceId(next.monitorInputDeviceId || "default");
-    };
-    globalThis.addEventListener?.("audio-preferences-changed", sync);
-    return () => globalThis.removeEventListener?.("audio-preferences-changed", sync);
-  }, []);
 
   useEffect(() => {
     const sync = ({ detail }) => {

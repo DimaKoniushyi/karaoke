@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../../api/client";
 import useMountedRef from "../../../hooks/useMountedRef";
 import { translateSaved as t } from "../../../i18n/runtime";
+import { noop } from "../utils/async";
 import { playbackGain } from "../utils/data";
 import {
   finalizeRecording,
@@ -12,7 +13,6 @@ import {
 } from "../utils/recordingSession";
 
 const MISSING_ID = "karaoke.backendDidNotReturnPostId";
-const noop = () => {};
 const now = () => globalThis.performance?.now?.() ?? Date.now();
 
 // A serial promise-chain task queue. With `coalescing: true`, a task queued

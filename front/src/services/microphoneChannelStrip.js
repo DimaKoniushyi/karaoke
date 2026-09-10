@@ -1,8 +1,7 @@
-import { clampWithFallback } from "../utils/math";
+import { clamp01Safe as clamp01 } from "../utils/math";
 import { createLevelMeter } from "./levelMeter";
 
 const CURVES = { limiter: 1024 };
-const clamp01 = (value) => clampWithFallback(value, 0, 1, 0);
 
 function curve(length, transform) {
   return Float32Array.from({ length }, (_, index) => transform((index / (length - 1)) * 2 - 1));

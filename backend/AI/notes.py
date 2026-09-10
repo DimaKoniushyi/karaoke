@@ -130,15 +130,10 @@ def _split_segments_at_word_starts(
     segments: list[list[PitchFrame]],
     word_starts: list[float],
     *,
+    forced_starts: set[float] | frozenset[float] = frozenset(),
     minimum_dropout: float = 0.03,
 ) -> list[list[PitchFrame]]:
-    """Keep a brief inter-word dropout from swallowing the next lyric word.
-
-    The acoustic segmenter intentionally bridges brief unvoiced gaps inside a
-    sustained syllable.  At a lyric boundary, however, the same observed gap
-    separates two words.  Split only when there is an actual dropout so a
-    continuously held pitch is not fragmented at every lexical boundary.
-    """
+    """Split dropouts and explicit lyric-line boundaries inside long notes."""
     if not segments or len(word_starts) < 2:
         return segments
     boundaries = sorted(set(word_starts[1:]))
@@ -154,7 +149,7 @@ def _split_segments_at_word_starts(
                 0 < cut < len(segment)
                 and segment[cut].time - segment[cut - 1].time >= minimum_dropout
             )
-            if not has_dropout:
+            if not has_dropout and boundary not in forced_starts:
                 continue
             if cut > cursor:
                 result.append(segment[cursor:cut])
@@ -174,16 +169,20 @@ def build_vocal_notes(
     min_confidence=0.38,
     words: list[Word] | None = None,
     word_boundary_tolerance=0.12,
+    line_start_indices: set[int] | frozenset[int] = frozenset(),
     **_context,
 ) -> list[VocalNote]:
     frames = [frame for frame in pitch if frame.voiced and frame.confidence >= min_confidence]
     lyric_words = words or []
     word_starts = [word.start for word in lyric_words]
     notes: list[VocalNote] = []
-    last_owned_end: dict[int, float] = {}
+    last_activity_end: dict[int, float] = {}
     segments = _split_segments_at_word_starts(
         list(_segments(frames, max_gap, split_semitones)),
         word_starts,
+        forced_starts={
+            word.start for word in lyric_words if word.index in line_start_indices
+        },
     )
     steps = [
         right.time - left.time
@@ -196,8 +195,6 @@ def build_vocal_notes(
         end = segment[-1].time + hop
         if index + 1 < len(segments):
             end = min(end, segments[index + 1][0].time)
-        if end - start < min_note:
-            continue
         midi = round(median(hz_to_midi(frame.frequency) for frame in segment))
         owner = _owner(lyric_words, start, word_boundary_tolerance, word_starts)
         if owner is None and lyric_words:
@@ -209,7 +206,10 @@ def build_vocal_notes(
             owner = _owner(lyric_words, start, adaptive_tolerance, word_starts)
         if owner is None:
             continue
-        previous_end = last_owned_end.get(owner.index)
+        previous_end = last_activity_end.get(owner.index)
+        last_activity_end[owner.index] = end
+        if end - start < min_note:
+            continue
         ownership_gap = max(0.2, float(word_boundary_tolerance))
         if previous_end is not None and start - previous_end > ownership_gap:
             # A fitted word interval is deliberately wider than its detected
@@ -218,7 +218,6 @@ def build_vocal_notes(
             # otherwise every reprocess expands the final word once more.
             continue
         notes.append(VocalNote(start, end, midi, word_index=owner.index))
-        last_owned_end[owner.index] = end
     return notes
 
 
@@ -378,10 +377,13 @@ def fit_notes_to_sung_words(
         for note in owned:
             start = note_origin + (note.start - first) * scale
             end = note_origin + (note.end - first) * scale
+            clipped_end = min(target_end, end)
+            if clipped_end <= start + 1e-6:
+                continue
             fitted_notes.append(
                 VocalNote(
                     start,
-                    min(target_end, end),
+                    clipped_end,
                     note.midi_note,
                     velocity=note.velocity,
                     word_index=word.index,

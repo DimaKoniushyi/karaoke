@@ -1,3 +1,6 @@
+import numpy as np
+import pytest
+
 import AI.notes as notes_module
 from AI.models import PitchFrame, VocalNote, Word
 from AI.notes import (
@@ -188,6 +191,38 @@ def test_brief_pitch_dropout_between_words_still_splits_the_note():
     assert [(note.word_index, note.start) for note in notes] == [(0, 0.0), (1, 0.13)]
 
 
+def test_continuous_pitch_crossing_a_word_boundary_belongs_to_both_words():
+    pitch = [
+        PitchFrame(index * 0.02, 440.0, 1.0, True, 1.0)
+        for index in range(20)
+    ]
+    words = [
+        Word(0.0, 0.2, "первое", index=0),
+        Word(0.2, 0.4, "второе", index=1),
+    ]
+
+    notes = build_vocal_notes(pitch, words=words, line_start_indices={1})
+
+    assert [note.word_index for note in notes] == [0, 1]
+    assert notes[0].end == pytest.approx(notes[1].start)
+    assert notes[1].start == pytest.approx(0.2)
+
+
+def test_continuous_pitch_inside_one_line_is_not_split_at_every_word():
+    pitch = [
+        PitchFrame(index * 0.02, 440.0, 1.0, True, 1.0)
+        for index in range(20)
+    ]
+    words = [
+        Word(0.0, 0.2, "первое", index=0),
+        Word(0.2, 0.4, "второе", index=1),
+    ]
+
+    notes = build_vocal_notes(pitch, words=words)
+
+    assert len(notes) == 1
+
+
 def test_sustained_pitch_change_still_starts_a_new_note():
     pitch = [PitchFrame(index * 0.01, 440.0, 1.0, True, 1.0) for index in range(15)] + [
         PitchFrame(index * 0.01, 493.883, 1.0, True, 1.0) for index in range(15, 30)
@@ -200,6 +235,31 @@ def test_sustained_pitch_change_still_starts_a_new_note():
     assert [note.midi_note for note in notes] == [69, 71]
     assert notes[0].end == 0.15
     assert notes[1].start == 0.15
+
+
+def test_pitch_jitter_does_not_make_a_later_stable_tone_look_disconnected():
+    pitch = [
+        *[
+            PitchFrame(time, 440.0, 1.0, True, 1.0)
+            for time in (0.0, 0.02, 0.04, 0.06, 0.08)
+        ],
+        *[
+            PitchFrame(time, 440.0 if index % 2 else 554.365, 1.0, True, 1.0)
+            for index, time in enumerate(np.arange(0.10, 0.36, 0.02))
+        ],
+        *[
+            PitchFrame(time, 493.883, 1.0, True, 1.0)
+            for time in np.arange(0.36, 0.62, 0.02)
+        ],
+    ]
+    words = [Word(0.0, 0.7, "долго", index=0)]
+
+    notes = build_vocal_notes(pitch, words=words)
+
+    assert any(
+        note.start >= 0.3 and note.midi_note == 71 and note.word_index == 0
+        for note in notes
+    )
 
 
 def test_short_word_between_sung_words_recovers_a_note_from_nearby_pitch():
@@ -406,3 +466,18 @@ def test_fitted_line_final_word_respects_voice_limit_without_stretching_note():
 
     assert fitted_words[0].end == 75.56
     assert fitted_notes[0].end == 75.54
+
+
+def test_note_starting_after_a_word_voice_limit_is_discarded():
+    words = [Word(10.0, 10.5, "слово", index=0)]
+    notes = [VocalNote(10.8, 11.0, 60, word_index=0)]
+
+    fitted_words, fitted_notes = fit_notes_to_sung_words(
+        words,
+        notes,
+        duration=12.0,
+        word_end_limits={0: 10.6},
+    )
+
+    assert fitted_words[0].end == 10.6
+    assert fitted_notes == []

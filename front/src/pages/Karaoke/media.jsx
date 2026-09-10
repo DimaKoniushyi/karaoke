@@ -4,10 +4,10 @@ import { AppSettingsContext } from "../../contexts/app-settings";
 import { observeLightingMedia } from "../../services/keyboardLighting";
 import { Box } from "../../theme/ui";
 import * as platform from "../../utils/platform";
+import { noop } from "./utils/async";
 import { playbackGain } from "./utils/data";
 import { normalizePlaybackRate } from "./utils/transport";
 
-const noop = () => {};
 const cleanup = (file) => Promise.resolve().then(() => file?.cleanup?.()).catch(noop);
 
 function useTrack(songId, track) {

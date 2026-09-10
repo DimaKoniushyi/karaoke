@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import useHardwareSuspended from "../../../hooks/useHardwareSuspended";
 import { acquireMicrophone } from "../../../services/microphoneCapture";
 import { closeAudioContext, closeAudioContextQuietly } from "../../../utils/audio-context";
+import { safe } from "../utils/async";
 import { detectMidiFromAnalyser } from "../utils/pitch";
 
 const IDLE = {
@@ -10,7 +11,6 @@ const IDLE = {
   isPitchAttacking: false,
   pitchRestProgress: 1
 };
-const safe = (task) => Promise.resolve().then(task).catch(() => {});
 
 export default function usePitchDetection({ isPlaying, monitorInputDeviceId, getLocalVoiceStream }) {
   const suspended = useHardwareSuspended();

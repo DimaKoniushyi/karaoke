@@ -47,7 +47,10 @@ const Popover = forwardRef(
       }
       const margin = 8;
       setPosition({
-        top: Math.max(margin, Math.min(top, window.innerHeight - popoverRect.height - margin)) + 20,
+        // +20 nudges the popover down from its anchor; applied before the
+        // clamp (not after) so it can never push the popover past the
+        // bottom edge of the viewport.
+        top: Math.max(margin, Math.min(top + 20, window.innerHeight - popoverRect.height - margin)),
         left: Math.max(margin, Math.min(left, window.innerWidth - popoverRect.width - margin))
       });
     }, [anchorRef, offset, placement]);

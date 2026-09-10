@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import unicodedata
+from pathlib import Path
 
 
 def context_echo_key(value: str) -> str:
@@ -48,6 +50,23 @@ def prepare_greedy_generation(wrapper) -> None:
                 and getattr(target_config, "pad_token_id", None) is None
             ):
                 target_config.pad_token_id = eos
+
+
+def greedy_generation_config(model_name: str):
+    """Load the local Qwen config without validating stale sampling fields."""
+    path = Path(model_name) / "generation_config.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if not bool(payload.get("do_sample", False)):
+        for name in ("temperature", "top_p", "top_k"):
+            payload.pop(name, None)
+    from transformers import GenerationConfig
+
+    return GenerationConfig(**payload)
 
 
 class TimedAudioChunks(list):

@@ -12,8 +12,10 @@ from .alignment_process import IsolatedAlignerMixin
 from .alignment_tokens import reconcile_words
 from .asr_support import asr_voice_chunks as _asr_voice_chunks
 from .asr_support import context_echo_key as _context_echo_key
+from .asr_support import greedy_generation_config as _greedy_generation_config
 from .asr_support import prepare_greedy_generation as _prepare_greedy_generation
 from .base import Aligner, Transcriber
+from .ctc_selection import select_stronger_ctc_alignment as _select_stronger_ctc_alignment
 from .ctc_text import (
     create_ctc_aligner as _create_ctc_aligner,
 )
@@ -395,6 +397,13 @@ class Qwen3Transcriber(Transcriber):
         except ImportError as error:
             raise EngineUnavailableError("qwen-asr is unavailable") from error
         if self._model is None:
+            load_options = {
+                "max_inference_batch_size": 2,
+                "max_new_tokens": 192,
+            }
+            generation_config = _greedy_generation_config(self.model_name)
+            if generation_config is not None:
+                load_options["generation_config"] = generation_config
             self._model = _load(
                 Qwen3ASRModel,
                 self.model_name,
@@ -402,11 +411,10 @@ class Qwen3Transcriber(Transcriber):
                 # Two concurrent chunks keep the GPU responsive for the
                 # desktop compositor/browser while retaining most of the
                 # throughput benefit over one whole-song request.
-                max_inference_batch_size=2,
                 # A noisy singing stem can fail to emit EOS.  The upstream
                 # default of 512 then spends many minutes generating garbage;
                 # 30-second voice chunks do not need such a large allowance.
-                max_new_tokens=192,
+                **load_options,
             )
             _prepare_greedy_generation(self._model)
         return _activate_loaded(self._model, "asr")
@@ -825,9 +833,7 @@ class Qwen3ForcedAligner(IsolatedAlignerMixin, Aligner):
             adjust_global_offset=False,
         )
 
-    def _align_timed_lines_local(
-        self, audio, text, lines, language, *, adjust_global_offset=True
-    ):
+    def _align_timed_lines_local(self, audio, text, lines, language, *, adjust_global_offset=True):
         import numpy as np
 
         from ..audio import read_mono
@@ -842,7 +848,11 @@ class Qwen3ForcedAligner(IsolatedAlignerMixin, Aligner):
         tokens, entries, groups = _timed_line_plan(text, lines, span)
         resolved = resolve_alignment_language(text, language)
         if ctc_words := self._ctc_timed_lines(samples, rate, tokens, entries, span, resolved):
-            return ctc_words
+            return _select_stronger_ctc_alignment(
+                ctc_words,
+                lambda: self._ctc_full(samples, rate, tokens, span, resolved),
+                label="timed lyrics",
+            )
         if not self._heavy_alignment_enabled():
             self.needs_voice_anchoring = True
             return self._validate(_interpolate_entries(tokens, entries, span), tokens, span)
@@ -1029,6 +1039,26 @@ class Qwen3ForcedAligner(IsolatedAlignerMixin, Aligner):
         self.needs_voice_anchoring = False
         return self._validate(_interpolate_entries(tokens, entries, span), tokens, span)
 
+    def _try_ctc_long_alignment(self, audio, text, tokens, span, resolved):
+        import numpy as np
+
+        from ..audio import read_mono
+        variable = {"Russian": "KARAOKE_AI_CTC_RU_MODEL", "Ukrainian": "KARAOKE_AI_CTC_UK_MODEL"}.get(resolved)
+        if not variable or not os.getenv(variable) or not tokens:
+            return None
+        samples, rate = read_mono(audio)
+        samples = samples.astype(np.float32)
+        coarse_words = None
+        if span > 90.0:
+            coarse_words = self._ctc_coarse_text(audio, samples, rate, tokens, text, span, resolved)
+        if coarse_words:
+            return _select_stronger_ctc_alignment(
+                coarse_words,
+                lambda: self._ctc_full(samples, rate, tokens, span, resolved),
+                label="bounded",
+            )
+        return self._ctc_full(samples, rate, tokens, span, resolved)
+
     def _align_long_text_local(self, audio, text, language):
         import numpy as np
 
@@ -1038,18 +1068,8 @@ class Qwen3ForcedAligner(IsolatedAlignerMixin, Aligner):
         resolved = resolve_alignment_language(text, language)
         samples = rate = None
         self.needs_voice_anchoring = True
-        variable = {"Russian": "KARAOKE_AI_CTC_RU_MODEL", "Ukrainian": "KARAOKE_AI_CTC_UK_MODEL"}.get(resolved)
-        if variable and os.getenv(variable) and tokens:
-            samples, rate = read_mono(audio)
-            samples = samples.astype(np.float32)
-            if span > 90.0 and (
-                ctc_words := self._ctc_coarse_text(
-                    audio, samples, rate, tokens, text, span, resolved
-                )
-            ):
-                return ctc_words
-            if ctc_words := self._ctc_full(samples, rate, tokens, span, resolved):
-                return ctc_words
+        if ctc_words := self._try_ctc_long_alignment(audio, text, tokens, span, resolved):
+            return ctc_words
         if not self._heavy_alignment_enabled():
             return self._safe_coarse_alignment(audio, text, tokens, span)
         self._ensure_heavy_alignment()

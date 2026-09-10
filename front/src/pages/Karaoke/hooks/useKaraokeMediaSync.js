@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
+import { safe } from "../utils/async";
 import { playbackGain } from "../utils/data";
 import {
   classifyDrift,
@@ -7,7 +8,6 @@ import {
   normalizePlaybackRate
 } from "../utils/transport";
 
-const safe = (task) => Promise.resolve().then(task).catch(() => {});
 const now = () => globalThis.performance?.now?.() ?? Date.now();
 
 export default function useKaraokeMediaSync({

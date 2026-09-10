@@ -166,9 +166,10 @@ function useAudio(open) {
     setBusy(true);
     try {
       const enabled = !!values.monitoring_enabled && !retry;
-      const saved = await (enabled
-        ? api.stopDirectMonitoring()
-        : api.startDirectMonitoring({ disabledEffects: true }));
+      // Same direct-monitor toggle as Karaoke's "I hear myself" -- audio
+      // behavior (including whether effects are applied) must stay
+      // identical across every self-monitoring entry point.
+      const saved = await (enabled ? api.stopDirectMonitoring() : api.startDirectMonitoring());
 
       merge({ monitoring_enabled: !enabled });
       emit(saved);

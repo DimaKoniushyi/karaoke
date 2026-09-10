@@ -2,11 +2,15 @@ import { AudioLines, Cog, MousePointer2, Type } from "lucide-react";
 import { translateSaved as t } from "../../../i18n/runtime";
 import { Button, Grid, Stack } from "../../../theme/ui";
 import { EFFECT_PRESETS } from "../constants";
-const presets = EFFECT_PRESETS.map((preset) =>
-  Array.isArray(preset)
-    ? preset
-    : [preset.id, preset.label, preset.symbol, preset.echo, preset.reverb, preset.delay]
-);
+
+const presets = EFFECT_PRESETS.map((preset) => [
+  preset.id,
+  preset.label,
+  preset.symbol,
+  preset.echo,
+  preset.reverb,
+  preset.delay
+]);
 
 export default function ToolsPanel({ audio, preferences, onOpenAppSettings }) {
   const tools = [

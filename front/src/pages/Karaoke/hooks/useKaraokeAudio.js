@@ -9,12 +9,11 @@ import { POLLING_INTERVALS } from "../../../runtime-config";
 import { AUDIO_SETTINGS_CHANGED_EVENT } from "../../../utils/audioSettingsEvents";
 import { getErrorMessage } from "../../../utils/errors";
 import { createRoomSyncChannel } from "../../../services/roomSyncChannel";
+import { noop, safe } from "../utils/async";
 import { getMicrophoneLevel } from "../utils/transport";
 import useAudioOutputRouting from "./useAudioOutputRouting";
 import useMicrophoneSettings from "./useMicrophoneSettings";
 
-const noop = () => {};
-const safe = (task) => Promise.resolve().then(task).catch(noop);
 const usePoll = (request, interval, queryKey) => usePolling(request, interval, [], { queryKey });
 const notify = (detail) =>
   globalThis.dispatchEvent?.(new CustomEvent(AUDIO_SETTINGS_CHANGED_EVENT, { detail }));

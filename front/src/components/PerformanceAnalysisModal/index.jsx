@@ -5,7 +5,6 @@ import { useAppDialog } from "../../contexts/AppDialog";
 import useExclusiveAsyncAction from "../../hooks/useExclusiveAsyncAction";
 import useMountedRef from "../../hooks/useMountedRef";
 import { translateSaved as t } from "../../i18n/runtime";
-import { normalizeAnalysisResult } from "../../pages/Karaoke/utils/analysis";
 import {
   Button,
   IconButton,
@@ -14,6 +13,7 @@ import {
   Stack,
   Typography
 } from "../../theme/ui";
+import { normalizeAnalysisResult } from "../../utils/analysis";
 import { getErrorMessage } from "../../utils/errors";
 import { AudioPlayer } from "../AudioPlayer";
 import Summary from "./summary";

@@ -1,6 +1,4 @@
-import { clampWithFallback } from "./math";
-
-const clamp01 = (value) => clampWithFallback(value, 0, 1, 0);
+import { clamp01Safe as clamp01 } from "./math";
 
 export function lightingColor(hex, brightness, level, mode) {
   const base = /^#[a-f\d]{6}$/i.test(hex) ? hex : "#ffffff";

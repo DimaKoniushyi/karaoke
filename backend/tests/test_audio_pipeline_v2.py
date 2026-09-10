@@ -15,15 +15,41 @@ from AI.audio_metadata_v2 import AudioMetadata, resolve_audio_metadata
 from AI.audio_pipeline_v2 import (
     AudioPipelineV2,
     AudioPipelineV2Request,
+    _note_line_start_indices,
+    _word_end_limits,
     build_audio_lyrics_document,
     validate_audio_artifacts,
 )
+from AI.engines.singing_score import ScoreLine
 from AI.errors import EngineUnavailableError, ProcessingCancelledError
 from AI.lyrics_sources import (
     LyricsDiscovery,
     TimedLine,
 )
 from AI.models import PitchFrame, VocalNote, Word
+
+
+def test_note_boundaries_only_follow_single_word_score_lines():
+    lines = [
+        ScoreLine("два слова", 1.0, 2.0, 0, 1),
+        ScoreLine("припев", 3.0, 4.0, 2, 2),
+        ScoreLine("следующая строка", 5.0, 6.0, 3, 4),
+    ]
+
+    assert _note_line_start_indices(lines) == frozenset({2})
+
+
+def test_line_final_acoustic_duration_caps_later_note_expansion():
+    words = [
+        Word(1.0, 2.0, "долго", index=0),
+        Word(3.0, 3.05, "коротко", index=1),
+    ]
+
+    assert _word_end_limits(
+        words,
+        aligned_ends={0: 2.0, 1: 3.05},
+        line_end_indices={0, 1},
+    ) == {0: 2.0}
 
 
 def test_audio_document_matches_the_reference_shape_without_internal_fields():

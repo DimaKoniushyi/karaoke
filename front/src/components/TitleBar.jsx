@@ -34,7 +34,7 @@ export default function TitleBar({ hideActions = false, title = "A&D Voice" }) {
           variant="ghost"
           sx={{
             color: danger ? "var(--color-danger)" : "var(--color-text-muted)",
-            borderTopRadius: 0,
+            borderTopLeftRadius: 0,
             WebkitAppRegion: "no-drag",
             borderTopRightRadius: 0
           }}

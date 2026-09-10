@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test, vi } from "vitest";
 import { translateSaved } from "../src/i18n/runtime.js";
-import { getAnalysisFeedback, normalizeAnalysisResult, normalizeAnalysisSection } from "../src/pages/Karaoke/utils/analysis.js";
+import { getAnalysisFeedback, normalizeAnalysisResult, normalizeAnalysisSection } from "../src/utils/analysis.js";
 import { playbackGain, transposeKey } from "../src/pages/Karaoke/utils/data.js";
 import {
   createBrowserDeviceOptions,

@@ -17,15 +17,17 @@ import useExclusiveAsyncAction from "../src/hooks/useExclusiveAsyncAction.js";
 import useLatestRef from "../src/hooks/useLatestRef.js";
 import useMountedRef from "../src/hooks/useMountedRef.js";
 import { shouldSchedulePoll, usePolling } from "../src/hooks/usePolling.js";
+import useAutoHideControls from "../src/hooks/useAutoHideControls.js";
 import { translateSaved } from "../src/i18n/runtime.js";
 import useSongCover from "../src/hooks/useSongCover.js";
-import { useControls, useHotkeys, useStageLayout } from "../src/pages/Karaoke/karaoke-view.jsx";
+import useStageAspectFit from "../src/hooks/useStageAspectFit.js";
+import useKaraokeHotkeys from "../src/pages/Karaoke/hooks/useKaraokeHotkeys.js";
 import { isHotkeyScopeActive } from "../src/utils/hotkeys.js";
 import { useKaraokeResult } from "../src/pages/Karaoke/index.jsx";
 
-// Mirrors the CSS math inlined into karaoke-view.jsx's useStageLayout --
-// there is no longer a standalone pure function to import, so this is the
-// test's own reference implementation for computing expected values.
+// Mirrors the CSS math inside useStageAspectFit -- there is no longer a
+// standalone pure function to import, so this is the test's own reference
+// implementation for computing expected values.
 function expectedStageLayout({ mainWidth, mainHeight, stageWidth, stageHeight, currentNavExtra }) {
   return {
     navExtra: Math.max(0, mainHeight + currentNavExtra - (mainWidth * 9) / 16),
@@ -364,9 +366,12 @@ describe("navigation and karaoke hooks", () => {
     const clearInterval = vi.spyOn(window, "clearInterval");
     const addEvent = vi.spyOn(document, "addEventListener");
     const removeEvent = vi.spyOn(document, "removeEventListener");
-    const { result, rerender, unmount } = renderHook(({ enabled }) => useControls(enabled), {
-      initialProps: { enabled: true }
-    });
+    const { result, rerender, unmount } = renderHook(
+      ({ enabled }) => useAutoHideControls(enabled),
+      {
+        initialProps: { enabled: true }
+      }
+    );
     expect(setInterval).toHaveBeenCalledOnce();
     expect(setInterval.mock.calls[0][1]).toBe(250);
     const checkVisibility = setInterval.mock.calls[0][0];
@@ -434,18 +439,18 @@ describe("navigation and karaoke hooks", () => {
     verify([removeEvent, "toHaveBeenCalledWith", "fullscreenchange", fullscreenRegistration[1]]);
   });
   test("does not auto-hide when no autoHideEnabled value is given", () => {
-    // useControls no longer takes an isFullscreen prop -- fullscreen only
-    // ever reveals controls via the real "fullscreenchange" DOM event
+    // useAutoHideControls no longer takes an isFullscreen prop -- fullscreen
+    // only ever reveals controls via the real "fullscreenchange" DOM event
     // (covered by the previous test), independent of auto-hide.
     vi.useFakeTimers();
     const setInterval = vi.spyOn(window, "setInterval");
-    renderHook(() => useControls());
+    renderHook(() => useAutoHideControls());
     expect(setInterval).not.toHaveBeenCalled();
   });
   test("renders controls as visible before mount effects run", () => {
     const snapshots = [];
     const Probe = () => {
-      snapshots.push(useControls(false));
+      snapshots.push(useAutoHideControls(false));
       return null;
     };
     render(<Probe />);
@@ -461,7 +466,7 @@ describe("navigation and karaoke hooks", () => {
     const removeEvent = vi.spyOn(window, "removeEventListener");
     const hook = renderHook(
       ({ scopeRef }) =>
-        useHotkeys(scopeRef, {
+        useKaraokeHotkeys(scopeRef, {
           currentTime: 3,
           duration: 6,
           onTogglePlay: toggle,
@@ -595,7 +600,7 @@ describe("navigation and karaoke hooks", () => {
     };
     const { unmount } = renderHook(() => {
       const stageRef = useRef(stage);
-      useStageLayout(stageRef);
+      useStageAspectFit(stageRef);
     });
     const expected = expectedStageLayout({
       mainWidth: 1000,
@@ -631,13 +636,13 @@ describe("navigation and karaoke hooks", () => {
     const detachedMain = document.createElement("main");
     const stageWithoutShell = document.createElement("section");
     detachedMain.append(stageWithoutShell);
-    verify([() => renderHook(() => useStageLayout({ current: stageWithoutShell })), "not.toThrow"]);
+    verify([() => renderHook(() => useStageAspectFit({ current: stageWithoutShell })), "not.toThrow"]);
     const shell = document.createElement("div");
     shell.className = "karaoke-app-shell";
     document.body.append(shell);
-    verify([() => renderHook(() => useStageLayout({ current: null })), "not.toThrow"]);
+    verify([() => renderHook(() => useStageAspectFit({ current: null })), "not.toThrow"]);
     const detachedStage = document.createElement("section");
-    verify([() => renderHook(() => useStageLayout({ current: detachedStage })), "not.toThrow"]);
+    verify([() => renderHook(() => useStageAspectFit({ current: detachedStage })), "not.toThrow"]);
     expect(observe).not.toHaveBeenCalled();
     shell.remove();
   });
@@ -663,7 +668,7 @@ describe("navigation and karaoke hooks", () => {
       observe() {}
       disconnect() {}
     };
-    const hook = renderHook(({ stageRef }) => useStageLayout(stageRef), {
+    const hook = renderHook(({ stageRef }) => useStageAspectFit(stageRef), {
       initialProps: { stageRef: { current: stages[0] } }
     });
     verify([stages[0].style.getPropertyValue("--karaoke-video-width"), "not.toBe", ""]);

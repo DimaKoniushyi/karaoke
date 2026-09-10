@@ -1,6 +1,6 @@
 import { translateSaved as t } from "../../i18n/runtime";
-import { getAnalysisFeedback } from "../../pages/Karaoke/utils/analysis";
 import { Card, Grid, Stack, Typography } from "../../theme/ui";
+import { getAnalysisFeedback } from "../../utils/analysis";
 
 export default ({ result }) => {
   const feedback = getAnalysisFeedback(result);
