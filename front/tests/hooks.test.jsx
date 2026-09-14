@@ -496,6 +496,32 @@ describe("navigation and karaoke hooks", () => {
     hook.unmount();
     expect(removeEvent).toHaveBeenCalledWith("keydown", expect.any(Function));
   });
+  test("still stops and seeks while a toolbar button keeps focus", () => {
+    // A console button (mute, effects preset, ...) stays focused after a
+    // click since nothing blurs it -- Escape/seek must keep working, not
+    // just Space (see utils/hotkeys.js's EDITABLE list).
+    const seek = vi.fn();
+    const stop = vi.fn();
+    const scope = document.createElement("div");
+    const button = document.createElement("button");
+    scope.append(button);
+    document.body.append(scope);
+    button.focus();
+    renderHook(() =>
+      useKaraokeHotkeys({ current: scope }, {
+        currentTime: 3,
+        duration: 6,
+        onTogglePlay: vi.fn(),
+        onSeek: seek,
+        onStop: stop
+      })
+    );
+    button.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape", bubbles: true }));
+    button.dispatchEvent(new KeyboardEvent("keydown", { code: "ArrowRight", bubbles: true }));
+    expect(stop).toHaveBeenCalledOnce();
+    expect(seek).toHaveBeenCalledWith(6);
+    scope.remove();
+  });
   test("loads, rejects and resets karaoke results safely", async () => {
     let resolve;
     const success = new Promise((done) => {

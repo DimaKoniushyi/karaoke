@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { createStudioMicrophoneGraph } from "../src/services/microphoneStudioQuality.js";
 import { verify } from "./helpers/assertions.mjs";
 class Param {
@@ -116,6 +117,11 @@ describe("studio microphone quality", () => {
     expect(graph.setMonitoring(true)).toBe(false);
     await graph.close();
     expect(track.stop).toHaveBeenCalledOnce();
+  });
+  test("room fallback pitch shift keeps the same low-latency window as native monitoring", () => {
+    const source = readFileSync(new URL("../src/services/pitchShiftProcessor.js", import.meta.url), "utf8");
+    expect(source).toContain("sampleRate * 0.012");
+    expect(source).not.toContain("this.bufferLength = 1536");
   });
   test("rolls back the raw stream when graph construction fails", () => {
     const track = { stop: vi.fn() };

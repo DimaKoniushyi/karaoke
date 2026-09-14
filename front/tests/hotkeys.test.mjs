@@ -63,8 +63,6 @@ test("editable targets use the complete protected selector", async () => {
     "input",
     "select",
     "textarea",
-    "button",
-    "a[href]",
     '[contenteditable=""]',
     '[contenteditable="true"]',
     '[role="textbox"]',

@@ -424,6 +424,14 @@ def test_asio_bridge_converts_supported_mismatched_input_and_output_formats():
     assert "sample_peak(candidate" in source
 
 
+def test_asio_pitch_effect_uses_the_same_low_latency_window_as_windows_monitor():
+    source = (Path(__file__).parents[1] / "engines/asio/bridge_main.cpp").read_text(encoding="utf-8")
+
+    assert "kPitchWindowSeconds = 0.012" in source
+    assert "rate * kPitchWindowSeconds" in source
+    assert "rate * 0.032" not in source
+
+
 def test_signal_quality_uses_monitor_or_direct_capture(monkeypatch):
     monkeypatch.setattr(audio_service, "_AUDIO_BACKEND_AVAILABLE", False)
     raises(RuntimeError, lambda: audio_service.check_signal_quality(None), match='недоступен')

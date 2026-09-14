@@ -285,6 +285,55 @@ def test_native_shared_probes_only_categories_valid_for_capture_and_render():
     assert "AUDCLNT_SHAREMODE_EXCLUSIVE" not in source
 
 
+def test_native_shared_compares_raw_and_non_raw_candidates_before_selecting():
+    source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
+    capture = source[source.index("if (flow == eCapture)"):source.index("} else {", source.index("if (flow == eCapture)"))]
+    render = source[source.index("} else {", source.index("if (flow == eCapture)")):source.index("if (!client) throw")]
+
+    # RAW skips latency-heavy endpoint APOs when supported. Both modes must
+    # be probed so normal mode remains a fallback on drivers that reject RAW;
+    # candidate ranking separately keeps every working RAW path first.
+    assert capture.count("static_cast<AUDCLNT_STREAMOPTIONS>(0)") == 3
+    assert render.count("static_cast<AUDCLNT_STREAMOPTIONS>(0)") >= 5
+    assert "if (!client)\n                try_candidate" not in capture
+    assert "if (!client)\n                try_candidate" not in render
+
+
+def test_native_shared_validates_initialization_for_each_candidate_before_selecting_it():
+    source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
+    candidate = source[source.index("std::stable_sort"):source.index("if (!client) throw")]
+
+    # GetSharedModeEnginePeriod can succeed for a category/options pair that
+    # InitializeSharedAudioStream later rejects.  Selection must only retain a
+    # candidate after the real shared stream has initialized successfully.
+    initialized = candidate.index("InitializeSharedAudioStream")
+    selected = candidate.index("select(candidate)")
+    assert initialized < selected
+
+
+def test_native_shared_queries_all_candidates_before_initializing_shortest_first():
+    source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
+    categories = source.index("if (flow == eCapture)")
+    initialized = source.index("InitializeSharedAudioStream")
+
+    # Initializing the first category while the rest are still being queried
+    # can lock the shared engine to that first period, causing Windows to
+    # reject a later, genuinely shorter candidate as PERIODICITY_LOCKED.
+    assert categories < initialized
+    assert "std::stable_sort" in source[categories:initialized]
+
+
+def test_native_shared_falls_back_to_current_period_when_an_existing_app_locks_engine():
+    source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
+
+    assert "AUDCLNT_E_ENGINE_PERIODICITY_LOCKED" in source
+    assert "GetCurrentSharedModeEnginePeriod" in source
+    current = source.index("GetCurrentSharedModeEnginePeriod")
+    current_initialize = source.index("InitializeSharedAudioStream", current)
+    assert current < current_initialize
+    assert "AUDCLNT_SHAREMODE_EXCLUSIVE" not in source
+
+
 def test_native_render_probes_game_chat_for_low_latency_without_ducking_other_audio():
     source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
     render_branch = source[source.index("} else {"):source.index("if (!client) throw")]

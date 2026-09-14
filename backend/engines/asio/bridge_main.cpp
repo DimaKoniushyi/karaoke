@@ -28,6 +28,10 @@ namespace {
 constexpr long kMaxInputChannels = 8;
 constexpr long kMaxOutputChannels = 2;
 constexpr long kMaxBuffers = kMaxInputChannels + kMaxOutputChannels;
+// Two overlap-add read heads make the audible algorithmic history roughly
+// half this window.  Twelve milliseconds keeps octave monitoring below 8 ms
+// of app-added latency while retaining a complete period for an ~83 Hz voice.
+constexpr double kPitchWindowSeconds = 0.012;
 // std::tanh is not constexpr; this still runs exactly once at static
 // initialization, not per sample like the inline std::tanh(1.12F) it
 // replaces in process_effects() below.
@@ -467,7 +471,8 @@ void apply_sample_rate(double rate) {
   g_engine.reverb_line_b.assign(effect_size, 0.0F);
   g_engine.echo_line.assign(effect_size, 0.0F);
   g_engine.delay_line.assign(effect_size, 0.0F);
-  g_engine.pitch_line.assign(static_cast<size_t>(std::max(1024.0, rate * 0.032)), 0.0F);
+  g_engine.pitch_line.assign(
+    static_cast<size_t>(std::max(96.0, rate * kPitchWindowSeconds)), 0.0F);
   const double pitch_ratio = std::pow(2.0, static_cast<double>(g_engine.octave));
   g_engine.pitch_phase_increment = (1.0 - pitch_ratio) / static_cast<double>(g_engine.pitch_line.size());
   g_engine.effect_cursor = 0;

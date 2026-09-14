@@ -98,8 +98,13 @@ class StudioMicrophoneProcessor:
 class RealtimePitchShifter:
     """Streaming pitch shift with a true zero-latency neutral bypass."""
 
+    _WINDOW_SEC = 0.012
+
     def __init__(self, sample_rate: float):
-        self._buffer_len = max(1024, int(round(max(8_000.0, float(sample_rate)) * 0.032)))
+        self._buffer_len = max(
+            96,
+            int(round(max(8_000.0, float(sample_rate)) * self._WINDOW_SEC)),
+        )
         self._buffer = np.zeros(self._buffer_len, dtype=np.float32)
         self._write_pos = 0
         self._phase = 0.0

@@ -4,6 +4,25 @@
 using namespace shared_audio;
 static void verify(bool condition) { if (!condition) throw std::runtime_error("Native audio test failed"); }
 int main() {
+    // Windows Driver is a low-latency shared transport.  The UI processing
+    // block is not an instruction to make the Windows engine period larger:
+    // when the endpoint advertises a 48-frame minimum, a 64-frame processing
+    // block must still run on that 48-frame engine period.
+    verify(lowest_latency_engine_period(48, 480, 48) == 48);
+    verify(lowest_latency_engine_period(47, 480, 48) == 48);
+    verify(lowest_latency_engine_period(49, 480, 48) == 96);
+    // Candidate periods are expressed in each candidate format's frames.
+    // A speech-mode 160-frame period at 16kHz is the same 10ms as 480 frames
+    // at 48kHz and must not displace the first (RAW, full-bandwidth) winner.
+    verify(!shorter_engine_period(160, 16000, 480, 48000));
+    verify(shorter_engine_period(240, 48000, 480, 48000));
+    verify(!shorter_engine_period(480, 48000, 240, 48000));
+    // RAW avoids OEM/system APO look-ahead. A superficially shorter non-RAW
+    // engine quantum must not win while a valid RAW path exists, because the
+    // unreported APO delay can exceed the period it appeared to save.
+    verify(prefer_engine_candidate(480, 48000, true, 128, 48000, false));
+    verify(!prefer_engine_candidate(128, 48000, false, 480, 48000, true));
+    verify(prefer_engine_candidate(128, 48000, true, 480, 48000, true));
     verify(engine_period(64, 48, 480, 48) == 96);
     verify(engine_period(64, 441, 441, 441) == 441);
     verify(engine_period(128, 32, 1024, 32) == 128);

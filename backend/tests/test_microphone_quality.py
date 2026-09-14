@@ -164,6 +164,15 @@ def test_pitch_shifter_neutral_value_is_an_exact_zero_latency_bypass():
     assert np.array_equal(result, samples)
 
 
+def test_pitch_shifter_effect_window_keeps_algorithmic_monitor_latency_below_8ms():
+    shifter = RealtimePitchShifter(48_000)
+
+    # The dual-head shifter reads at most half of its history window behind
+    # the live input.  Leave margin inside the 10-16 ms end-to-end target for
+    # capture/render scheduling and the rest of the realtime DSP chain.
+    assert shifter._buffer_len / 48_000 / 2 <= 0.008
+
+
 def test_pitch_shifter_accepts_both_octave_directions_and_keeps_block_shape():
     source = np.sin(np.linspace(0, 16 * np.pi, 4096)).astype(np.float32)
     high = RealtimePitchShifter(48_000).process(source, 1)
@@ -176,7 +185,10 @@ def test_pitch_shifter_accepts_both_octave_directions_and_keeps_block_shape():
 
 
 def _reference_pitch_blocks(sample_rate, blocks, octave):
-    length = max(1024, int(round(max(8_000.0, float(sample_rate)) * 0.032)))
+    length = max(
+        96,
+        int(round(max(8_000.0, float(sample_rate)) * RealtimePitchShifter._WINDOW_SEC)),
+    )
     buffer = np.zeros(length, dtype=np.float32)
     write_pos, phase = 0, 0.0
     ratio = 2.0**octave

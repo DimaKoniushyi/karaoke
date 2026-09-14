@@ -126,61 +126,62 @@ struct Endpoint {
             return (is_float || pcm) && value->nChannels && value->nSamplesPerSec &&
                 value->nBlockAlign == value->nChannels * (value->wBitsPerSample / 8);
         };
+        struct Candidate {
+            ComPtr<IAudioClient3> client;
+            WAVEFORMATEX* format = nullptr;
+            UINT32 period = 0;
+            bool floating = false, raw = false;
+            AUDIO_STREAM_CATEGORY category = AudioCategory_Other;
+            AUDCLNT_STREAMOPTIONS options = static_cast<AUDCLNT_STREAMOPTIONS>(0);
+            ~Candidate() { if (format) CoTaskMemFree(format); }
+        };
+        std::vector<std::unique_ptr<Candidate>> candidates;
         auto try_candidate = [&](AUDIO_STREAM_CATEGORY category, AUDCLNT_STREAMOPTIONS options) {
-            ComPtr<IAudioClient3> candidate;
+            auto candidate = std::make_unique<Candidate>();
             if (FAILED(device->Activate(__uuidof(IAudioClient3), CLSCTX_ALL, nullptr,
-                                        reinterpret_cast<void**>(candidate.GetAddressOf())))) return false;
+                                        reinterpret_cast<void**>(candidate->client.GetAddressOf())))) return false;
             AudioClientProperties properties{};
             properties.cbSize = sizeof(properties);
             properties.eCategory = category;
             properties.Options = options;
-            if (FAILED(candidate->SetClientProperties(&properties))) return false;
-            WAVEFORMATEX* candidate_format = nullptr;
-            if (FAILED(candidate->GetMixFormat(&candidate_format))) return false;
-            bool candidate_floating = false;
-            if (!valid_format(candidate_format, candidate_floating)) {
-                CoTaskMemFree(candidate_format);
+            if (FAILED(candidate->client->SetClientProperties(&properties))) return false;
+            if (FAILED(candidate->client->GetMixFormat(&candidate->format))) return false;
+            if (!valid_format(candidate->format, candidate->floating)) {
                 return false;
             }
             UINT32 normal = 0, fundamental = 0, minimum = 0, maximum = 0;
-            if (FAILED(candidate->GetSharedModeEnginePeriod(
-                    candidate_format, &normal, &fundamental, &minimum, &maximum))) {
-                CoTaskMemFree(candidate_format);
+            if (FAILED(candidate->client->GetSharedModeEnginePeriod(
+                    candidate->format, &normal, &fundamental, &minimum, &maximum))) {
                 return false;
             }
-            UINT32 candidate_period = 0;
             try {
-                candidate_period = shared_audio::engine_period(requested, minimum, maximum, fundamental);
+                candidate->period = shared_audio::lowest_latency_engine_period(minimum, maximum, fundamental);
             } catch (const std::exception&) {
-                CoTaskMemFree(candidate_format);
                 return false;
             }
-            if (client && candidate_period >= period) {
-                CoTaskMemFree(candidate_format);
-                return true;
-            }
-            if (format) CoTaskMemFree(format);
-            client = candidate;
-            format = candidate_format;
-            floating = candidate_floating;
-            period = candidate_period;
-            raw = options == AUDCLNT_STREAMOPTIONS_RAW;
+            candidate->raw = options == AUDCLNT_STREAMOPTIONS_RAW;
+            candidate->category = category;
+            candidate->options = options;
+            candidates.push_back(std::move(candidate));
             return true;
         };
         // Windows permits different AUDIO_STREAM_CATEGORY sets for capture
         // and render. Probe only categories valid for this endpoint and select
-        // the shortest period reported by its driver. RAW bypasses endpoint
-        // APOs that can add monitoring latency. This remains shared mode.
+        // the shortest period reported by its driver within the preferred
+        // RAW class. RAW bypasses endpoint APOs whose hidden look-ahead is
+        // not included in the reported engine period. This remains shared.
         if (flow == eCapture) {
-            // Prefer neutral Other on a tie. Speech/Communications win only
-            // when the endpoint genuinely exposes a shorter period for them.
+            // Prefer neutral Other on a tie. Speech/Communications can win
+            // when the endpoint exposes a shorter RAW period for them.
             try_candidate(AudioCategory_Other, AUDCLNT_STREAMOPTIONS_RAW);
             try_candidate(AudioCategory_Speech, AUDCLNT_STREAMOPTIONS_RAW);
             try_candidate(AudioCategory_Communications, AUDCLNT_STREAMOPTIONS_RAW);
-            // Some capture drivers reject RAW. Other is the neutral fallback
-            // and avoids opting into communications signal processing.
-            if (!client)
-                try_candidate(AudioCategory_Other, static_cast<AUDCLNT_STREAMOPTIONS>(0));
+            // Probe normal mode as a compatibility fallback. It is sorted
+            // after every working RAW candidate because an OEM APO's hidden
+            // buffering is not represented by the nominal engine period.
+            try_candidate(AudioCategory_Other, static_cast<AUDCLNT_STREAMOPTIONS>(0));
+            try_candidate(AudioCategory_Speech, static_cast<AUDCLNT_STREAMOPTIONS>(0));
+            try_candidate(AudioCategory_Communications, static_cast<AUDCLNT_STREAMOPTIONS>(0));
         } else {
             try_candidate(AudioCategory_Media, AUDCLNT_STREAMOPTIONS_RAW);
             // GameChat is the real-time render category that explicitly
@@ -191,13 +192,71 @@ struct Endpoint {
             try_candidate(AudioCategory_Movie, AUDCLNT_STREAMOPTIONS_RAW);
             try_candidate(AudioCategory_SoundEffects, AUDCLNT_STREAMOPTIONS_RAW);
             try_candidate(AudioCategory_GameEffects, AUDCLNT_STREAMOPTIONS_RAW);
-            // Media keeps the backing track at normal playback priority.
-            if (!client)
-                try_candidate(AudioCategory_Media, static_cast<AUDCLNT_STREAMOPTIONS>(0));
+            // Keep the same non-ducking set as a normal-mode compatibility
+            // fallback for endpoints that reject RAW entirely.
+            try_candidate(AudioCategory_Media, static_cast<AUDCLNT_STREAMOPTIONS>(0));
+            try_candidate(AudioCategory_GameChat, static_cast<AUDCLNT_STREAMOPTIONS>(0));
+            try_candidate(AudioCategory_Movie, static_cast<AUDCLNT_STREAMOPTIONS>(0));
+            try_candidate(AudioCategory_SoundEffects, static_cast<AUDCLNT_STREAMOPTIONS>(0));
+            try_candidate(AudioCategory_GameEffects, static_cast<AUDCLNT_STREAMOPTIONS>(0));
+        }
+        // Query every option first. Initializing even one candidate can lock
+        // the endpoint's shared engine period, so probing/initializing in one
+        // pass can prevent a later, shorter configuration from opening.
+        std::stable_sort(candidates.begin(), candidates.end(), [](const auto& left, const auto& right) {
+            return shared_audio::prefer_engine_candidate(
+                left->period, left->format->nSamplesPerSec, left->raw,
+                right->period, right->format->nSamplesPerSec, right->raw);
+        });
+        auto select = [&](std::unique_ptr<Candidate>& candidate) {
+            client = candidate->client;
+            format = candidate->format;
+            candidate->format = nullptr;
+            floating = candidate->floating;
+            period = candidate->period;
+            raw = candidate->raw;
+        };
+        bool periodicity_locked = false;
+        for (auto& candidate : candidates) {
+            // A queried period is not proof that a real driver accepts this
+            // category/options pair. Try candidates shortest-first and retain
+            // only one whose actual shared event stream initializes.
+            if (initialize) {
+                const HRESULT hr = candidate->client->InitializeSharedAudioStream(
+                    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, candidate->period, candidate->format, nullptr);
+                if (hr == AUDCLNT_E_ENGINE_PERIODICITY_LOCKED) periodicity_locked = true;
+                if (FAILED(hr)) continue;
+            }
+            select(candidate);
+            break;
+        }
+        // A browser/radio/other shared client can already have fixed the
+        // engine quantum. The documented recovery is to join that current
+        // period. It may be larger than our requested minimum, but it keeps
+        // monitoring functional and remains fully shared; when the lock goes
+        // away, the normal monitor restart above requests the minimum again.
+        if (!client && initialize && periodicity_locked) {
+            for (const auto& blueprint : candidates) {
+                auto current = std::make_unique<Candidate>();
+                if (FAILED(device->Activate(__uuidof(IAudioClient3), CLSCTX_ALL, nullptr,
+                                            reinterpret_cast<void**>(current->client.GetAddressOf())))) continue;
+                AudioClientProperties properties{};
+                properties.cbSize = sizeof(properties);
+                properties.eCategory = blueprint->category;
+                properties.Options = blueprint->options;
+                if (FAILED(current->client->SetClientProperties(&properties))) continue;
+                if (FAILED(current->client->GetCurrentSharedModeEnginePeriod(&current->format, &current->period)))
+                    continue;
+                if (!valid_format(current->format, current->floating)) continue;
+                if (FAILED(current->client->InitializeSharedAudioStream(
+                        AUDCLNT_STREAMFLAGS_EVENTCALLBACK, current->period, current->format, nullptr))) continue;
+                current->raw = blueprint->raw;
+                select(current);
+                break;
+            }
         }
         if (!client) throw std::runtime_error("No supported low-latency shared WASAPI configuration");
         if (!initialize) return;
-        check(client->InitializeSharedAudioStream(AUDCLNT_STREAMFLAGS_EVENTCALLBACK, period, format, nullptr), "InitializeSharedAudioStream");
         event.value = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (!event.value) throw std::runtime_error("CreateEvent failed");
         check(client->SetEventHandle(event.value), "SetEventHandle");

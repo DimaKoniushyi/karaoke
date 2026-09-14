@@ -58,6 +58,16 @@ _live_params = {
 _native_stream_target: dict[str, Any] = {"stream": None, "raw_eligible": False}
 
 
+def _configure_realtime_python() -> None:
+    # ctypes releases the GIL while wm_pump waits in native WASAPI and the
+    # audio callback reacquires it for DSP.  Python's ordinary 5 ms thread
+    # timeslice lets the stdin/report helper threads retain the GIL for most
+    # of a 48/64-frame hardware period at the worst possible moment.  This
+    # worker is a dedicated process, so a 1 ms slice bounds that scheduling
+    # jitter without changing the main backend or UI interpreter.
+    sys.setswitchinterval(0.001)
+
+
 def _stream_candidate(options: dict) -> dict:
     """No buffer or rate fallback -- the requested blocksize/sample rate are
     used as-is. Every monitoring path (solo, recording, room) always opens
@@ -316,6 +326,7 @@ def _configure_native_stream_target(stream, chosen_engine: str, relay) -> None:
 
 def main() -> int:
     global _live_params
+    _configure_realtime_python()
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     options = json.loads(parser.parse_args().config)

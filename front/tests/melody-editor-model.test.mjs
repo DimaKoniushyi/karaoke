@@ -266,30 +266,26 @@ test("word text shifts share the same undo/redo history as note edits", () => {
     type: "shiftWords",
     wordTexts: shiftWordTexts(state.wordTexts, [0, 0], 1)
   });
-  expect(state.wordTexts).toEqual(["", "one", "two"]);
+  expect(state.wordTexts).toEqual(["two", "one", "three"]);
   expect(state.past).toHaveLength(1);
   const undone = documentReducer(state, { type: "undo" });
   expect(undone.wordTexts).toEqual(["one", "two", "three"]);
   expect(undone.notes[0].note).toBe(60);
   const redone = documentReducer(undone, { type: "redo" });
-  expect(redone.wordTexts).toEqual(["", "one", "two"]);
+  expect(redone.wordTexts).toEqual(["two", "one", "three"]);
 });
 
-test("shifts a selected run of word texts forward or backward, carrying every later or earlier word along", () => {
+test("shifts a selected run of word texts forward or backward, swapping places with its one adjacent neighbour", () => {
   const texts = ["a", "b", "c", "d", "e"];
-  // moving [1,2] forward carries c,d,e each one slot right; the vacated
-  // slot (1) is left blank, and the word pushed past the far end (e) is
-  // dropped rather than reappearing anywhere
-  expect(shiftWordTexts(texts, [1, 2], 1)).toEqual(["a", "", "b", "c", "d"]);
-  // moving [2,3] backward overwrites its one left neighbour (b); the run
-  // and everything after it (d, e) follows it left, leaving the very last
-  // slot of the song blank
-  expect(shiftWordTexts(texts, [2, 3], -1)).toEqual(["a", "c", "d", "e", ""]);
+  // moving [1,2] forward swaps the run with its right neighbour (d): the
+  // run slides one slot right, and d takes the vacated slot -- no word is
+  // ever dropped or blanked.
+  expect(shiftWordTexts(texts, [1, 2], 1)).toEqual(["a", "d", "b", "c", "e"]);
+  // moving [2,3] backward swaps the run with its left neighbour (b).
+  expect(shiftWordTexts(texts, [2, 3], -1)).toEqual(["a", "c", "d", "b", "e"]);
   // a single word behaves the same as a run of length one
-  expect(shiftWordTexts(texts, [0, 0], 1)).toEqual(["", "a", "b", "c", "d"]);
-  // moving a single word backward: it overwrites its left neighbour, and
-  // everything after it follows along, leaving the last slot blank
-  expect(shiftWordTexts(texts, [1, 1], -1)).toEqual(["b", "c", "d", "e", ""]);
+  expect(shiftWordTexts(texts, [0, 0], 1)).toEqual(["b", "a", "c", "d", "e"]);
+  expect(shiftWordTexts(texts, [1, 1], -1)).toEqual(["b", "a", "c", "d", "e"]);
   // at either edge, with nowhere to move into, the array is returned unchanged
   expect(shiftWordTexts(texts, [0, 1], -1)).toBe(texts);
   expect(shiftWordTexts(texts, [3, 4], 1)).toBe(texts);

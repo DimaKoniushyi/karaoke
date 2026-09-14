@@ -7,6 +7,29 @@
 #include <vector>
 
 namespace shared_audio {
+// IAudioClient3 separates the engine transfer period from the application's
+// processing chunk.  For realtime monitoring the engine must always run at
+// the smallest period the endpoint advertises; making it follow a larger UI
+// block only adds capture/render time and provides no DSP benefit.
+inline uint32_t lowest_latency_engine_period(uint32_t minimum, uint32_t maximum, uint32_t fundamental) {
+    if (!fundamental || !minimum || minimum > maximum)
+        throw std::runtime_error("Invalid shared engine periods");
+    const uint64_t aligned = (uint64_t(minimum) + fundamental - 1) / fundamental * fundamental;
+    if (aligned > maximum) throw std::runtime_error("No valid shared engine period");
+    return static_cast<uint32_t>(aligned);
+}
+inline bool shorter_engine_period(uint32_t candidate_frames, uint32_t candidate_rate,
+                                  uint32_t current_frames, uint32_t current_rate) {
+    if (!candidate_frames || !candidate_rate) return false;
+    if (!current_frames || !current_rate) return true;
+    // Compare exact rational durations without floating-point tie noise.
+    return uint64_t(candidate_frames) * current_rate < uint64_t(current_frames) * candidate_rate;
+}
+inline bool prefer_engine_candidate(uint32_t candidate_frames, uint32_t candidate_rate, bool candidate_raw,
+                                    uint32_t current_frames, uint32_t current_rate, bool current_raw) {
+    if (candidate_raw != current_raw) return candidate_raw;
+    return shorter_engine_period(candidate_frames, candidate_rate, current_frames, current_rate);
+}
 // Mirrors the ASIO bridge's resolve_buffer_size: the device's own
 // min/max/fundamental always wins. A user-requested size outside that range
 // is clamped into it (and aligned up to the fundamental granularity) rather

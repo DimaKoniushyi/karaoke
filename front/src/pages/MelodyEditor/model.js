@@ -194,17 +194,20 @@ export function visibleTimeRange({ scrollLeft, clientWidth }, { keyboardWidth, z
 export const filterByTimeRange = (items, [start, end]) =>
   items.filter((n) => n.end >= start && n.start <= end);
 
+// Swaps the selected [start, end] block of words with its single adjacent
+// neighbor in the given direction (the block moves by one slot, the
+// displaced neighbor takes the vacated slot at the other end of the block).
 export function shiftWordTexts(texts, [start, end], direction) {
   if ((direction > 0 && end >= texts.length - 1) || (direction < 0 && start <= 0)) {
     return texts;
   }
   const next = [...texts];
   if (direction > 0) {
-    next.copyWithin(start + 1, start, -1);
-    next[start] = "";
+    const [displaced] = next.splice(end + 1, 1);
+    next.splice(start, 0, displaced);
   } else {
-    next.copyWithin(start - 1, start);
-    next[next.length - 1] = "";
+    const [displaced] = next.splice(start - 1, 1);
+    next.splice(end, 0, displaced);
   }
 
   return next;

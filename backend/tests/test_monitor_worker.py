@@ -27,6 +27,15 @@ def test_emit_and_stop_update_process_contract(monkeypatch, capsys):
     assert monitor_worker._running is False
 
 
+def test_monitor_worker_limits_python_gil_timeslice_for_realtime_callback(monkeypatch):
+    configured = Mock()
+    monkeypatch.setattr(monitor_worker.sys, "setswitchinterval", configured)
+
+    monitor_worker._configure_realtime_python()
+
+    configured.assert_called_once_with(0.001)
+
+
 def test_selected_buffer_is_not_raised_or_replaced():
     candidate = monitor_worker._stream_candidate(options())
     assert candidate["blocksize"] == 64

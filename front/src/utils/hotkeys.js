@@ -1,9 +1,13 @@
+// Deliberately excludes "button"/"a[href]": focus merely resting on a
+// control after a click must not swallow global hotkeys (Escape/seek), and
+// none of these hotkeys trigger a focused button/link's own native key
+// activation (that's Enter/Space, which the karaoke Space handling and
+// preventDefault() already guard against), so there is nothing to protect
+// there.
 const EDITABLE = [
   "input",
   "select",
   "textarea",
-  "button",
-  "a[href]",
   '[contenteditable=""]',
   '[contenteditable="true"]',
   '[role="textbox"]',

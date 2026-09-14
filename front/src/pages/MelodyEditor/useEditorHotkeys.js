@@ -1,9 +1,18 @@
 import { useEffect } from "react";
-import { isEditableHotkeyTarget } from "../../utils/hotkeys";
 
 // Global keyboard shortcuts for the note editor. A single window-level
 // listener rather than per-control handlers, since most of these (undo,
 // play/pause, arrow-key nudging) have no single element that owns focus.
+//
+// Deliberately narrower than utils/hotkeys.js's shared isEditableHotkeyTarget:
+// that list also excludes "button"/"a[href]", which would silently disable
+// every editor shortcut whenever a toolbar button (Undo, Save, Merge, ...)
+// keeps focus after a click. role="slider" stays excluded because the
+// playhead in surface/index.jsx is a focusable role="slider" element with
+// its own Arrow-key handling that would otherwise double-fire alongside
+// selectAdjacent/nudge below.
+const BLOCKED_TARGET =
+  'input, select, textarea, [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="slider"], [data-hotkeys="off"]';
 export default function useEditorHotkeys({
   save,
   redo,
@@ -27,7 +36,7 @@ export default function useEditorHotkeys({
     const hotkey = (event) => {
       // OS key-repeat would otherwise spam save()/undo() on every auto-repeat
       // tick while a key is held, and repeatedly flip play/pause under Space.
-      if (event.repeat || event.isComposing || isEditableHotkeyTarget(event.target)) return;
+      if (event.repeat || event.isComposing || event.target?.closest?.(BLOCKED_TARGET)) return;
       const modifier = event.ctrlKey || event.metaKey;
       const { code } = event;
       if (modifier && code === "KeyS") save();

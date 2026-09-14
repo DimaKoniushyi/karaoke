@@ -46,26 +46,40 @@ const fakeMediaStreamDestination = () => {
 class FakeAudioWorkletNode {
   static instances = [];
 
+  // Set by a test to a 1-based construction index that should throw,
+  // simulating the wet graph failing to build after the dry graph already
+  // succeeded.
+  static failOnConstruction = null;
+
   constructor(context, name, options) {
+    FakeAudioWorkletNode.instances.push(this);
+    if (FakeAudioWorkletNode.instances.length === FakeAudioWorkletNode.failOnConstruction) {
+      throw new Error("worklet construction failed");
+    }
     this.context = context;
     this.name = name;
     this.options = options;
     this.port = { postMessage: vi.fn() };
     this.connect = vi.fn();
     this.disconnect = vi.fn();
-    FakeAudioWorkletNode.instances.push(this);
   }
 }
 
 class FakeAudioContext {
+  static instances = [];
+
   constructor(options) {
     this.options = options;
     this.state = "running";
     this.audioWorklet = { addModule: vi.fn().mockResolvedValue(undefined) };
+    this.destinations = [];
+    FakeAudioContext.instances.push(this);
   }
 
   createMediaStreamDestination() {
-    return fakeMediaStreamDestination();
+    const destination = fakeMediaStreamDestination();
+    this.destinations.push(destination);
+    return destination;
   }
 
   async close() {
@@ -79,6 +93,8 @@ beforeEach(async () => {
   vi.resetModules();
   FakeWebSocket.instances = [];
   FakeAudioWorkletNode.instances = [];
+  FakeAudioWorkletNode.failOnConstruction = null;
+  FakeAudioContext.instances = [];
   vi.stubGlobal("WebSocket", FakeWebSocket);
   vi.stubGlobal("AudioContext", FakeAudioContext);
   vi.stubGlobal("AudioWorkletNode", FakeAudioWorkletNode);
@@ -197,6 +213,22 @@ describe("python voice relay", () => {
     expect(dryNode.port.postMessage.mock.calls.length).toBeLessThanOrEqual(9);
     expect(Array.from(dryNode.port.postMessage.mock.calls.at(-1)[0])).toEqual([40]);
     await graph.close();
+  });
+
+  test("stops the dry graph's tracks if the wet graph fails to construct", async () => {
+    FakeAudioWorkletNode.failOnConstruction = 2;
+    const promise = createRelayVoiceGraph({ connectTimeoutMs: 500 });
+    await Promise.resolve();
+    await Promise.resolve();
+    const socket = FakeWebSocket.instances[0];
+    socket.onmessage({ data: encodeFrame(STREAM_DRY, 48000, [1]) });
+
+    await expect(promise).rejects.toThrow("worklet construction failed");
+
+    const [context] = FakeAudioContext.instances;
+    expect(context.state).toBe("closed");
+    const [dryDestination] = context.destinations;
+    expect(dryDestination.stream.getTracks()[0].stop).toHaveBeenCalled();
   });
 
   test("rejects when the relay closes before sending any frame", async () => {

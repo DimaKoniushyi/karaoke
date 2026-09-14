@@ -117,6 +117,17 @@ async function makeVoice(context, sourceRate) {
   return { node, destination };
 }
 
+// `voice` may be undefined if the sub-graph never finished constructing
+// (used from the partial-construction cleanup below).
+function stopVoice(voice) {
+  try {
+    voice?.node.disconnect();
+  } catch {
+    // Already detached.
+  }
+  voice?.destination.stream.getTracks().forEach((track) => track.stop());
+}
+
 export async function createRelayVoiceGraph({ connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS } = {}) {
   const AudioContextCtor = globalThis.AudioContext ?? globalThis.webkitAudioContext;
   if (!AudioContextCtor?.prototype || typeof globalThis.AudioWorkletNode !== "function") {
@@ -125,6 +136,8 @@ export async function createRelayVoiceGraph({ connectTimeoutMs = DEFAULT_CONNECT
 
   const { socket, firstFrame } = await connectRelaySocket(connectTimeoutMs);
   let context;
+  let dry;
+  let wet;
   try {
     // connectRelaySocket() clears socket.onmessage once it resolves, and the
     // relay keeps sending frames continuously (~every 5ms) the whole time --
@@ -150,8 +163,8 @@ export async function createRelayVoiceGraph({ connectTimeoutMs = DEFAULT_CONNECT
     context = new AudioContextCtor({ sampleRate: firstFrame.sampleRate || undefined });
     await context.audioWorklet.addModule(new URL("./relayPlaybackProcessor.js", import.meta.url));
 
-    const dry = await makeVoice(context, firstFrame.sampleRate);
-    const wet = await makeVoice(context, firstFrame.sampleRate);
+    dry = await makeVoice(context, firstFrame.sampleRate);
+    wet = await makeVoice(context, firstFrame.sampleRate);
     let closed = false;
     let unavailableCallback = null;
     const deliver = (frame) => {
@@ -214,14 +227,7 @@ export async function createRelayVoiceGraph({ connectTimeoutMs = DEFAULT_CONNECT
         } catch {
           // Already closing/closed.
         }
-        [dry, wet].forEach(({ node, destination }) => {
-          try {
-            node.disconnect();
-          } catch {
-            // Already detached.
-          }
-          destination.stream.getTracks().forEach((track) => track.stop());
-        });
+        [dry, wet].forEach(stopVoice);
         if (context.state !== "closed") await closeAudioContext(context);
       }
     };
@@ -231,6 +237,11 @@ export async function createRelayVoiceGraph({ connectTimeoutMs = DEFAULT_CONNECT
     } catch {
       // Already closing/closed.
     }
+    // Closing the AudioContext does not by itself stop MediaStreamTracks
+    // produced by createMediaStreamDestination() -- if wet's construction
+    // failed after dry already succeeded, dry's tracks would otherwise be
+    // left in readyState "live" indefinitely.
+    [dry, wet].forEach(stopVoice);
     if (context) await closeAudioContext(context).catch(() => {});
     throw error;
   }

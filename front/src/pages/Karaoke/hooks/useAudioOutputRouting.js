@@ -23,10 +23,17 @@ export default function useAudioOutputRouting({
     const device = findDriverOutputDevice(directOutputDevices, audioSettings?.asio_driver_name);
     if (!device || String(directOutputDeviceId) === String(device.index)) return;
 
+    let active = true;
     safe(async () => {
       const updated = await updateMicrophone({ output_device_id: device.index });
-      if (updated) setDirectOutputDeviceId(updated.output_device_id ?? device.index);
+      // Guards against a stale response applying a device switch after the
+      // driver/output selection has already moved on (e.g. the user left
+      // ASIO mode, or picked a different output, while this was in flight).
+      if (active && updated) setDirectOutputDeviceId(updated.output_device_id ?? device.index);
     });
+    return () => {
+      active = false;
+    };
   }, [
     audioDriver,
     audioSettings?.asio_driver_name,
