@@ -287,6 +287,36 @@ def test_live_changes_during_start_are_coalesced_without_restart(control, monkey
     assert control.snapshot()["state"] == "running"
 
 
+def test_automatic_asio_restarts_for_effect_changes_instead_of_sending_unread_stdin(
+    control, monkeypatch
+):
+    current = settings(audio_driver="auto", monitoring_enabled=True, volume=1.0)
+    control.event(None, {"event": "started", "mode": "ASIO", "driver": "Realtek ASIO"})
+    monkeypatch.setattr(audio_service, "_get_or_create_settings", lambda _: current)
+    monkeypatch.setattr(audio_service, "commit_refresh", lambda _db, item: item)
+    restart, live = Mock(), Mock()
+    monkeypatch.setattr(audio_service, "request_monitoring", restart)
+    monkeypatch.setattr(audio_service, "_send_live_update", live)
+
+    audio_service.update_settings(Mock(), {"volume": 1.4}, background=True)
+
+    restart.assert_called_once_with(current)
+    live.assert_not_called()
+
+
+def test_raw_bypass_does_not_claim_live_support_for_automatic_asio(control, monkeypatch):
+    current = settings(audio_driver="auto", monitoring_enabled=True)
+    control.event(None, {"event": "started", "mode": "ASIO", "driver": "Realtek ASIO"})
+    monkeypatch.setattr(audio_service, "get_settings", lambda _db: current)
+    send = Mock()
+    monkeypatch.setattr(audio_service, "_send_live_update", send)
+
+    result = audio_service.set_monitor_dry_bypass(Mock(), True)
+
+    assert result == {"dry_monitor": True, "supported": False}
+    send.assert_not_called()
+
+
 def test_status_distinguishes_driver_rejection_and_repeated_glitches(control):
     control.run_sync(lambda: None)
     token = control.token

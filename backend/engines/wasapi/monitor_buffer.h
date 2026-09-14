@@ -30,6 +30,11 @@ inline bool prefer_engine_candidate(uint32_t candidate_frames, uint32_t candidat
     if (candidate_raw != current_raw) return candidate_raw;
     return shorter_engine_period(candidate_frames, candidate_rate, current_frames, current_rate);
 }
+inline uint32_t processing_chunk_size(uint32_t requested, uint32_t capture_period) {
+    if (!requested || !capture_period)
+        throw std::runtime_error("Invalid processing chunk size");
+    return std::max(requested, capture_period);
+}
 // Mirrors the ASIO bridge's resolve_buffer_size: the device's own
 // min/max/fundamental always wins. A user-requested size outside that range
 // is clamped into it (and aligned up to the fundamental granularity) rather

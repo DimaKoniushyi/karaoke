@@ -23,6 +23,11 @@ int main() {
     verify(prefer_engine_candidate(480, 48000, true, 128, 48000, false));
     verify(!prefer_engine_candidate(128, 48000, false, 480, 48000, true));
     verify(prefer_engine_candidate(128, 48000, true, 480, 48000, true));
+    // Windows delivers capture only once per physical engine period. Splitting
+    // that already-complete 480-frame packet into thirty 16-frame Python DSP
+    // calls cannot make it audible sooner; it only adds interpreter crossings.
+    verify(processing_chunk_size(16, 480) == 480);
+    verify(processing_chunk_size(64, 48) == 64);
     verify(engine_period(64, 48, 480, 48) == 96);
     verify(engine_period(64, 441, 441, 441) == 441);
     verify(engine_period(128, 32, 1024, 32) == 128);

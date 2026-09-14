@@ -102,7 +102,9 @@ def settings_snapshot(settings, **overrides):
     """
     fields = {
         field: getattr(settings, field, None)
-        for field in _MONITOR_RESTART_FIELDS | _LIVE_UPDATE_FIELDS | {"monitoring_enabled"}
+        for field in _MONITOR_RESTART_FIELDS
+        | _LIVE_UPDATE_FIELDS
+        | {"monitoring_enabled", "input_device_name", "output_device_name"}
     }
     fields.update(overrides)
     return SimpleNamespace(**fields)
@@ -262,6 +264,54 @@ def _asio_device_hint(driver_name: str | None) -> str:
     for suffix in (" asio driver", " asio", " driver"):
         hint = hint.replace(suffix, "")
     return " ".join(hint.split())
+
+
+_GENERIC_AUDIO_TOKENS = frozenset(
+    {
+        "audio", "asio", "driver", "generic", "low", "latency", "studio",
+        "usb", "microphone", "mic", "speakers", "speaker", "headphones",
+        "headphone", "analogue", "analog", "digital", "input", "output",
+        "line", "windows", "device",
+    }
+)
+
+
+def _hardware_tokens(name: str) -> set[str]:
+    """Tokens that identify hardware rather than an audio API or endpoint."""
+    return {
+        token
+        for token in _device_tokens(name)
+        if token not in _GENERIC_AUDIO_TOKENS and not token.isdecimal()
+    }
+
+
+def _matching_automatic_asio_drivers(
+    drivers: list[str], input_name: str, output_name: str
+) -> list[str]:
+    """Return only ASIO drivers that name the selected Windows hardware.
+
+    Generic wrappers are deliberately excluded: opening an unrelated ASIO
+    driver merely because it exists can seize another endpoint and cannot
+    improve the selected microphone's monitoring path.
+    """
+    selected = _hardware_tokens(f"{input_name} {output_name}")
+    ranked: list[tuple[int, str]] = []
+    for driver in drivers:
+        overlap = selected & _hardware_tokens(driver)
+        if overlap:
+            ranked.append((len(overlap), driver))
+    return [driver for _score, driver in sorted(ranked, key=lambda item: (-item[0], item[1].casefold()))]
+
+
+def _asio_channel_base(endpoint_name: str | None) -> int | None:
+    """Translate a Windows endpoint pair such as Analogue 3/4 to ASIO base 2."""
+    if not endpoint_name:
+        return None
+    match = re.search(r"(?:^|\s)(\d+)\s*[/\-]\s*(\d+)(?:\D|$)", endpoint_name)
+    if not match:
+        return None
+    first, second = (int(value) for value in match.groups())
+    return first - 1 if first >= 1 and second == first + 1 else None
 
 
 def _matching_asio_device_index(driver_name: str | None, kind: str) -> int | None:
@@ -666,15 +716,21 @@ def update_settings(db: Session, patch: dict, *, background: bool = False) -> mo
         {field: getattr(settings, field) for field in updates},
         updates.get("audio_driver", settings.audio_driver),
     )
+    # Windows Driver can transparently run a verified ASIO transport. Its
+    # native bridge has no stdin control protocol, so effect changes must
+    # restart it exactly like an explicitly selected ASIO session.
+    effective_asio = driver == "asio" or (
+        driver == "auto" and _monitor_control.snapshot().get("mode") == "ASIO"
+    )
     restart_fields = _MONITOR_RESTART_FIELDS | (
-        _ASIO_ONLY_RESTART_FIELDS if driver == "asio" else set()
+        _ASIO_ONLY_RESTART_FIELDS if effective_asio else set()
     )
     reconfigure_monitoring, live_update_fields = (
         bool(
             "monitoring_enabled" in changed_fields
             or (settings.monitoring_enabled and restart_fields & changed_fields)
         ),
-        set() if driver == "asio" else _LIVE_UPDATE_FIELDS & changed_fields,
+        set() if effective_asio else _LIVE_UPDATE_FIELDS & changed_fields,
     )
 
     for field, value in updates.items():
@@ -912,7 +968,9 @@ def set_monitor_dry_bypass(db: Session, enabled: bool) -> dict:
     global _monitor_dry_bypass
     _monitor_dry_bypass = bool(enabled)
     settings = get_settings(db)
-    supported = settings.audio_driver != "asio"
+    supported = settings.audio_driver != "asio" and not (
+        settings.audio_driver == "auto" and _monitor_control.snapshot().get("mode") == "ASIO"
+    )
     if supported and settings.monitoring_enabled:
         _send_live_update({"dry_monitor": 1.0 if _monitor_dry_bypass else 0.0})
     return {"dry_monitor": _monitor_dry_bypass, "supported": supported}
@@ -976,14 +1034,121 @@ def _configure_monitoring(settings, *, adopt_driver_buffer: bool = False) -> Non
             )
             _start_shared_monitor(settings, driver="auto", relay_needed=_monitor_relay_needed)
         return
+    if settings.audio_driver == "auto" and not _monitor_relay_needed:
+        devices = sd.query_devices() if _AUDIO_BACKEND_AVAILABLE else None
+        if _try_automatic_asio_monitor(settings, devices=devices):
+            return
+        _start_shared_monitor(
+            settings, driver=settings.audio_driver, relay_needed=False, devices=devices
+        )
+        return
     _start_shared_monitor(settings, driver=settings.audio_driver, relay_needed=_monitor_relay_needed)
 
 
-def _start_shared_monitor(settings, *, driver: str, relay_needed: bool = False) -> None:
+def _automatic_asio_context(settings, devices=None) -> tuple[list[str], str, str]:
+    """Resolve the actual Windows endpoints once for automatic ASIO matching."""
+    if not _AUDIO_BACKEND_AVAILABLE:
+        return [], "", ""
+    devices = sd.query_devices() if devices is None else devices
+    input_id = preferred_input_device(
+        settings.input_device_id,
+        "auto",
+        devices=devices,
+        device_name=getattr(settings, "input_device_name", None),
+    )
+    output_id = preferred_output_device(
+        input_id,
+        "auto",
+        settings.output_device_id,
+        devices=devices,
+        device_name=getattr(settings, "output_device_name", None),
+    )
+    resolved_input = _resolved_device_index(input_id, "input", devices)
+    resolved_output = _resolved_device_index(output_id, "output", devices)
+    return (
+        list_asio_drivers(),
+        str(devices[resolved_input].get("name", "")),
+        str(devices[resolved_output].get("name", "")),
+    )
+
+
+def _asio_preserves_shared_endpoints(settings) -> bool:
+    """Prove that ASIO did not seize capture or render from Windows Shared.
+
+    The ASIO bridge is already running when this is called. Opening both
+    selected endpoints through the production IAudioClient3 implementation is
+    therefore a direct coexistence test, not a driver-name assumption. The
+    temporary stream is never started and emits no sound.
+    """
+    from app.services.native_wasapi import NativeWasapiStream
+
+    stream = None
+    try:
+        stream = NativeWasapiStream(
+            {
+                "input_device_name": settings.input_device_name or "",
+                "output_device_name": settings.output_device_name or "",
+                "blocksize": settings.buffer_size,
+                "gain": 0.0,
+            },
+            {},
+        )
+        return True
+    except Exception as exc:
+        logger.info("Automatic ASIO rejected because Windows Shared could not coexist: %s", exc)
+        return False
+    finally:
+        if stream is not None:
+            stream.close()
+
+
+def _try_automatic_asio_monitor(settings, *, devices=None) -> bool:
+    """Try a hardware-matched, coexistence-verified low-latency transport."""
+    try:
+        drivers, input_name, output_name = _automatic_asio_context(settings, devices)
+    except Exception as exc:
+        logger.info("Automatic ASIO discovery unavailable: %s", exc)
+        return False
+    for driver_name in _matching_automatic_asio_drivers(drivers, input_name, output_name):
+        candidate = settings_snapshot(
+            settings,
+            audio_driver="asio",
+            asio_driver_name=driver_name,
+            input_device_name=input_name,
+            output_device_name=output_name,
+        )
+        try:
+            _start_asio_monitor(candidate)
+            if not _asio_preserves_shared_endpoints(candidate):
+                raise RuntimeError("ASIO driver does not coexist with Windows Shared")
+            _monitor_control.publish(
+                transport_selection="automatic-asio",
+                requested_mode="Windows Driver",
+                shared_coexistence_verified=True,
+            )
+            logger.info(
+                "Windows Driver selected verified low-latency ASIO transport: driver=%s input=%s output=%s",
+                driver_name,
+                input_name,
+                output_name,
+            )
+            return True
+        except MonitorCancelled:
+            _stop_monitoring_process()
+            raise
+        except Exception as exc:
+            logger.info("Automatic ASIO candidate rejected: driver=%s error=%s", driver_name, exc)
+            _stop_monitoring_process()
+    return False
+
+
+def _start_shared_monitor(
+    settings, *, driver: str, relay_needed: bool = False, devices=None
+) -> None:
     if not _AUDIO_BACKEND_AVAILABLE:
         raise RuntimeError("Audio backend is unavailable")
 
-    devices = sd.query_devices()
+    devices = sd.query_devices() if devices is None else devices
     _monitor_control.check()
     input_device_id = preferred_input_device(
         settings.input_device_id,
@@ -1146,6 +1311,13 @@ def _start_asio_monitor(settings: models.AudioSettings, *, adopt_driver_buffer: 
             -1.0, min(1.0, float(getattr(settings, "octave", 0.0) or 0.0))
         )),
     ]
+    # Windows exposes a multi-pair interface as separate endpoints (for
+    # example Analogue 1/2 and Analogue 3/4), while ASIO exposes one flat
+    # channel array. Preserve the endpoint the user selected instead of
+    # silently sending monitoring to ASIO outputs 1/2 every time.
+    output_channel = _asio_channel_base(getattr(settings, "output_device_name", None))
+    if output_channel is not None:
+        command.extend(("--output-channel", str(output_channel)))
     # kAsioResetRequest fires when the driver's own control panel changes
     # something (buffer size, sample rate) out from under the running stream;
     # the ASIO SDK's contract for that message is to close and reopen the

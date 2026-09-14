@@ -343,8 +343,13 @@ struct Engine {
         const size_t safety_frames = std::max<size_t>(2, std::min<size_t>(blocksize,
             size_t(std::ceil(output.period * ratio))));
         queue = std::make_unique<shared_audio::MonitorBuffer>(capacity, ratio, safety_frames);
-        source.resize(blocksize);
-        processed.resize(blocksize);
+        // Capture cannot expose any part of a packet before the endpoint's
+        // physical period completes. Process that already-complete packet in
+        // one callback instead of crossing C++ -> Python once per smaller UI
+        // block (e.g. 30 calls for 16 requested frames on a 480-frame driver).
+        const size_t processing_frames = shared_audio::processing_chunk_size(blocksize, input.period);
+        source.resize(processing_frames);
+        processed.resize(processing_frames);
     }
     void start(Process callback) {
         process = callback;

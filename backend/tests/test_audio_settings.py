@@ -341,6 +341,90 @@ def test_asio_monitor_validates_bridge_driver_and_clamps_command(monkeypatch, tm
     assert disabled_command[disabled_command.index('--noise-suppression') + 1] == '0.0'
 
 
+def test_automatic_asio_matches_the_selected_windows_hardware_not_a_generic_driver():
+    drivers = [
+        "Generic Low Latency ASIO Driver",
+        "Audient USB Audio ASIO Driver",
+        "Unrelated Studio ASIO",
+    ]
+
+    assert audio_service._matching_automatic_asio_drivers(
+        drivers,
+        "Analogue 1/2 (2- Audient iD14)",
+        "Analogue 3/4 (2- Audient iD14)",
+    ) == ["Audient USB Audio ASIO Driver"]
+    assert audio_service._matching_automatic_asio_drivers(
+        drivers,
+        "Microphone (Realtek(R) Audio)",
+        "Speakers (Realtek(R) Audio)",
+    ) == []
+    assert audio_service._matching_automatic_asio_drivers(
+        ["Generic Low Latency ASIO Driver", "Realtek ASIO"],
+        "Microphone (Realtek(R) Audio)",
+        "Speakers (Realtek(R) Audio)",
+    ) == ["Realtek ASIO"]
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "expected"),
+    [
+        ("Analogue 1/2 (2- Audient iD14)", 0),
+        ("Analogue 3/4 (2- Audient iD14)", 2),
+        ("Line Out 7-8", 6),
+        ("Speakers (Realtek(R) Audio)", None),
+    ],
+)
+def test_asio_channel_base_follows_the_selected_windows_endpoint_pair(endpoint, expected):
+    assert audio_service._asio_channel_base(endpoint) == expected
+
+
+def test_windows_driver_keeps_verified_matching_asio_as_its_low_latency_transport(
+    monkeypatch,
+):
+    from app.services import recording_service
+
+    current = settings(
+        audio_driver="auto",
+        monitoring_enabled=True,
+        input_device_name="Microphone (Realtek Audio)",
+        output_device_name="Speakers (Realtek Audio)",
+    )
+    monkeypatch.setattr(recording_service, "apply_monitor_settings", lambda *_: False)
+    devices = []
+    monkeypatch.setattr(audio_service, "_AUDIO_BACKEND_AVAILABLE", True)
+    monkeypatch.setattr(audio_service.sd, "query_devices", Mock(return_value=devices))
+    automatic = Mock(return_value=True)
+    shared = Mock()
+    monkeypatch.setattr(audio_service, "_try_automatic_asio_monitor", automatic)
+    monkeypatch.setattr(audio_service, "_start_shared_monitor", shared)
+
+    audio_service.configure_monitoring(current)
+
+    automatic.assert_called_once_with(current, devices=devices)
+    shared.assert_not_called()
+
+
+def test_windows_driver_falls_back_to_shared_when_no_safe_asio_transport_exists(
+    monkeypatch,
+):
+    from app.services import recording_service
+
+    current = settings(audio_driver="auto", monitoring_enabled=True)
+    monkeypatch.setattr(recording_service, "apply_monitor_settings", lambda *_: False)
+    devices = []
+    monkeypatch.setattr(audio_service, "_AUDIO_BACKEND_AVAILABLE", True)
+    monkeypatch.setattr(audio_service.sd, "query_devices", Mock(return_value=devices))
+    monkeypatch.setattr(audio_service, "_try_automatic_asio_monitor", Mock(return_value=False))
+    shared = Mock()
+    monkeypatch.setattr(audio_service, "_start_shared_monitor", shared)
+
+    audio_service.configure_monitoring(current)
+
+    shared.assert_called_once_with(
+        current, driver="auto", relay_needed=False, devices=devices
+    )
+
+
 def test_asio_reset_restart_closure_holds_a_detached_snapshot_not_the_live_row(monkeypatch, tmp_path):
     # configure_monitoring can be called with a live, DB-session-bound
     # AudioSettings row (see app/routers/recording.py) whose session may
