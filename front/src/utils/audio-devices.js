@@ -89,14 +89,14 @@ export function createOutputDeviceOptions(
         !OUTPUT_AUXILIARY.test(device.name) &&
         !host(device).includes("wdm-ks")
     );
-  const requested = driver === "asio" ? "asio" : "wasapi";
+  const requested = driver === "asio" ? "asio" : driver === "mme" ? "mme" : "wasapi";
   const preferred = [requested, ...HOSTS.filter((name) => name !== requested)].find((name) =>
     candidates.some((device) => host(device).includes(name))
   );
   const choices = new Map();
 
   for (const device of candidates) {
-    const isSelected = device.index === selected && (driver !== "asio" || host(device).includes("asio"));
+    const isSelected = device.index === selected && host(device).includes(requested);
     if (preferred && !host(device).includes(preferred) && !isSelected) continue;
     addBest(choices, { ...device, name: device.name || t("karaoke.device") }, selected);
   }

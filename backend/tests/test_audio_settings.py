@@ -378,9 +378,7 @@ def test_asio_channel_base_follows_the_selected_windows_endpoint_pair(endpoint, 
     assert audio_service._asio_channel_base(endpoint) == expected
 
 
-def test_windows_driver_keeps_verified_matching_asio_as_its_low_latency_transport(
-    monkeypatch,
-):
+def test_windows_driver_never_substitutes_asio_or_wdmks_for_wasapi_shared(monkeypatch):
     from app.services import recording_service
 
     current = settings(
@@ -394,14 +392,19 @@ def test_windows_driver_keeps_verified_matching_asio_as_its_low_latency_transpor
     monkeypatch.setattr(audio_service, "_AUDIO_BACKEND_AVAILABLE", True)
     monkeypatch.setattr(audio_service.sd, "query_devices", Mock(return_value=devices))
     automatic = Mock(return_value=True)
+    wdmks = Mock(return_value=True)
     shared = Mock()
     monkeypatch.setattr(audio_service, "_try_automatic_asio_monitor", automatic)
+    monkeypatch.setattr(audio_service, "_try_automatic_wdmks_monitor", wdmks)
     monkeypatch.setattr(audio_service, "_start_shared_monitor", shared)
 
     audio_service.configure_monitoring(current)
 
-    automatic.assert_called_once_with(current, devices=devices)
-    shared.assert_not_called()
+    automatic.assert_not_called()
+    wdmks.assert_not_called()
+    shared.assert_called_once_with(
+        current, driver="auto", relay_needed=False, devices=devices
+    )
 
 
 def test_windows_driver_falls_back_to_shared_when_no_safe_asio_transport_exists(
@@ -421,12 +424,13 @@ def test_windows_driver_falls_back_to_shared_when_no_safe_asio_transport_exists(
 
     audio_service.configure_monitoring(current)
 
+    audio_service._try_automatic_wdmks_monitor.assert_not_called()
     shared.assert_called_once_with(
         current, driver="auto", relay_needed=False, devices=devices
     )
 
 
-def test_windows_driver_keeps_a_coexistence_verified_wdmks_transport_without_asio(
+def test_windows_driver_does_not_substitute_wdmks_when_asio_is_unavailable(
     monkeypatch,
 ):
     from app.services import recording_service
@@ -444,8 +448,10 @@ def test_windows_driver_keeps_a_coexistence_verified_wdmks_transport_without_asi
 
     audio_service.configure_monitoring(current)
 
-    wdmks.assert_called_once_with(current, devices=devices)
-    shared.assert_not_called()
+    wdmks.assert_not_called()
+    shared.assert_called_once_with(
+        current, driver="auto", relay_needed=False, devices=devices
+    )
 
 
 def test_asio_reset_restart_closure_holds_a_detached_snapshot_not_the_live_row(monkeypatch, tmp_path):

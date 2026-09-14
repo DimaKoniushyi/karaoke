@@ -7,7 +7,8 @@ import {
   createBrowserDeviceOptions,
   createBufferSizeOptions,
   createIndexedDeviceOptions,
-  createInputDeviceOptions
+  createInputDeviceOptions,
+  createOutputDeviceOptions
 } from "../src/utils/audio-devices.js";
 import {
   detectMidiFromAnalyser,
@@ -410,6 +411,25 @@ describe("device, settings and song-card factories", () => {
         ]
       ]
     );
+  });
+  test("Windows Driver never displays a previously selected ASIO output as active", () => {
+    const devices = [
+      { index: 1, name: "Audient USB Audio [ASIO]", host_api: "ASIO", max_output_channels: 2 },
+      {
+        index: 2,
+        name: "Audient USB Audio [Windows WASAPI]",
+        host_api: "Windows WASAPI",
+        max_output_channels: 2
+      }
+    ];
+
+    deepEqual([
+      createOutputDeviceOptions(devices, 1, "auto", "System"),
+      [
+        { value: "", label: "System" },
+        { value: 2, label: "Audient USB Audio" }
+      ]
+    ]);
   });
   test("validates and normalizes song settings", () => {
     const songs = [

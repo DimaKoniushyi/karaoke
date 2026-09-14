@@ -27,8 +27,9 @@ inline bool shorter_engine_period(uint32_t candidate_frames, uint32_t candidate_
 }
 inline bool prefer_engine_candidate(uint32_t candidate_frames, uint32_t candidate_rate, bool candidate_raw,
                                     uint32_t current_frames, uint32_t current_rate, bool current_raw) {
-    if (candidate_raw != current_raw) return candidate_raw;
-    return shorter_engine_period(candidate_frames, candidate_rate, current_frames, current_rate);
+    if (shorter_engine_period(candidate_frames, candidate_rate, current_frames, current_rate)) return true;
+    if (shorter_engine_period(current_frames, current_rate, candidate_frames, candidate_rate)) return false;
+    return candidate_raw && !current_raw;
 }
 inline uint32_t processing_chunk_size(uint32_t requested, uint32_t capture_period) {
     if (!requested || !capture_period)

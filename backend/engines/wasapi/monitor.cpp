@@ -167,18 +167,18 @@ struct Endpoint {
         };
         // Windows permits different AUDIO_STREAM_CATEGORY sets for capture
         // and render. Probe only categories valid for this endpoint and select
-        // the shortest period reported by its driver within the preferred
-        // RAW class. RAW bypasses endpoint APOs whose hidden look-ahead is
-        // not included in the reported engine period. This remains shared.
+        // the shortest period actually reported by its driver across RAW and
+        // normal shared modes. RAW only breaks an equal-period tie: preferring
+        // it unconditionally can hide a lower-latency normal shared path on
+        // consumer Realtek endpoints. This remains shared in either mode.
         if (flow == eCapture) {
             // Prefer neutral Other on a tie. Speech/Communications can win
             // when the endpoint exposes a shorter RAW period for them.
             try_candidate(AudioCategory_Other, AUDCLNT_STREAMOPTIONS_RAW);
             try_candidate(AudioCategory_Speech, AUDCLNT_STREAMOPTIONS_RAW);
             try_candidate(AudioCategory_Communications, AUDCLNT_STREAMOPTIONS_RAW);
-            // Probe normal mode as a compatibility fallback. It is sorted
-            // after every working RAW candidate because an OEM APO's hidden
-            // buffering is not represented by the nominal engine period.
+            // Probe normal mode too. It may advertise a genuinely shorter
+            // engine quantum than RAW on consumer endpoints.
             try_candidate(AudioCategory_Other, static_cast<AUDCLNT_STREAMOPTIONS>(0));
             try_candidate(AudioCategory_Speech, static_cast<AUDCLNT_STREAMOPTIONS>(0));
             try_candidate(AudioCategory_Communications, static_cast<AUDCLNT_STREAMOPTIONS>(0));

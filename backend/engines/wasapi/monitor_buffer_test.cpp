@@ -2,7 +2,14 @@
 #include <iostream>
 #include <limits>
 using namespace shared_audio;
-static void verify(bool condition) { if (!condition) throw std::runtime_error("Native audio test failed"); }
+static int verification = 0;
+static void verify(bool condition) {
+    ++verification;
+    if (!condition) {
+        std::cerr << "Native audio test failed at check " << verification << '\n';
+        std::exit(1);
+    }
+}
 int main() {
     // Windows Driver is a low-latency shared transport.  The UI processing
     // block is not an instruction to make the Windows engine period larger:
@@ -17,11 +24,13 @@ int main() {
     verify(!shorter_engine_period(160, 16000, 480, 48000));
     verify(shorter_engine_period(240, 48000, 480, 48000));
     verify(!shorter_engine_period(480, 48000, 240, 48000));
-    // RAW avoids OEM/system APO look-ahead. A superficially shorter non-RAW
-    // engine quantum must not win while a valid RAW path exists, because the
-    // unreported APO delay can exceed the period it appeared to save.
-    verify(prefer_engine_candidate(480, 48000, true, 128, 48000, false));
-    verify(!prefer_engine_candidate(128, 48000, false, 480, 48000, true));
+    // The driver's measured engine period wins across RAW/non-RAW modes.
+    // Preferring RAW unconditionally kept consumer Realtek endpoints at a
+    // legacy 10 ms quantum even when their normal shared path advertised a
+    // genuinely shorter period. RAW is only the tie-breaker.
+    verify(!prefer_engine_candidate(480, 48000, true, 128, 48000, false));
+    verify(prefer_engine_candidate(128, 48000, false, 480, 48000, true));
+    verify(prefer_engine_candidate(480, 48000, true, 480, 48000, false));
     verify(prefer_engine_candidate(128, 48000, true, 480, 48000, true));
     // Windows delivers capture only once per physical engine period. Splitting
     // that already-complete 480-frame packet into thirty 16-frame Python DSP

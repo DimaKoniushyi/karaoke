@@ -1057,10 +1057,10 @@ def _configure_monitoring(settings, *, adopt_driver_buffer: bool = False) -> Non
         return
     if settings.audio_driver == "auto" and not _monitor_relay_needed:
         devices = sd.query_devices() if _AUDIO_BACKEND_AVAILABLE else None
-        if _try_automatic_asio_monitor(settings, devices=devices):
-            return
-        if _try_automatic_wdmks_monitor(settings, devices=devices):
-            return
+        # "Windows Driver" is an explicit transport choice. Do not silently
+        # replace it with ASIO or WDM-KS: the latter can report a tiny nominal
+        # buffer while stopping as soon as another shared client opens, which
+        # is the same device-seizing behaviour as exclusive mode in practice.
         _start_shared_monitor(
             settings, driver=settings.audio_driver, relay_needed=False, devices=devices
         )

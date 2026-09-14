@@ -290,9 +290,8 @@ def test_native_shared_compares_raw_and_non_raw_candidates_before_selecting():
     capture = source[source.index("if (flow == eCapture)"):source.index("} else {", source.index("if (flow == eCapture)"))]
     render = source[source.index("} else {", source.index("if (flow == eCapture)")):source.index("if (!client) throw")]
 
-    # RAW skips latency-heavy endpoint APOs when supported. Both modes must
-    # be probed so normal mode remains a fallback on drivers that reject RAW;
-    # candidate ranking separately keeps every working RAW path first.
+    # Both modes must be probed before selection: some drivers reject RAW,
+    # while some consumer endpoints advertise a shorter normal shared period.
     assert capture.count("static_cast<AUDCLNT_STREAMOPTIONS>(0)") == 3
     assert render.count("static_cast<AUDCLNT_STREAMOPTIONS>(0)") >= 5
     assert "if (!client)\n                try_candidate" not in capture
