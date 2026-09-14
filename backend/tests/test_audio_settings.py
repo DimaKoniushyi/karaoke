@@ -415,6 +415,7 @@ def test_windows_driver_falls_back_to_shared_when_no_safe_asio_transport_exists(
     monkeypatch.setattr(audio_service, "_AUDIO_BACKEND_AVAILABLE", True)
     monkeypatch.setattr(audio_service.sd, "query_devices", Mock(return_value=devices))
     monkeypatch.setattr(audio_service, "_try_automatic_asio_monitor", Mock(return_value=False))
+    monkeypatch.setattr(audio_service, "_try_automatic_wdmks_monitor", Mock(return_value=False))
     shared = Mock()
     monkeypatch.setattr(audio_service, "_start_shared_monitor", shared)
 
@@ -423,6 +424,28 @@ def test_windows_driver_falls_back_to_shared_when_no_safe_asio_transport_exists(
     shared.assert_called_once_with(
         current, driver="auto", relay_needed=False, devices=devices
     )
+
+
+def test_windows_driver_keeps_a_coexistence_verified_wdmks_transport_without_asio(
+    monkeypatch,
+):
+    from app.services import recording_service
+
+    current = settings(audio_driver="auto", monitoring_enabled=True)
+    devices = []
+    monkeypatch.setattr(recording_service, "apply_monitor_settings", lambda *_: False)
+    monkeypatch.setattr(audio_service, "_AUDIO_BACKEND_AVAILABLE", True)
+    monkeypatch.setattr(audio_service.sd, "query_devices", Mock(return_value=devices))
+    monkeypatch.setattr(audio_service, "_try_automatic_asio_monitor", Mock(return_value=False))
+    wdmks = Mock(return_value=True)
+    shared = Mock()
+    monkeypatch.setattr(audio_service, "_try_automatic_wdmks_monitor", wdmks)
+    monkeypatch.setattr(audio_service, "_start_shared_monitor", shared)
+
+    audio_service.configure_monitoring(current)
+
+    wdmks.assert_called_once_with(current, devices=devices)
+    shared.assert_not_called()
 
 
 def test_asio_reset_restart_closure_holds_a_detached_snapshot_not_the_live_row(monkeypatch, tmp_path):

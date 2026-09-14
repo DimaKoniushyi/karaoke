@@ -314,6 +314,27 @@ def _asio_channel_base(endpoint_name: str | None) -> int | None:
     return first - 1 if first >= 1 and second == first + 1 else None
 
 
+def _matching_wdmks_endpoints(
+    devices, input_name: str, output_name: str
+) -> tuple[int, int] | None:
+    """Match WDM-KS pins to the selected Windows endpoints by hardware name."""
+    result: list[int] = []
+    for kind, selected_name in (("input", input_name), ("output", output_name)):
+        capability = f"max_{kind}_channels"
+        selected_tokens = _hardware_tokens(selected_name)
+        candidates: list[tuple[int, int]] = []
+        for index, device in enumerate(devices):
+            if int(device.get(capability, 0)) < 1 or not _is_wdm_ks_device(device):
+                continue
+            overlap = selected_tokens & _hardware_tokens(str(device.get("name", "")))
+            if overlap:
+                candidates.append((len(overlap), index))
+        if not candidates:
+            return None
+        result.append(max(candidates)[1])
+    return result[0], result[1]
+
+
 def _matching_asio_device_index(driver_name: str | None, kind: str) -> int | None:
     if not _AUDIO_BACKEND_AVAILABLE:
         return None
@@ -1038,6 +1059,8 @@ def _configure_monitoring(settings, *, adopt_driver_buffer: bool = False) -> Non
         devices = sd.query_devices() if _AUDIO_BACKEND_AVAILABLE else None
         if _try_automatic_asio_monitor(settings, devices=devices):
             return
+        if _try_automatic_wdmks_monitor(settings, devices=devices):
+            return
         _start_shared_monitor(
             settings, driver=settings.audio_driver, relay_needed=False, devices=devices
         )
@@ -1045,11 +1068,8 @@ def _configure_monitoring(settings, *, adopt_driver_buffer: bool = False) -> Non
     _start_shared_monitor(settings, driver=settings.audio_driver, relay_needed=_monitor_relay_needed)
 
 
-def _automatic_asio_context(settings, devices=None) -> tuple[list[str], str, str]:
-    """Resolve the actual Windows endpoints once for automatic ASIO matching."""
-    if not _AUDIO_BACKEND_AVAILABLE:
-        return [], "", ""
-    devices = sd.query_devices() if devices is None else devices
+def _windows_endpoint_names(settings, devices) -> tuple[str, str]:
+    """Resolve the exact shared endpoints selected by the user."""
     input_id = preferred_input_device(
         settings.input_device_id,
         "auto",
@@ -1066,14 +1086,22 @@ def _automatic_asio_context(settings, devices=None) -> tuple[list[str], str, str
     resolved_input = _resolved_device_index(input_id, "input", devices)
     resolved_output = _resolved_device_index(output_id, "output", devices)
     return (
-        list_asio_drivers(),
         str(devices[resolved_input].get("name", "")),
         str(devices[resolved_output].get("name", "")),
     )
 
 
-def _asio_preserves_shared_endpoints(settings) -> bool:
-    """Prove that ASIO did not seize capture or render from Windows Shared.
+def _automatic_asio_context(settings, devices=None) -> tuple[list[str], str, str]:
+    """Resolve the actual Windows endpoints once for automatic ASIO matching."""
+    if not _AUDIO_BACKEND_AVAILABLE:
+        return [], "", ""
+    devices = sd.query_devices() if devices is None else devices
+    input_name, output_name = _windows_endpoint_names(settings, devices)
+    return list_asio_drivers(), input_name, output_name
+
+
+def _transport_preserves_shared_endpoints(settings) -> bool:
+    """Prove that a direct transport did not seize Windows Shared.
 
     The ASIO bridge is already running when this is called. Opening both
     selected endpoints through the production IAudioClient3 implementation is
@@ -1095,7 +1123,7 @@ def _asio_preserves_shared_endpoints(settings) -> bool:
         )
         return True
     except Exception as exc:
-        logger.info("Automatic ASIO rejected because Windows Shared could not coexist: %s", exc)
+        logger.info("Direct audio transport rejected because Windows Shared could not coexist: %s", exc)
         return False
     finally:
         if stream is not None:
@@ -1119,7 +1147,7 @@ def _try_automatic_asio_monitor(settings, *, devices=None) -> bool:
         )
         try:
             _start_asio_monitor(candidate)
-            if not _asio_preserves_shared_endpoints(candidate):
+            if not _transport_preserves_shared_endpoints(candidate):
                 raise RuntimeError("ASIO driver does not coexist with Windows Shared")
             _monitor_control.publish(
                 transport_selection="automatic-asio",
@@ -1142,6 +1170,44 @@ def _try_automatic_asio_monitor(settings, *, devices=None) -> bool:
     return False
 
 
+def _try_automatic_wdmks_monitor(settings, *, devices=None) -> bool:
+    """Try WDM-KS only when its pins open and Windows Shared still coexists."""
+    if not _AUDIO_BACKEND_AVAILABLE:
+        return False
+    devices = sd.query_devices() if devices is None else devices
+    try:
+        input_name, output_name = _windows_endpoint_names(settings, devices)
+        endpoints = _matching_wdmks_endpoints(devices, input_name, output_name)
+        if endpoints is None:
+            return False
+        _start_shared_monitor(settings, driver="wdmks", devices=devices)
+        shared_probe = settings_snapshot(
+            settings,
+            input_device_name=input_name,
+            output_device_name=output_name,
+        )
+        if not _transport_preserves_shared_endpoints(shared_probe):
+            raise RuntimeError("WDM-KS does not coexist with Windows Shared")
+        _monitor_control.publish(
+            transport_selection="automatic-wdmks",
+            requested_mode="Windows Driver",
+            shared_coexistence_verified=True,
+        )
+        logger.info(
+            "Windows Driver selected verified WDM-KS transport: input=%s output=%s",
+            input_name,
+            output_name,
+        )
+        return True
+    except MonitorCancelled:
+        _stop_monitoring_process()
+        raise
+    except Exception as exc:
+        logger.info("Automatic WDM-KS candidate rejected: %s", exc)
+        _stop_monitoring_process()
+        return False
+
+
 def _start_shared_monitor(
     settings, *, driver: str, relay_needed: bool = False, devices=None
 ) -> None:
@@ -1150,28 +1216,33 @@ def _start_shared_monitor(
 
     devices = sd.query_devices() if devices is None else devices
     _monitor_control.check()
-    input_device_id = preferred_input_device(
-        settings.input_device_id,
-        driver,
-        settings.asio_driver_name,
-        devices=devices,
-        device_name=getattr(settings, "input_device_name", None),
-    )
-    output_device_id, resolved_input_id = (
-        preferred_output_device(
-            input_device_id,
+    if driver == "wdmks":
+        windows_input, windows_output = _windows_endpoint_names(settings, devices)
+        matched = _matching_wdmks_endpoints(devices, windows_input, windows_output)
+        if matched is None:
+            raise RuntimeError("No matching WDM-KS input/output pins are available")
+        resolved_input_id, resolved_output_id = matched
+    else:
+        input_device_id = preferred_input_device(
+            settings.input_device_id,
             driver,
-            settings.output_device_id,
             settings.asio_driver_name,
             devices=devices,
-            device_name=getattr(settings, "output_device_name", None),
-        ),
-        _resolved_device_index(input_device_id, "input", devices),
-    )
-    resolved_output_id, input_info = (
-        _resolved_device_index(output_device_id, "output", devices),
-        devices[resolved_input_id],
-    )
+            device_name=getattr(settings, "input_device_name", None),
+        )
+        output_device_id, resolved_input_id = (
+            preferred_output_device(
+                input_device_id,
+                driver,
+                settings.output_device_id,
+                settings.asio_driver_name,
+                devices=devices,
+                device_name=getattr(settings, "output_device_name", None),
+            ),
+            _resolved_device_index(input_device_id, "input", devices),
+        )
+        resolved_output_id = _resolved_device_index(output_device_id, "output", devices)
+    input_info = devices[resolved_input_id]
     output_info = devices[resolved_output_id]
 
     if int(input_info["hostapi"]) != int(output_info["hostapi"]):
@@ -1204,7 +1275,11 @@ def _start_shared_monitor(
         "output_device_id": resolved_output_id,
         "sample_rate": _monitor_sample_rate(resolved_input_id, resolved_output_id, devices),
         "output_channels": output_channels,
-        "blocksize": settings.buffer_size if wasapi else max(settings.buffer_size, _PLAIN_HOST_MIN_BLOCKSIZE),
+        "blocksize": (
+            settings.buffer_size
+            if wasapi or driver == "wdmks"
+            else max(settings.buffer_size, _PLAIN_HOST_MIN_BLOCKSIZE)
+        ),
         "gain": gain,
         **effects,
         "octave": 0.0 if _monitor_effects_disabled else max(

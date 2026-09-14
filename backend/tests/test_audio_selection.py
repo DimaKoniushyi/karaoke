@@ -158,6 +158,23 @@ def test_resolved_device_never_lands_on_wdm_ks(monkeypatch):
     )
 
 
+def test_explicit_wdmks_probe_matches_only_the_selected_physical_endpoints(monkeypatch):
+    devices = [
+        device("Microphone (Realtek Audio)", 0, inputs=2),
+        device("Speakers (Realtek Audio)", 0, outputs=2),
+        device("Microphone (Realtek Audio)", 1, inputs=2),
+        device("Speakers (Realtek Audio)", 1, outputs=2),
+        device("HDMI Output (NVIDIA)", 1, outputs=2),
+    ]
+    install_devices(monkeypatch, devices, {0: "Windows WASAPI", 1: "Windows WDM-KS"})
+
+    assert audio_service._matching_wdmks_endpoints(
+        devices,
+        "Microphone (Realtek Audio)",
+        "Speakers (Realtek Audio)",
+    ) == (2, 3)
+
+
 def test_low_latency_and_duplex_selection_match_physical_endpoint(monkeypatch):
     devices = [
         device("USB Studio Mic", 0, inputs=1),

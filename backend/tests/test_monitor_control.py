@@ -21,6 +21,7 @@ def control(monkeypatch):
     monkeypatch.setattr(audio_service, "_monitor_process", None)
     monkeypatch.setattr(audio_service, "_monitor_reader", None)
     monkeypatch.setattr(audio_service, "_monitor_effects_disabled", False)
+    monkeypatch.setattr(audio_service, "_monitor_dry_bypass", False)
     monkeypatch.setattr(audio_service, "_requested_effects_disabled", False)
     yield instance
     instance.cancel()
@@ -333,6 +334,15 @@ def test_status_distinguishes_driver_rejection_and_repeated_glitches(control):
     control.cancel()
     control.event(token, {"event": "started"})
     assert control.snapshot()["state"] == "idle"
+
+
+def test_successful_fallback_start_clears_the_rejected_transport_error(control):
+    control.event(None, {"event": "error", "message": "WDM-KS pin could not open"})
+    control.event(None, {"event": "started", "engine": "wasapi-native-shared"})
+
+    status = control.snapshot()
+    assert status["state"] == "running"
+    assert "error" not in status
 
 
 def test_cancelled_launch_does_not_spawn_a_process(control, monkeypatch, tmp_path):

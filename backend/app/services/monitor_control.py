@@ -147,6 +147,11 @@ class MonitorControl:
                 if event == "started":
                     self.latency_breakdown_logged_at = 0.0
                     self.real_latency_logged_at = 0.0
+                    # A rejected automatic transport can emit an error before
+                    # the next candidate (normally shared WASAPI) starts. The
+                    # successful start is authoritative; retaining the stale
+                    # error would show a failure alert beside a running stream.
+                    self.status.pop("error", None)
                     for key in _STREAM_STATISTICS:
                         self.status.pop(key, None)
                     self.status["state"] = "running"
