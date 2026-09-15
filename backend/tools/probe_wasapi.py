@@ -42,19 +42,35 @@ def summary(values):
 
 
 def probe_native(config):
-    from app.services.monitor_worker import _audio_callback
+    from app.services import monitor_worker
     from app.services.native_wasapi import TIMING_FIELDS, NativeWasapiStream
     stats = {}
-    stream = NativeWasapiStream({"input_device_name": sd.query_devices(config["input"])["name"],
-                                 "output_device_name": sd.query_devices(config["output"])["name"],
-                                 "blocksize": config["blocksize"]}, stats)
+    options = {"input_device_name": sd.query_devices(config["input"])["name"],
+               "output_device_name": sd.query_devices(config["output"])["name"],
+               "blocksize": config["blocksize"]}
+    if config.get("raw"):
+        # Exercise the production native bypass without ever making captured
+        # microphone samples audible during an automated probe.
+        options["gain"] = 0.0
+    if config.get("input_exclusive"):
+        options["input_exclusive"] = True
+    stream = None
+    previous_params = monitor_worker._live_params
     try:
-        dsp = _audio_callback(2.0, stream.info.sample_rate, stats) if config.get("dsp") else None
+        stream = NativeWasapiStream(options, stats)
+        if config.get("effects"):
+            monitor_worker._live_params = {
+                **previous_params,
+                **{name: float(value) for name, value in config["effects"].items()},
+            }
+        dsp = monitor_worker._audio_callback(2.0, stream.info.sample_rate, stats) if config.get("dsp") else None
         def callback(source, output, frames, clock, status):
             if dsp is not None:
                 dsp(source, output, frames, clock, status)
             output.fill(0)  # Never play or persist microphone samples.
         stream.start(callback)
+        if config.get("raw"):
+            stream.set_raw(True)
         started, previous = time.monotonic(), -1
         rows = []
         while time.monotonic() - started < config["duration"]:
@@ -62,12 +78,15 @@ def probe_native(config):
             if time.monotonic() - started > .2 and stats["rendered_frames"] != previous and len(rows) < 10000:
                 rows.append(dict(stats))
                 previous = stats["rendered_frames"]
-        names = (*TIMING_FIELDS, "stream_latency_ms", "dsp_compute_ms", "queue_ms")
+        names = (*TIMING_FIELDS, "stream_latency_ms", "dsp_compute_ms", "effect_latency_ms",
+                 "resample_ratio", "queue_ms")
         return {**stream.diagnostics(), "statistics": stats,
                 "timings": {name: summary([row[name] for row in rows if row.get(name) is not None]) for name in names},
                 "round_trip_latency_ms": None}
     finally:
-        stream.close()
+        monitor_worker._live_params = previous_params
+        if stream is not None:
+            stream.close()
 
 
 def probe(config):
@@ -112,21 +131,37 @@ def probe(config):
     common = dict(samplerate=config["rate"], blocksize=config["blocksize"],
                   latency=config["latency"], dtype="float32")
     exclusive = config["mode"] == "exclusive"
-    extra = sd.WasapiSettings(exclusive=exclusive, auto_convert=not exclusive)
+    extra = (
+        None if config["mode"] == "plain"
+        else sd.WasapiSettings(exclusive=exclusive, auto_convert=not exclusive)
+    )
     kind = config["kind"]
     if kind == "split":
         stream = WasapiMonitorStream(sd, {**common, "device": (config["input"], config["output"]),
                                      "channels": (1, 2), "extra_settings": (extra, extra)},
                                      duplex_callback, stats, restart)
     elif kind == "duplex":
-        stream = sd.Stream(**common, device=(config["input"], config["output"]),
-                           channels=(1, 2), extra_settings=(extra, extra), callback=duplex_callback)
+        duplex_options = dict(
+            common, device=(config["input"], config["output"]),
+            channels=(1, 2), callback=duplex_callback,
+        )
+        if extra is not None:
+            duplex_options["extra_settings"] = (extra, extra)
+        stream = sd.Stream(**duplex_options)
     elif kind == "input":
-        stream = sd.InputStream(**common, device=config["input"], channels=1,
-                                extra_settings=extra, callback=input_callback)
+        input_options = dict(
+            common, device=config["input"], channels=1, callback=input_callback,
+        )
+        if extra is not None:
+            input_options["extra_settings"] = extra
+        stream = sd.InputStream(**input_options)
     else:
-        stream = sd.OutputStream(**common, device=config["output"], channels=2,
-                                 extra_settings=extra, callback=output_callback)
+        output_options = dict(
+            common, device=config["output"], channels=2, callback=output_callback,
+        )
+        if extra is not None:
+            output_options["extra_settings"] = extra
+        stream = sd.OutputStream(**output_options)
     try:
         stream.start()
         buffers = ({"input_host_buffer_frames": host_buffer_frames(stream.input).get("input_host_buffer_frames"),
@@ -152,8 +187,16 @@ def main():
     parser.add_argument("--duration", type=float, default=1.0)
     parser.add_argument("--split-only", action="store_true")
     parser.add_argument("--native-only", action="store_true", help="Probe only the current native shared monitor")
-    parser.add_argument("--buffer-size", type=int, choices=(64, 128, 256, 512, 1024, 2048), default=64)
+    parser.add_argument("--input-exclusive", action="store_true",
+                        help="With --native-only, probe production exclusive-capture/shared-render mode")
+    parser.add_argument(
+        "--buffer-size", type=int,
+        choices=(16, 32, 64, 128, 256, 512, 1024, 2048), default=16,
+    )
     parser.add_argument("--dsp", action="store_true", help="Run normal microphone DSP, still output only silence")
+    parser.add_argument("--effects-stress", action="store_true",
+                        help="Run every microphone effect at a demanding setting; output remains silent")
+    parser.add_argument("--raw", action="store_true", help="Exercise native dry bypass at zero gain")
     args = parser.parse_args()
     if args.case:
         config = json.loads(args.case)
@@ -175,8 +218,14 @@ def main():
     for mode in (("shared",) if args.native_only else ("exclusive",) if args.split_only else ("shared", "exclusive")):
         for kind in (("native",) if args.native_only else ("split",) if args.split_only else ("duplex", "input", "output")):
             for blocksize in ((args.buffer_size,) if args.native_only else (128, 256) if args.split_only else (128, 0)):
+                effects = ({
+                    "volume": 2.0, "reverb": 1.0, "echo": 1.0, "delay": 1.0,
+                    "noise_suppression": 1.0, "octave": -0.5,
+                } if args.effects_stress else None)
                 config = dict(input=input_id, output=output_id, rate=rate, mode=mode, kind=kind,
-                              blocksize=blocksize, latency=128 / rate, duration=max(.3, min(args.duration, 30)), dsp=args.dsp)
+                              blocksize=blocksize, latency=128 / rate, duration=max(.3, min(args.duration, 30)),
+                              dsp=args.dsp or args.effects_stress, raw=args.raw,
+                              input_exclusive=args.input_exclusive, effects=effects)
                 try:
                     result = subprocess.run([sys.executable, __file__, "--case", json.dumps(config)],
                                             capture_output=True, text=True, timeout=config["duration"] + 12,

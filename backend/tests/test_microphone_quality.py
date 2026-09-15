@@ -1,6 +1,7 @@
 import math
 
 import numpy as np
+import pytest
 
 from app.services.microphone_quality import (
     MonitorEffectsChain,
@@ -171,6 +172,32 @@ def test_pitch_shifter_effect_window_keeps_algorithmic_monitor_latency_below_8ms
     # the live input.  Leave margin inside the 10-16 ms end-to-end target for
     # capture/render scheduling and the rest of the realtime DSP chain.
     assert shifter._buffer_len / 48_000 / 2 <= 0.008
+
+
+@pytest.mark.parametrize("sample_rate", [16_000, 44_100, 48_000])
+def test_pitch_shifter_reports_conservative_algorithmic_latency(sample_rate):
+    shifter = RealtimePitchShifter(sample_rate)
+
+    assert shifter.latency_ms(0.0) == 0.0
+    assert shifter.latency_ms(0.004) == 0.0
+    assert shifter.latency_ms(-0.5) == pytest.approx(6.0, abs=0.07)
+    assert shifter.latency_ms(0.5) == pytest.approx(6.0, abs=0.07)
+
+
+@pytest.mark.parametrize("sample_rate", [16_000, 48_000])
+@pytest.mark.parametrize("octave", [-0.5, 0.5])
+def test_pitch_shifter_audible_impulse_arrives_within_4_5ms(sample_rate, octave):
+    shifter = RealtimePitchShifter(sample_rate)
+    impulse = np.zeros(int(sample_rate * 0.04), dtype=np.float32)
+    impulse[0] = 1.0
+    output = np.concatenate([
+        shifter.process(impulse[offset:offset + 64], octave)
+        for offset in range(0, len(impulse), 64)
+    ])
+
+    peak = int(np.argmax(np.abs(output)))
+    assert np.max(np.abs(output)) > 0.1
+    assert peak / sample_rate <= 0.0045
 
 
 def test_pitch_shifter_accepts_both_octave_directions_and_keeps_block_shape():

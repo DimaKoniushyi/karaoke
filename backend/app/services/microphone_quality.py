@@ -98,17 +98,35 @@ class StudioMicrophoneProcessor:
 class RealtimePitchShifter:
     """Streaming pitch shift with a true zero-latency neutral bypass."""
 
-    _WINDOW_SEC = 0.012
+    # A 12-ms history made downward shifts peak about 8.5 ms behind live
+    # capture. Six milliseconds keeps the dual-head overlap while bounding
+    # the measured audible peak to roughly 4.25 ms at both 16 and 48 kHz.
+    _WINDOW_SEC = 0.006
 
     def __init__(self, sample_rate: float):
+        self._sample_rate = max(8_000.0, float(sample_rate))
         self._buffer_len = max(
             96,
-            int(round(max(8_000.0, float(sample_rate)) * self._WINDOW_SEC)),
+            int(round(self._sample_rate * self._WINDOW_SEC)),
         )
         self._buffer = np.zeros(self._buffer_len, dtype=np.float32)
         self._write_pos = 0
         self._phase = 0.0
         self._previous_octave = 0.0
+
+    def latency_ms(self, octave: float) -> float:
+        """Return a conservative delay bound for the locally heard signal.
+
+        The neutral branch is a true reference-preserving bypass.  An active
+        dual-head shift reads from the history ring, so driver timestamps for
+        the current output buffer alone cannot see this algorithmic history.
+        Report the complete history window rather than the signal-dependent
+        impulse peak; the UI must not advertise a best-case latency.
+        """
+        octave = max(-1.0, min(1.0, float(octave)))
+        if abs(octave) < 0.005:
+            return 0.0
+        return self._buffer_len * 1000.0 / self._sample_rate
 
     def process(self, samples: np.ndarray, octave: float) -> np.ndarray:
         octave = max(-1.0, min(1.0, float(octave)))

@@ -26,7 +26,7 @@ TIMING_FIELDS = ("capture_delivery_ms", "program_residence_ms", "queue_residence
 class Statistics(ct.Structure):
     _fields_ = [(name, ct.c_uint64) for name in (
         "captured_frames", "rendered_frames", "dropped_frames", "underruns", "discontinuities", "queued_frames"
-    )] + [(name, ct.c_double) for name in ("stream_latency_ms", *TIMING_FIELDS)]
+    )] + [(name, ct.c_double) for name in ("stream_latency_ms", *TIMING_FIELDS, "resample_ratio")]
 
 
 Process = ct.CFUNCTYPE(ct.c_int, ct.POINTER(ct.c_float), ct.POINTER(ct.c_float), ct.c_uint32)
@@ -50,7 +50,7 @@ def load_library():
     except AttributeError as error:
         raise RuntimeError("Native WASAPI library is outdated; rebuild the native audio components") from error
     version.argtypes, version.restype = [], ct.c_uint32
-    if version() != 6:
+    if version() != 7:
         raise RuntimeError("Native WASAPI library version mismatch; rebuild the native audio components")
     opening = [ct.c_wchar_p, ct.c_wchar_p, ct.c_wchar_p, ct.c_uint32, ct.c_float, ct.c_uint32,
                ct.POINTER(Info), ct.c_char_p, ct.c_uint32]
@@ -65,6 +65,26 @@ def load_library():
 
 
 class NativeWasapiStream:
+    @classmethod
+    def probe(cls, options):
+        """Read endpoint periods without creating or starting a monitor stream."""
+        dll = load_library()
+        info = Info()
+        error = ct.create_string_buffer(1024)
+        success = dll.wm_probe(
+            options["input_device_name"], options["output_device_name"],
+            options.get("virtual_output_device_name", ""), options["blocksize"],
+            float(options.get("gain", 1.0)), 1 if options.get("input_exclusive") else 0,
+            ct.byref(info), error, len(error),
+        )
+        if not success:
+            raise RuntimeError(
+                error.value.decode("utf-8", errors="replace") or "Native WASAPI probe failed"
+            )
+        probe = cls.__new__(cls)
+        probe.info = info
+        return probe.diagnostics()
+
     def __init__(self, options, statistics):
         self.dll = load_library()
         self.info, self.stats = Info(), Statistics()
@@ -142,6 +162,11 @@ class NativeWasapiStream:
         )
         self.statistics.update({name: round(value, 3) if math.isfinite(value) and value >= 0 else None
                                 for name in TIMING_FIELDS for value in (getattr(self.stats, name),)})
+        self.statistics["resample_ratio"] = (
+            self.stats.resample_ratio
+            if math.isfinite(self.stats.resample_ratio) and self.stats.resample_ratio > 0
+            else None
+        )
 
     def diagnostics(self):
         input_rate = self.info.sample_rate
@@ -163,7 +188,7 @@ class NativeWasapiStream:
             "engine-period-locked"
             if period_locked and minimum_ms is not None and negotiated_ms is not None and negotiated_ms > minimum_ms
             else "driver-period"
-            if minimum_ms is not None and minimum_ms > 15
+            if minimum_ms is not None and minimum_ms > 16
             else "shared-low-latency-capable"
             if minimum_ms is not None
             else "unknown"

@@ -204,6 +204,36 @@ def _audio_callback(gain: float, sample_rate: float = 44_100, statistics=None, r
     quality = StudioMicrophoneProcessor(sample_rate, 1)
     pitch = RealtimePitchShifter(sample_rate)
     effects = MonitorEffectsChain(sample_rate)
+    # Prime every stateful/allocation-heavy DSP stage before the realtime
+    # device thread starts.  On shared WASAPI a cold first callback can miss
+    # the initial render phase and permanently leave the capture-to-render
+    # queue one full engine quantum deeper (10 ms on common USB endpoints).
+    # This is deliberately not routed through ``callback``: warm-up silence
+    # must neither become a fake callback/latency sample nor be sent to a room
+    # relay.  Eight 10-ms blocks proved sufficient to initialize the current
+    # filters, FFT state and delay buffers while adding only bounded startup
+    # work outside the realtime thread.
+    initial_params = _live_params
+    if not (
+        initial_params.get("dry_monitor", 0.0) >= 0.5 and relay is None
+    ):
+        warm_frames = max(1, int(round(float(sample_rate) * 0.010)))
+        warm_input = np.zeros((warm_frames, 1), dtype=np.float32)
+        for _ in range(8):
+            warm_processed = quality.process(
+                warm_input,
+                initial_params.get("volume", gain),
+                initial_params.get("noise_suppression", 0.35),
+            )[:, 0]
+            warm_dry = pitch.process(
+                warm_processed, initial_params.get("octave", 0.0)
+            )
+            effects.process(
+                warm_dry,
+                initial_params.get("reverb", 0.0),
+                initial_params.get("echo", 0.0),
+                initial_params.get("delay", 0.0),
+            )
     # RMS/peak/real-latency are read by the UI at most a few times a second
     # (Settings polls monitor status every 750ms); computing them on every
     # single audio block (hundreds of times a second at a small buffer) is
@@ -254,6 +284,15 @@ def _audio_callback(gain: float, sample_rate: float = 44_100, statistics=None, r
                 np.clip(indata[:, 0] * live_gain, -1.0, 1.0).astype(np.float32) if dry_monitor else processed
             )
             level_source = processed
+        # ADC/DAC and native audio-clock timestamps describe when the current
+        # callback's buffers travel through the driver.  They cannot observe
+        # that an active pitch shifter deliberately reads older samples from
+        # its history.  Keep that delay separate so consumers can add it once;
+        # the locally heard raw path has no such history even when room relay
+        # processing still runs in parallel.
+        statistics["effect_latency_ms"] = (
+            0.0 if dry_monitor else round(pitch.latency_ms(octave), 3)
+        )
         for channel in range(outdata.shape[1]): outdata[:, channel] = monitor_output
         if compute_started - level_state["reported_at"] >= _LEVEL_INTERVAL_SEC:
             level_state["reported_at"] = compute_started
@@ -300,7 +339,7 @@ def _pump_reports(stream, chosen_engine: str, failed: threading.Event, statistic
             else _level
         )
         reported_statistics = (
-            {**statistics, "dsp_compute_ms": None}
+            {**statistics, "dsp_compute_ms": None, "effect_latency_ms": 0.0}
             if raw_engaged
             else statistics
         )

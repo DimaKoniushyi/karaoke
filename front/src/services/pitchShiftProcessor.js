@@ -8,10 +8,11 @@ class AdVoicePitchShiftProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     // Keep the browser room fallback aligned with the native/Python monitor:
-    // the two overlap-add heads contribute about half of this 12 ms history
-    // as audible latency. Derive frames from the actual AudioWorklet rate
-    // instead of assuming 48 kHz.
-    this.bufferLength = Math.max(96, Math.round(sampleRate * 0.012));
+    // the two overlap-add heads contribute about 70% of this 6 ms history at
+    // the worst supported shift (measured by the native impulse regression).
+    // Derive frames from the actual AudioWorklet rate instead of assuming
+    // 48 kHz, and keep the fallback inside the same latency budget.
+    this.bufferLength = Math.max(96, Math.round(sampleRate * 0.006));
     this.buffers = [];
     this.writeIndex = 0;
     this.phase = 0;

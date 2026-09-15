@@ -537,6 +537,7 @@ def test_native_latency_breakdown_is_logged_once_per_connection(control, caplog)
         "capture_delivery_ms": 43.2, "program_residence_ms": 0.4,
         "queue_residence_ms": 0.1, "output_clock_lead_ms": 25.1,
         "render_padding_ms": 3.0, "dsp_compute_ms": 0.2,
+        "effect_latency_ms": 6.0, "resample_ratio": 0.9998,
     }
     with caplog.at_level("INFO", logger="app.services.monitor_control"):
         control.event(control.token, level)
@@ -545,8 +546,11 @@ def test_native_latency_breakdown_is_logged_once_per_connection(control, caplog)
     assert len(records) == 1
     assert "stream_ms=68.879" in records[0]
     assert "capture_ms=43.2" in records[0]
+    assert "effect_ms=6.0" in records[0]
     assert "input_period=480@48000" in records[0]
     assert "output_period=144@48000" in records[0]
+    assert control.snapshot()["effect_latency_ms"] == 6.0
+    assert control.snapshot()["resample_ratio"] == 0.9998
 
 
 def test_hybrid_wasapi_retains_raw_flags_and_logs_its_latency_breakdown(control, caplog):

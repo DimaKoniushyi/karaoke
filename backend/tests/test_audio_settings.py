@@ -45,6 +45,13 @@ def settings(**changes):
     return models.AudioSettings(**values)
 
 
+def test_new_audio_profile_defaults_to_the_verified_low_latency_buffer():
+    # Existing saved choices remain untouched; only a newly created profile
+    # starts at the smallest value validated by the real shared-WASAPI dry
+    # and all-effects probes.
+    assert models.AudioSettings.__table__.c.buffer_size.default.arg == 16
+
+
 def test_settings_are_loaded_or_created(monkeypatch):
     database, existing = Mock(), settings()
     database.get.return_value = existing
@@ -296,11 +303,10 @@ def test_configure_monitoring_routes_auto_and_asio(monkeypatch):
                 "octave": 0.0,
                 "noise_suppression": 0.35,
                 "dry_monitor": 0.0,
-            "wasapi_mode": "shared",
-            "native_shared": True,
-            "input_exclusive": True,
-            "input_device_name": "Selected microphone",
-            "output_device_name": "Selected speakers",
+                "wasapi_mode": "shared",
+                "native_shared": True,
+                "input_device_name": "Selected microphone",
+                "output_device_name": "Selected speakers",
     }
 
     monkeypatch.setattr(audio_service, "_monitor_effects_disabled", True)
@@ -450,7 +456,7 @@ def test_asio_channel_base_follows_the_selected_windows_endpoint_pair(endpoint, 
     assert audio_service._asio_channel_base(endpoint) == expected
 
 
-def test_windows_driver_uses_only_a_coexistence_verified_wdmks_fast_path(monkeypatch):
+def test_windows_driver_does_not_autoselect_non_shared_fast_paths(monkeypatch):
     from app.services import recording_service
 
     current = settings(
@@ -476,18 +482,124 @@ def test_windows_driver_uses_only_a_coexistence_verified_wdmks_fast_path(monkeyp
     audio_service.configure_monitoring(current)
 
     automatic.assert_not_called()
-    wdmks.assert_called_once_with(current, devices=devices)
-    shared.assert_not_called()
+    wdmks.assert_not_called()
+    shared.assert_called_once_with(
+        current, driver="auto", relay_needed=False, devices=devices
+    )
 
 
-def test_windows_driver_tries_full_duplex_wdmks_before_hybrid_wasapi(monkeypatch):
-    """A capture-only fast path still leaves the slow shared render in series.
+def test_windows_driver_prefers_verified_low_latency_fully_shared_before_fast_paths(monkeypatch):
+    from app.services import recording_service
 
-    A verified WDM-KS duplex stream can remove both Windows engine legs, so it
-    must get first refusal.  The hybrid exclusive-capture/shared-render path is
-    the fallback when the selected consumer pins cannot coexist with normal
-    application playback.
-    """
+    current = settings(audio_driver="auto", monitoring_enabled=True)
+    devices = [{"name": "placeholder"}]
+    order = []
+    monkeypatch.setattr(recording_service, "apply_monitor_settings", lambda *_: False)
+    monkeypatch.setattr(audio_service, "_AUDIO_BACKEND_AVAILABLE", True)
+    monkeypatch.setattr(audio_service.sd, "query_devices", Mock(return_value=devices))
+    monkeypatch.setattr(
+        audio_service,
+        "_try_native_low_latency_shared_monitor",
+        lambda *_args, **_kwargs: order.append("shared") or True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        audio_service,
+        "_try_automatic_wdmks_monitor",
+        lambda *_args, **_kwargs: order.append("wdmks") or True,
+    )
+    monkeypatch.setattr(
+        audio_service,
+        "_try_native_input_exclusive_monitor",
+        lambda *_args, **_kwargs: order.append("hybrid") or True,
+    )
+
+    audio_service.configure_monitoring(current)
+
+    assert order == ["shared"]
+
+
+def test_windows_driver_never_silently_switches_from_shared_wasapi_to_exclusive_transports(
+    monkeypatch,
+):
+    """The UI's Windows Driver mode remains a coexistence-safe shared contract."""
+    from app.services import recording_service
+
+    current = settings(audio_driver="auto", monitoring_enabled=True)
+    devices = [{"name": "placeholder"}]
+    monkeypatch.setattr(recording_service, "apply_monitor_settings", lambda *_: False)
+    monkeypatch.setattr(audio_service, "_AUDIO_BACKEND_AVAILABLE", True)
+    monkeypatch.setattr(audio_service.sd, "query_devices", Mock(return_value=devices))
+    monkeypatch.setattr(
+        audio_service, "_try_native_low_latency_shared_monitor", Mock(return_value=False)
+    )
+    wdmks = Mock(return_value=True)
+    hybrid = Mock(return_value=True)
+    shared = Mock()
+    monkeypatch.setattr(audio_service, "_try_automatic_wdmks_monitor", wdmks)
+    monkeypatch.setattr(audio_service, "_try_native_input_exclusive_monitor", hybrid)
+    monkeypatch.setattr(audio_service, "_start_shared_monitor", shared)
+
+    audio_service.configure_monitoring(current)
+
+    wdmks.assert_not_called()
+    hybrid.assert_not_called()
+    shared.assert_called_once_with(
+        current, driver="auto", relay_needed=False, devices=devices
+    )
+
+
+@pytest.mark.parametrize(("reported_ms", "expected"), [(13.0, True), (20.0, False)])
+def test_low_latency_shared_fast_path_requires_driver_period_at_most_16ms(
+    monkeypatch, reported_ms, expected
+):
+    from app.services import native_wasapi
+
+    current = settings(audio_driver="auto", monitoring_enabled=True)
+    probe = Mock(return_value={"minimum_period_latency_ms": reported_ms})
+    monkeypatch.setattr(native_wasapi.NativeWasapiStream, "probe", probe)
+    monkeypatch.setattr(
+        audio_service,
+        "_windows_endpoint_names",
+        Mock(return_value=("Selected microphone", "Selected speakers")),
+    )
+    start = Mock()
+    publish = Mock()
+    monkeypatch.setattr(audio_service, "_start_shared_monitor", start)
+    monkeypatch.setattr(audio_service._monitor_control, "publish", publish)
+    monkeypatch.setattr(
+        audio_service._monitor_control,
+        "snapshot",
+        Mock(return_value={"negotiated_period_latency_ms": reported_ms}),
+    )
+
+    result = audio_service._try_native_low_latency_shared_monitor(
+        current, devices=[{"name": "placeholder"}]
+    )
+
+    assert result is expected
+    probe.assert_called_once_with({
+        "input_device_name": "Selected microphone",
+        "output_device_name": "Selected speakers",
+        "blocksize": current.buffer_size,
+        "gain": 0.0,
+    })
+    if expected:
+        start.assert_called_once_with(
+            current, driver="auto", devices=[{"name": "placeholder"}], input_exclusive=False
+        )
+        publish.assert_called_once_with(
+            transport_selection="native-fully-shared-low-latency",
+            requested_mode="Windows Driver",
+            input_exclusive=False,
+            output_exclusive=False,
+        )
+    else:
+        start.assert_not_called()
+        publish.assert_not_called()
+
+
+def test_windows_driver_slow_endpoint_still_uses_shared_wasapi(monkeypatch):
     from app.services import recording_service
 
     current = settings(audio_driver="auto", monitoring_enabled=True)
@@ -506,10 +618,15 @@ def test_windows_driver_tries_full_duplex_wdmks_before_hybrid_wasapi(monkeypatch
         "_try_native_input_exclusive_monitor",
         lambda *_args, **_kwargs: order.append("hybrid-wasapi") or True,
     )
+    monkeypatch.setattr(
+        audio_service,
+        "_start_shared_monitor",
+        lambda *_args, **_kwargs: order.append("shared"),
+    )
 
     audio_service.configure_monitoring(current)
 
-    assert order == ["wdmks"]
+    assert order == ["shared"]
 
 
 def test_windows_driver_native_fast_path_exclusively_captures_but_keeps_output_shared(
@@ -606,9 +723,7 @@ def test_windows_driver_falls_back_to_shared_when_no_safe_asio_transport_exists(
 
     audio_service.configure_monitoring(current)
 
-    audio_service._try_automatic_wdmks_monitor.assert_called_once_with(
-        current, devices=devices
-    )
+    audio_service._try_automatic_wdmks_monitor.assert_not_called()
     shared.assert_called_once_with(
         current, driver="auto", relay_needed=False, devices=devices
     )

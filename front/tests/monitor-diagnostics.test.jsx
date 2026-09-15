@@ -33,7 +33,6 @@ const audio = (status = {}, rest = {}) => ({
 test("starting is not displayed as working audio or zero latency", () => {
   render(<AudioFields audio={audio({ state: "starting" })} />);
   expect(screen.getByText("Подключаем микрофон…").getAttribute("role")).toBe("status");
-  expect(screen.getByRole("button", { name: "Повторить подключение" }).disabled).toBe(true);
   expect(screen.queryByText(/Задержка/)).toBeNull();
 });
 
@@ -98,6 +97,21 @@ test("native shared uses timestamp latency, not allocated buffer estimates", () 
   expect(screen.queryByText(/46.900/)).toBeNull();
 });
 
+test("measured monitoring latency includes active effect history", () => {
+  render(
+    <AudioFields
+      audio={audio({
+        latency_source: "wasapi-stream-report",
+        stream_latency_ms: 22.6694,
+        effect_latency_ms: 6
+      })}
+    />
+  );
+  expect(screen.getByText("Реальная задержка (микрофон → наушники): 28.669 мс").title).toContain(
+    "алгоритмическую задержку активных эффектов"
+  );
+});
+
 test.each([0, -1, null, NaN, Infinity])("invalid native clock latency stays unavailable: %s", (value) => {
   render(<AudioFields audio={audio({ latency_source: "wasapi-stream-report", stream_latency_ms: value })} />);
   expect(screen.getByText("Задержка: нет данных")).toBeTruthy();
@@ -116,11 +130,9 @@ test.each([
   expect(screen.queryByText(/0.000 мс/)).toBeNull();
 });
 
-test("retry and fixed buffer keep their existing behavior", async () => {
+test("fixed buffer keeps its existing behavior", async () => {
   const state = audio();
   render(<AudioFields audio={state} />);
-  fireEvent.click(screen.getByRole("button", { name: "Повторить подключение" }));
-  expect(state.monitor).toHaveBeenCalledWith(true);
   fireEvent.click(screen.getByRole("button", { name: "Аудиобуфер" }));
   fireEvent.click(screen.getByRole("option", { name: "256" }));
   await waitFor(() => expect(state.update).toHaveBeenCalledWith("buffer_size", 256));

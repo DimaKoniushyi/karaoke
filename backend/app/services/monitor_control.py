@@ -11,10 +11,10 @@ logger = logging.getLogger(__name__)
 _STREAM_STATISTICS = ("callback_frames", "callback_count", "glitch_count", "queue_frames",
                       "queue_capacity_frames", "queue_underruns", "queue_dropped_frames",
                       "queue_contentions", "queue_ms", "queue_capacity_ms", "queue_underruns_after_start",
-                      "queue_wait_ms", "dsp_compute_ms", "stream_latency_ms", "real_latency_ms",
+                      "queue_wait_ms", "dsp_compute_ms", "effect_latency_ms", "stream_latency_ms", "real_latency_ms",
                       "capture_delivery_ms", "program_residence_ms", "queue_residence_ms", "output_clock_lead_ms",
                       "render_submit_ms", "render_padding_ms", "capture_processing_ms", "event_wait_ms", "pump_gap_ms",
-                      "captured_frames", "rendered_frames")
+                      "captured_frames", "rendered_frames", "resample_ratio")
 _DIAGNOSTIC_COUNTERS = (
     "callback_count", "glitch_count", "queue_underruns", "queue_dropped_frames",
     "captured_frames", "rendered_frames",
@@ -138,11 +138,12 @@ class MonitorControl:
                         stream_latency > 0 and now - self.latency_breakdown_logged_at >= 5.0):
                     logger.info(
                         "WASAPI latency breakdown: stream_ms=%s capture_ms=%s program_ms=%s "
-                        "queue_ms=%s output_lead_ms=%s padding_ms=%s dsp_ms=%s "
+                        "queue_ms=%s output_lead_ms=%s padding_ms=%s dsp_ms=%s effect_ms=%s "
                         "input_period=%s@%s output_period=%s@%s",
                         stream_latency, message.get("capture_delivery_ms"), message.get("program_residence_ms"),
                         message.get("queue_residence_ms"), message.get("output_clock_lead_ms"),
                         message.get("render_padding_ms"), message.get("dsp_compute_ms"),
+                        message.get("effect_latency_ms"),
                         self.status.get("input_period_frames"), self.status.get("sample_rate"),
                         self.status.get("output_period_frames"), self.status.get("output_sample_rate"),
                     )

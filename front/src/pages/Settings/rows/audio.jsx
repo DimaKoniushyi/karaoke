@@ -18,9 +18,10 @@ export default function audioRows({ settings: { audio }, run, tr = translateSave
   // timestamped via inputBufferAdcTime/outputBufferDacTime) and
   // stream_latency_ms for the native WASAPI engine (timestamped via the
   // device's own audio clock in monitor.cpp's render_ready()) -- both cover
-  // the same capture-to-playback path including DSP and the program's
-  // queue, so neither is a coarser "estimate" than the other.
-  const measuredMs =
+  // the same driver-visible capture-to-playback path. An effect that reads
+  // signal history (currently pitch shifting) adds algorithmic delay which
+  // driver timestamps cannot observe, so add its separately reported bound.
+  const transportMeasuredMs =
     Number.isFinite(status?.real_latency_ms) && status.real_latency_ms > 0
       ? status.real_latency_ms
       : status?.latency_source === "wasapi-stream-report" &&
@@ -28,6 +29,12 @@ export default function audioRows({ settings: { audio }, run, tr = translateSave
           status.stream_latency_ms > 0
         ? status.stream_latency_ms
         : null;
+  const effectLatencyMs =
+    Number.isFinite(status?.effect_latency_ms) && status.effect_latency_ms >= 0
+      ? status.effect_latency_ms
+      : 0;
+  const measuredMs =
+    transportMeasuredMs == null ? null : transportMeasuredMs + effectLatencyMs;
   const measured = measuredMs != null;
   const latency = measured
     ? tr("settings.audio.monitor.compact.measured", { 0: measuredMs.toFixed(3) })

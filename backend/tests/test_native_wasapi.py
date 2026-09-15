@@ -64,6 +64,38 @@ def test_native_stream_reports_real_format_and_periods_without_changing_settings
     dll.wm_close.assert_called_once_with(42)
 
 
+def test_native_period_probe_does_not_open_a_working_audio_stream(monkeypatch):
+    library = SimpleNamespace(wm_open=Mock())
+
+    def probe_stream(
+        input_name, output_name, _mirror_name, blocksize, _gain,
+        input_exclusive, info, _error, _size,
+    ):
+        assert (input_name, output_name, blocksize, input_exclusive) == (
+            "Chosen microphone", "Chosen speakers", 64, 0,
+        )
+        for name, value in {
+            "sample_rate": 48_000,
+            "output_sample_rate": 48_000,
+            "blocksize": 64,
+            "input_period": 288,
+            "output_period": 480,
+            "input_min_period": 288,
+            "output_min_period": 480,
+        }.items():
+            setattr(info._obj, name, value)
+        return 1
+
+    library.wm_probe = Mock(side_effect=probe_stream)
+    monkeypatch.setattr(native_wasapi, "load_library", lambda: library)
+
+    info = native_wasapi.NativeWasapiStream.probe(options())
+
+    assert info["minimum_period_latency_ms"] == pytest.approx(16.0)
+    library.wm_probe.assert_called_once()
+    library.wm_open.assert_not_called()
+
+
 def test_native_stream_distinguishes_driver_minimum_from_an_engine_period_locked_by_another_app(dll):
     stream = native_wasapi.NativeWasapiStream(options(), {})
     try:
@@ -81,6 +113,21 @@ def test_native_stream_distinguishes_driver_minimum_from_an_engine_period_locked
         assert info["minimum_period_latency_ms"] == pytest.approx(96 / 44.1 + 48 / 48)
         assert info["negotiated_period_latency_ms"] == pytest.approx(441 / 44.1 + 144 / 48)
         assert info["latency_limit"] == "engine-period-locked"
+    finally:
+        stream.close()
+
+
+def test_native_stream_classifies_exactly_16ms_shared_period_as_capable(dll):
+    stream = native_wasapi.NativeWasapiStream(options(), {})
+    try:
+        # 8 ms capture + 8 ms render at their respective sample rates.
+        stream.info.input_min_period = 352
+        stream.info.output_min_period = 384
+        info = stream.diagnostics()
+
+        assert info["minimum_period_latency_ms"] == pytest.approx(352 / 44.1 + 384 / 48)
+        assert info["minimum_period_latency_ms"] <= 16.0
+        assert info["latency_limit"] == "shared-low-latency-capable"
     finally:
         stream.close()
 
@@ -161,6 +208,16 @@ def test_native_engine_uses_exclusive_mode_only_for_requested_capture_endpoint()
     assert "input_exclusive" in source
 
 
+def test_native_shared_engine_primes_only_the_requested_small_queue_reserve():
+    source = (
+        native_wasapi.library_path().parents[3]
+        / "backend/engines/wasapi/monitor.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "queue->prime_silence();" in source
+    assert "queue->reset(!input.exclusive);" in source
+
+
 def test_native_endpoint_lookup_accepts_portaudio_decorated_windows_names():
     source = (
         native_wasapi.library_path().parents[3]
@@ -209,10 +266,12 @@ def test_native_clock_and_bounded_queue_statistics_are_propagated(dll):
         stream.stats.stream_latency_ms = 22.6694
         stream.stats.queued_frames = 441
         stream.stats.dropped_frames = 3
+        stream.stats.resample_ratio = 0.33341
         stream.pump()
         assert stats["stream_latency_ms"] == 22.669
         assert stats["queue_ms"] == 10
         assert stats["queue_dropped_frames"] == 3
+        assert stats["resample_ratio"] == pytest.approx(0.33341)
     finally:
         stream.close()
 
@@ -411,6 +470,42 @@ def test_native_render_probes_game_chat_for_low_latency_without_ducking_other_au
     assert "try_candidate(AudioCategory_GameChat, AUDCLNT_STREAMOPTIONS_RAW);" in render_branch
 
 
+def test_native_render_prefers_realtime_non_ducking_category_on_equal_period():
+    source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
+    render_branch = source[source.index("} else {"):source.index("if (!client) throw")]
+
+    # stable_sort preserves probe order when period and RAW mode tie. Voice
+    # monitoring is a realtime chat stream, so GameChat must win that tie; it
+    # receives the communications latency policy without attenuating music.
+    assert render_branch.index(
+        "try_candidate(AudioCategory_GameChat, AUDCLNT_STREAMOPTIONS_RAW);"
+    ) < render_branch.index("try_candidate(AudioCategory_Media, AUDCLNT_STREAMOPTIONS_RAW);")
+    assert render_branch.index(
+        "try_candidate(AudioCategory_GameChat, static_cast<AUDCLNT_STREAMOPTIONS>(0));"
+    ) < render_branch.index(
+        "try_candidate(AudioCategory_Media, static_cast<AUDCLNT_STREAMOPTIONS>(0));"
+    )
+
+
+def test_native_capture_prefers_communications_policy_on_equal_period():
+    source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
+    start = source.index("if (flow == eCapture)")
+    capture_branch = source[start:source.index("} else {", start)]
+
+    # Equal engine periods do not imply equal endpoint policy. Monitoring is a
+    # bidirectional realtime-voice scenario, for which Windows documents the
+    # Communications category as selecting the appropriate device mode and
+    # latency parameters.
+    assert capture_branch.index(
+        "try_candidate(AudioCategory_Communications, AUDCLNT_STREAMOPTIONS_RAW);"
+    ) < capture_branch.index("try_candidate(AudioCategory_Other, AUDCLNT_STREAMOPTIONS_RAW);")
+    assert capture_branch.index(
+        "try_candidate(AudioCategory_Communications, static_cast<AUDCLNT_STREAMOPTIONS>(0));"
+    ) < capture_branch.index(
+        "try_candidate(AudioCategory_Other, static_cast<AUDCLNT_STREAMOPTIONS>(0));"
+    )
+
+
 def test_native_render_probes_neutral_and_realtime_categories_before_accepting_legacy_period():
     source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
     render_branch = source[source.index("} else {"):source.index("if (!client) throw")]
@@ -434,10 +529,54 @@ def test_native_wasapi_pump_requests_critical_pro_audio_mmcss_priority():
     assert registered < critical < capture_start
 
 
+def test_native_wasapi_starts_render_clock_before_capture_delivery():
+    source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
+    start = source[source.index("void start(Process callback)"):source.index("void pump(uint32_t timeout)")]
+
+    # Starting shared render only after the first complete microphone packet
+    # makes that packet wait through an additional render-engine quantum.
+    # A continuously running empty render clock emits silence until capture is
+    # ready, then accepts the first real packet on the next writable quantum.
+    assert start.index("output.start();") < start.index("input.start();")
+
+
+def test_native_wasapi_has_a_bounded_capture_phase_probe_for_hardware_diagnostics():
+    """A silent probe can scan endpoint phase while normal startup stays unchanged."""
+    source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
+
+    assert "ADVOICE_WASAPI_CAPTURE_START_DELAY_US" in source
+    assert "capture_start_delay_us" in source
+    assert "std::min<uint32_t>(requested, 20000)" in source
+
+
 def test_native_wasapi_drift_target_is_the_requested_low_latency_block_not_a_full_device_period():
     source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
     assert "std::min<size_t>(blocksize" in source
-    assert "MonitorBuffer>(capacity, ratio, safety_frames)" in source
+    assert "capacity, ratio, safety_frames, calibration_output_frames" in source
+    assert "drift_calibration_output_frames(" in source
+
+
+def test_native_wasapi_phase_reserve_converts_render_period_to_capture_rate():
+    source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
+    queue_target = source[source.index("monitor_queue_target("):source.index(");", source.index("monitor_queue_target("))]
+
+    # A 48-frame/16-kHz capture period and 480-frame/48-kHz render period are
+    # 3 ms and 10 ms, not 48 vs 480 frames on one clock. The render quantum is
+    # 160 frames in the capture timeline before gcd/phase calculations.
+    assert "render_period_at_capture_rate" in queue_target
+    assert "render_period_at_capture_rate = UINT32(std::ceil(output.period * ratio))" in source
+
+
+def test_native_render_prefers_rtc_latency_policy_without_ducking_music():
+    source = (Path(__file__).parents[1] / "engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
+    render_branch = source[source.index("} else {", source.index("if (flow == eCapture)")):
+                           source.index("// Query every option first")]
+
+    # Communications is Windows' real-time voice policy. When its advertised
+    # period ties GameChat, it must get first refusal; the session explicitly
+    # opts out of ducking so this cannot attenuate karaoke/radio playback.
+    assert render_branch.index("AudioCategory_Communications") < render_branch.index("AudioCategory_GameChat")
+    assert "SetDuckingPreference(TRUE)" in source
 
 
 def test_native_wasapi_render_target_never_underfills_one_shared_output_period():
@@ -450,14 +589,46 @@ def test_native_wasapi_render_target_never_underfills_one_shared_output_period()
 def test_native_wasapi_adjusts_clock_drift_only_after_capture_is_drained_on_render_event():
     source = (Path(__file__).parents[1] / "engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
     assert "const bool output_wakeup =" in source
-    adjustment = "render_ready(shared_audio::should_adjust_drift(output_wakeup, available == 0));"
+    adjustment = "const bool adjust_drift = shared_audio::should_adjust_drift("
     assert adjustment in source
     assert source.index(adjustment) > source.index(
         'check(capture->GetNextPacketSize(&available), "GetNextPacketSize");',
         source.index("for (unsigned packet = 0;"),
     )
     assert source.count("render_ready(false);") >= 2
-    assert "if (adjust_drift) queue->nudge(output.period);" in source
+    # Capture is handle zero, so WaitForMultipleObjects may keep returning it
+    # while the lower-priority render event is also signalled. Hardware clock
+    # sampling must therefore not be gated by output_wakeup/adjust_drift.
+    assert "observe_output_clock(output_starved);" in source
+    assert "if (adjust_drift) observe_output_clock(output_starved);" not in source
+    assert "queue->nudge(elapsed_frames, output_starved ? elapsed_frames : 0);" in source
+
+
+def test_native_drift_uses_correlated_device_positions_not_packet_arrival_counts():
+    source = (Path(__file__).parents[1] / "engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
+
+    # Both endpoints expose a device position correlated to Windows' common
+    # QPC timebase. Production opts out of scheduler/queue-based pitch
+    # steering and applies only the rate measured from those hardware clocks.
+    assert "&captured_position, &captured_qpc" in source
+    assert "device_clock_rate->observe_capture(captured_position, captured_qpc);" in source
+    assert "device_clock_rate->observe_output(position, qpc);" in source
+    assert "queue->prefer_device_clock();" in source
+    assert "queue->set_device_clock_rate_ratio(device_clock_rate->rate_ratio());" in source
+
+
+def test_virtual_microphone_mirror_never_preempts_physical_monitoring():
+    source = (Path(__file__).parents[1] / "engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
+    pump_start = source.index("void pump(uint32_t timeout)")
+    pump = source[pump_start:source.index("void observe_output_clock", pump_start)]
+
+    # The optional virtual endpoint is not part of what the singer hears. It
+    # must be serviced once, only after capture and the final physical-render
+    # submission, rather than adding COM calls ahead of every local packet.
+    assert pump.count("mirror_ready();") == 1
+    assert pump.index("mirror_ready();") > pump.index(
+        "const bool output_starved = render_ready(adjust_drift, submitted_since_wait);"
+    )
 
 
 def test_exclusive_capture_does_not_retain_a_capture_period_in_the_user_queue():
@@ -470,13 +641,15 @@ def test_exclusive_capture_does_not_retain_a_capture_period_in_the_user_queue():
     assert "input.exclusive ? input.period : blocksize" not in source
 
 
-def test_native_underrun_counts_only_when_render_buffer_and_queue_are_both_empty():
+def test_native_underrun_counts_only_when_render_was_not_serviced_in_this_pump():
     source = (
         native_wasapi.library_path().parents[3]
         / "backend/engines/wasapi/monitor.cpp"
     ).read_text(encoding="utf-8")
 
-    assert "if (adjust_drift && !padding && !count) ++stats.underruns;" in source
+    assert "written_frames > written_before_wait_service" in source
+    assert "render_starved(" in source
+    assert "if (fully_starved) ++stats.underruns;" in source
     assert "if (padding < target && !count) ++stats.underruns;" not in source
 
 

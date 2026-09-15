@@ -133,7 +133,10 @@ class AudioSettings(Base):
     latency_ms: Mapped[int] = mapped_column(Integer, default=50)
     audio_driver: Mapped[str] = mapped_column(String, default="auto")
     asio_driver_name: Mapped[str | None] = mapped_column(String)
-    buffer_size: Mapped[int] = mapped_column(Integer, default=64)
+    # The native shared-WASAPI path has been hardware-verified at 16 frames
+    # with both dry bypass and the complete effects chain. Keep existing saved
+    # choices, but do not add avoidable queue reserve to new installations.
+    buffer_size: Mapped[int] = mapped_column(Integer, default=16)
     monitoring_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     reverb: Mapped[float] = mapped_column(Float, default=0.0)
     echo: Mapped[float] = mapped_column(Float, default=0.0)

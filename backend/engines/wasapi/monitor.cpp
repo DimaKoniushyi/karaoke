@@ -2,6 +2,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <audioclient.h>
+#include <audiopolicy.h>
 #include <mmdeviceapi.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <ksmedia.h>
@@ -11,8 +12,10 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cwctype>
 #include <cstring>
+#include <iterator>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -44,12 +47,28 @@ struct Statistics {
     double capture_delivery_ms = -1, program_residence_ms = -1, queue_residence_ms = -1;
     double output_clock_lead_ms = -1, render_submit_ms = 0, render_padding_ms = 0;
     double capture_processing_ms = 0, event_wait_ms = 0, pump_gap_ms = 0;
+    double resample_ratio = -1;
 };
 static double monotonic_seconds() {
     static const double frequency = [] { LARGE_INTEGER value; QueryPerformanceFrequency(&value); return double(value.QuadPart); }();
     LARGE_INTEGER value;
     QueryPerformanceCounter(&value);
     return double(value.QuadPart) / frequency;
+}
+// Diagnostic-only endpoint phase scan.  A value is never supplied by the
+// product; backend/tools/probe_wasapi.py may set it in a short-lived child
+// process while output is forced to silence.  Keep it bounded so a malformed
+// environment cannot stall normal audio startup.
+static uint32_t capture_start_delay_us() {
+    wchar_t text[32]{};
+    const DWORD length = GetEnvironmentVariableW(
+        L"ADVOICE_WASAPI_CAPTURE_START_DELAY_US", text, DWORD(std::size(text)));
+    if (!length || length >= std::size(text)) return 0;
+    wchar_t* end = nullptr;
+    const unsigned long parsed = std::wcstoul(text, &end, 10);
+    if (end == text || *end != L'\0') return 0;
+    const uint32_t requested = parsed > UINT32_MAX ? UINT32_MAX : uint32_t(parsed);
+    return std::min<uint32_t>(requested, 20000);
 }
 static void check(HRESULT hr, const char* operation) {
     if (SUCCEEDED(hr)) return;
@@ -74,6 +93,20 @@ struct Handle {
     HANDLE value = nullptr;
     ~Handle() { if (value) CloseHandle(value); }
 };
+static void wait_capture_start_phase(uint32_t microseconds) {
+    if (!microseconds) return;
+    // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION is 0x2 on supported Windows 10+
+    // SDKs. Use the numeric flag so older build-tool headers can still build
+    // this diagnostic, then fall back to an ordinary waitable timer.
+    Handle timer;
+    timer.value = CreateWaitableTimerExW(nullptr, nullptr, 0x2, TIMER_ALL_ACCESS);
+    if (!timer.value) timer.value = CreateWaitableTimerW(nullptr, TRUE, nullptr);
+    if (!timer.value) return;
+    LARGE_INTEGER due{};
+    due.QuadPart = -static_cast<LONGLONG>(microseconds) * 10;
+    if (SetWaitableTimer(timer.value, &due, 0, nullptr, nullptr, FALSE))
+        WaitForSingleObject(timer.value, microseconds / 1000 + 50);
+}
 static std::wstring property_of(IMMDevice* device, const PROPERTYKEY& key) {
     ComPtr<IPropertyStore> store;
     check(device->OpenPropertyStore(STGM_READ, &store), "OpenPropertyStore");
@@ -84,8 +117,7 @@ static std::wstring property_of(IMMDevice* device, const PROPERTYKEY& key) {
     check(hr, "Get endpoint property");
     return name;
 }
-// Interface/product label used by the Windows audio endpoint property store
-// (for example "Audient iD14" or "Realtek(R) Audio").
+// Interface/product label used by the Windows audio endpoint property store.
 static const PROPERTYKEY kAudioInterfaceName = {
     {0xb3f8fa53, 0x0004, 0x438e, {0x90, 0x03, 0x51, 0xa4, 0x6e, 0x13, 0x9b, 0xfc}}, 6
 };
@@ -151,6 +183,7 @@ struct Endpoint {
     UINT32 period = 0, minimum_period = 0, buffer = 0;
     bool started = false, floating = false, raw = false, period_locked = false;
     bool exclusive = false;
+    AUDIO_STREAM_CATEGORY category = AudioCategory_Other;
     ~Endpoint() {
         if (started) client->Stop();
         client.Reset();
@@ -311,38 +344,40 @@ struct Endpoint {
         // it unconditionally can hide a lower-latency normal shared path on
         // consumer Realtek endpoints. This remains shared in either mode.
         if (flow == eCapture) {
-            // Prefer neutral Other on a tie. Speech/Communications can win
-            // when the endpoint exposes a shorter RAW period for them.
-            try_candidate(AudioCategory_Other, AUDCLNT_STREAMOPTIONS_RAW);
-            try_candidate(AudioCategory_Speech, AUDCLNT_STREAMOPTIONS_RAW);
+            // Monitoring is bidirectional realtime voice. Communications is
+            // the Windows category that selects the endpoint's matching mode
+            // and latency policy, so it wins equal-period ties. A genuinely
+            // shorter Speech/Other period still wins in stable_sort below.
             try_candidate(AudioCategory_Communications, AUDCLNT_STREAMOPTIONS_RAW);
+            try_candidate(AudioCategory_Speech, AUDCLNT_STREAMOPTIONS_RAW);
+            try_candidate(AudioCategory_Other, AUDCLNT_STREAMOPTIONS_RAW);
             // Probe normal mode too. It may advertise a genuinely shorter
             // engine quantum than RAW on consumer endpoints.
-            try_candidate(AudioCategory_Other, static_cast<AUDCLNT_STREAMOPTIONS>(0));
-            try_candidate(AudioCategory_Speech, static_cast<AUDCLNT_STREAMOPTIONS>(0));
             try_candidate(AudioCategory_Communications, static_cast<AUDCLNT_STREAMOPTIONS>(0));
+            try_candidate(AudioCategory_Speech, static_cast<AUDCLNT_STREAMOPTIONS>(0));
+            try_candidate(AudioCategory_Other, static_cast<AUDCLNT_STREAMOPTIONS>(0));
         } else {
-            try_candidate(AudioCategory_Media, AUDCLNT_STREAMOPTIONS_RAW);
             // Render categories are mapped to OEM-specific processing graphs.
             // Consumer Realtek drivers can leave Media on their legacy graph
             // while neutral/RTC categories expose a genuinely shorter engine
             // period. Probe them all, then select by the reported duration.
-            try_candidate(AudioCategory_Other, AUDCLNT_STREAMOPTIONS_RAW);
+            // Communications is Windows' RTC latency policy. It gets first
+            // refusal only when the measured period ties; after initialization
+            // we opt this session out of automatic ducking so karaoke/radio is
+            // not attenuated. A genuinely shorter category still wins.
             try_candidate(AudioCategory_Communications, AUDCLNT_STREAMOPTIONS_RAW);
-            // GameChat is the real-time render category that explicitly
-            // does not attenuate other streams. Some consumer drivers offer
-            // it a shorter shared period than Media; it only wins below when
-            // that is genuinely true, so equal-period devices retain Media.
             try_candidate(AudioCategory_GameChat, AUDCLNT_STREAMOPTIONS_RAW);
+            try_candidate(AudioCategory_Media, AUDCLNT_STREAMOPTIONS_RAW);
+            try_candidate(AudioCategory_Other, AUDCLNT_STREAMOPTIONS_RAW);
             try_candidate(AudioCategory_Movie, AUDCLNT_STREAMOPTIONS_RAW);
             try_candidate(AudioCategory_SoundEffects, AUDCLNT_STREAMOPTIONS_RAW);
             try_candidate(AudioCategory_GameEffects, AUDCLNT_STREAMOPTIONS_RAW);
             // Keep the same non-ducking set as a normal-mode compatibility
             // fallback for endpoints that reject RAW entirely.
-            try_candidate(AudioCategory_Media, static_cast<AUDCLNT_STREAMOPTIONS>(0));
-            try_candidate(AudioCategory_Other, static_cast<AUDCLNT_STREAMOPTIONS>(0));
             try_candidate(AudioCategory_Communications, static_cast<AUDCLNT_STREAMOPTIONS>(0));
             try_candidate(AudioCategory_GameChat, static_cast<AUDCLNT_STREAMOPTIONS>(0));
+            try_candidate(AudioCategory_Media, static_cast<AUDCLNT_STREAMOPTIONS>(0));
+            try_candidate(AudioCategory_Other, static_cast<AUDCLNT_STREAMOPTIONS>(0));
             try_candidate(AudioCategory_Movie, static_cast<AUDCLNT_STREAMOPTIONS>(0));
             try_candidate(AudioCategory_SoundEffects, static_cast<AUDCLNT_STREAMOPTIONS>(0));
             try_candidate(AudioCategory_GameEffects, static_cast<AUDCLNT_STREAMOPTIONS>(0));
@@ -363,6 +398,7 @@ struct Endpoint {
             period = candidate->period;
             minimum_period = candidate->period;
             raw = candidate->raw;
+            category = candidate->category;
         };
         bool periodicity_locked = false;
         for (auto& candidate : candidates) {
@@ -407,6 +443,16 @@ struct Endpoint {
         }
         if (!client) throw std::runtime_error("No supported low-latency shared WASAPI configuration");
         if (!initialize) return;
+        if (flow == eRender && category == AudioCategory_Communications) {
+            ComPtr<IAudioSessionControl> session;
+            ComPtr<IAudioSessionControl2> session2;
+            if (SUCCEEDED(client->GetService(IID_PPV_ARGS(&session))) &&
+                SUCCEEDED(session.As(&session2))) {
+                // TRUE means this communications session handles attenuation
+                // itself, so Windows must leave every other app/session alone.
+                session2->SetDuckingPreference(TRUE);
+            }
+        }
         event.value = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (!event.value) throw std::runtime_error("CreateEvent failed");
         check(client->SetEventHandle(event.value), "SetEventHandle");
@@ -444,8 +490,10 @@ struct Engine {
     ComPtr<IAudioCaptureClient> capture;
     ComPtr<IAudioRenderClient> render, mirror_render;
     ComPtr<IAudioClock> clock;
-    UINT64 clock_frequency = 0, written_frames = 0;
+    UINT64 clock_frequency = 0, written_frames = 0, drift_clock_position = 0;
+    bool drift_clock_ready = false;
     std::unique_ptr<shared_audio::MonitorBuffer> queue, mirror_queue;
+    std::unique_ptr<shared_audio::DeviceClockRateEstimator> device_clock_rate;
     std::vector<float> source, processed;
     Statistics stats;
     Process process = nullptr;
@@ -492,7 +540,9 @@ struct Engine {
         if (FAILED(output.client->GetService(IID_PPV_ARGS(&clock))) ||
             FAILED(clock->GetFrequency(&clock_frequency)) || !clock_frequency) clock.Reset();
         const double ratio = double(info.sample_rate) / info.output_sample_rate;
-        const size_t capacity = 2 * std::max(input.period, UINT32(std::ceil(output.period * ratio))) + blocksize * 2;
+        const auto render_period_at_capture_rate = UINT32(std::ceil(output.period * ratio));
+        const size_t capacity = shared_audio::monitor_queue_capacity(
+            blocksize, input.period, render_period_at_capture_rate);
         // The driver period is allocation/callback cadence, not a latency
         // target. On consumer drivers it is commonly 10ms even when the user
         // selected 32/64 frames. Steering clock-drift correction toward a
@@ -505,17 +555,45 @@ struct Engine {
         // then pure extra user-mode latency. Spare allocation still handles
         // occasional scheduling stalls without making them the steady state.
         const size_t queue_target = shared_audio::monitor_queue_target(
-            blocksize, input.period, input.exclusive);
+            blocksize, input.period, render_period_at_capture_rate, input.exclusive);
         const size_t safety_frames = std::max<size_t>(2, std::min<size_t>(queue_target,
             size_t(std::ceil(output.period * ratio))));
-        queue = std::make_unique<shared_audio::MonitorBuffer>(capacity, ratio, safety_frames);
+        const uint64_t calibration_output_frames = shared_audio::drift_calibration_output_frames(
+            input.period, render_period_at_capture_rate,
+            input.format->nSamplesPerSec, output.format->nSamplesPerSec);
+        queue = std::make_unique<shared_audio::MonitorBuffer>(
+            capacity, ratio, safety_frames, calibration_output_frames,
+            render_period_at_capture_rate);
+        if (clock) {
+            // Every WASAPI endpoint supplies its own device position correlated
+            // to the same Windows QPC timebase. Use those oscillator slopes
+            // for asynchronous resampling on every brand/device combination;
+            // packet arrival order is only scheduler noise and must not alter
+            // audible pitch.
+            device_clock_rate = std::make_unique<shared_audio::DeviceClockRateEstimator>(
+                info.sample_rate, info.output_sample_rate, clock_frequency);
+            queue->prefer_device_clock();
+        }
+        if (!input.exclusive) {
+            // A shared render wake may lead the matching capture wake by a
+            // fraction of a period. Seed only the user's tiny processing
+            // reserve as silence: this avoids startup starvation without
+            // waiting for (and retaining) another whole hardware packet.
+            queue->prime_silence();
+        }
         if (mirror.client) {
             const double mirror_ratio = double(info.sample_rate) / mirror.format->nSamplesPerSec;
-            const size_t mirror_capacity = 2 * std::max(input.period,
-                UINT32(std::ceil(mirror.period * mirror_ratio))) + blocksize * 2;
+            const auto mirror_period_at_capture_rate = UINT32(std::ceil(mirror.period * mirror_ratio));
+            const size_t mirror_capacity = shared_audio::monitor_queue_capacity(
+                blocksize, input.period, mirror_period_at_capture_rate);
+            const uint64_t mirror_calibration_output_frames =
+                shared_audio::drift_calibration_output_frames(
+                    input.period, mirror_period_at_capture_rate,
+                    input.format->nSamplesPerSec, mirror.format->nSamplesPerSec);
             mirror_queue = std::make_unique<shared_audio::MonitorBuffer>(
                 mirror_capacity, mirror_ratio, std::max<size_t>(2, std::min<size_t>(blocksize,
-                    size_t(std::ceil(mirror.period * mirror_ratio)))));
+                    size_t(std::ceil(mirror.period * mirror_ratio)))),
+                mirror_calibration_output_frames, mirror_period_at_capture_rate);
         }
         // Capture cannot expose any part of a packet before the endpoint's
         // physical period completes. Process that already-complete packet in
@@ -533,8 +611,13 @@ struct Engine {
         // its highest realtime priority by itself. Keep only this pump thread
         // critical so renderer/AI load cannot make it miss an endpoint event.
         if (scheduling) AvSetMmThreadPriority(scheduling, AVRT_PRIORITY_CRITICAL);
-        // Start playback with the first real packet, not a period of silence
-        // queued ahead of the microphone. Capture alone drives startup events.
+        // Start the shared render clock empty before capture. WASAPI renders
+        // silence while its buffer is empty; when the first complete capture
+        // packet arrives it can therefore be submitted to an already-running
+        // endpoint instead of waiting through an extra renderer startup
+        // quantum. No silent frames are inserted into our timestamped queue.
+        output.start();
+        wait_capture_start_phase(capture_start_delay_us());
         input.start();
     }
     void pump(uint32_t timeout) {
@@ -547,11 +630,11 @@ struct Engine {
             throw std::runtime_error("Audio event wait failed");
         const bool output_wakeup = awakened == WAIT_OBJECT_0 + 1;
         stats.event_wait_ms = (monotonic_seconds() - entering) * 1000;
+        const UINT64 written_before_wait_service = written_frames;
         // Submit anything already available immediately, but do not sample
         // clock drift until the capture packet that woke at the same time has
         // also been drained below.
         render_ready(false);
-        mirror_ready();
         UINT32 available = 0;
         check(capture->GetNextPacketSize(&available), "GetNextPacketSize");
         // Drain capture after either event, handing each completed packet to
@@ -560,8 +643,9 @@ struct Engine {
             BYTE* data = nullptr;
             UINT32 frames = 0;
             DWORD flags = 0;
-            UINT64 captured_qpc = 0;
-            check(capture->GetBuffer(&data, &frames, &flags, nullptr, &captured_qpc), "Capture GetBuffer");
+            UINT64 captured_position = 0, captured_qpc = 0;
+            check(capture->GetBuffer(&data, &frames, &flags,
+                                     &captured_position, &captured_qpc), "Capture GetBuffer");
             const double received_at = monotonic_seconds();
             if (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) {
                 ++stats.discontinuities;
@@ -569,8 +653,11 @@ struct Engine {
                 // against them) describe audio from before whatever gap the
                 // driver just reported -- stitching new post-gap audio onto
                 // them would keep the output timeline continuous but wrong.
-                queue->reset();
+                queue->reset(!input.exclusive);
+                if (device_clock_rate) device_clock_rate->reset();
             }
+            if (device_clock_rate && !(flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR))
+                device_clock_rate->observe_capture(captured_position, captured_qpc);
             bool ok = true;
             const bool raw = raw_active.load(std::memory_order_relaxed);
             for (uint32_t offset = 0; offset < frames; ) {
@@ -603,15 +690,54 @@ struct Engine {
             // clock. It may submit audio immediately, but must not teach the
             // asynchronous resampler that a normal capture burst is drift.
             render_ready(false);
-            mirror_ready();
             check(capture->GetNextPacketSize(&available), "GetNextPacketSize");
         }
         // The drift controller must observe the residual queue only after all
         // capture data already exposed by the endpoint has been consumed.
         // Otherwise a simultaneous render/capture wake is misclassified as
         // starvation and creates a repeating overflow/underrun cycle.
-        render_ready(shared_audio::should_adjust_drift(output_wakeup, available == 0));
+        const bool adjust_drift = shared_audio::should_adjust_drift(
+            output_wakeup, available == 0);
+        const bool submitted_since_wait = written_frames > written_before_wait_service;
+        const bool output_starved = render_ready(adjust_drift, submitted_since_wait);
+        // WaitForMultipleObjects returns the lowest-index signalled handle.
+        // A faster capture event can therefore mask the render handle for a
+        // long time even while the output clock advances. Sampling on every
+        // completed pump observes each new clock position exactly once.
+        observe_output_clock(output_starved);
+        // The virtual microphone is an optional secondary consumer. Service
+        // it only after the physical path and its clock accounting are done;
+        // it must never add COM work ahead of what the singer hears.
+        mirror_ready();
         pump_finished = monotonic_seconds();
+    }
+    void observe_output_clock(bool output_starved) {
+        if (!output.started || !clock || !clock_frequency) return;
+        UINT64 position = 0, qpc = 0;
+        if (clock->GetPosition(&position, &qpc) != S_OK || !position || !qpc) return;
+        if (device_clock_rate) {
+            device_clock_rate->observe_output(position, qpc);
+            if (device_clock_rate->ready())
+                queue->set_device_clock_rate_ratio(device_clock_rate->rate_ratio());
+        }
+        if (!drift_clock_ready) {
+            drift_clock_position = position;
+            drift_clock_ready = true;
+            // Do not interpret the packets used to prime playback as clock
+            // drift; there was no output-clock interval to compare them to.
+            return;
+        }
+        const UINT64 previous = drift_clock_position;
+        drift_clock_position = position;
+        const uint32_t maximum = std::max<uint32_t>(output.period,
+            output.buffer) * 16;
+        const uint32_t elapsed_frames = shared_audio::output_clock_elapsed_frames(
+            position, previous, clock_frequency,
+            output.format->nSamplesPerSec, maximum);
+        if (!elapsed_frames) {
+            return;
+        }
+        queue->nudge(elapsed_frames, output_starved ? elapsed_frames : 0);
     }
     void mirror_ready() {
         if (!mirror.client || !mirror_render || !mirror_queue) return;
@@ -635,7 +761,7 @@ struct Engine {
         mirror_queue->nudge(count);
         if (!mirror.started) mirror.start();
     }
-    void render_ready(bool adjust_drift) {
+    bool render_ready(bool adjust_drift, bool submitted_since_wait = false) {
         UINT32 padding = 0;
         check(output.client->GetCurrentPadding(&padding), "GetCurrentPadding");
         stats.render_padding_ms = double(padding) * 1000 / output.format->nSamplesPerSec;
@@ -658,8 +784,9 @@ struct Engine {
         // A low padding level is not itself an underrun: an input event can
         // wake this pump just before its packet is drained below. Count only
         // when the render engine has actually exhausted both sources.
-        if (adjust_drift && !padding && !count) ++stats.underruns;
-        const bool fully_starved = !padding && !count;
+        const bool fully_starved = shared_audio::render_starved(
+            adjust_drift, padding, count, submitted_since_wait);
+        if (fully_starved) ++stats.underruns;
         if (count) {
             double presentation = 0;
             UINT64 position = 0, qpc = 0;
@@ -708,19 +835,16 @@ struct Engine {
             written_frames += count;
             stats.stream_latency_ms = timestamped ? transit * 1000 / timestamped : -1;
         }
-        // Estimate independent USB clock rates from captured frames per real
-        // output-engine wake. Queue depth is deliberately not used here:
-        // different capture/render packet sizes create harmless phase bursts
-        // that must not become permanent voice-speed changes.
-        if (adjust_drift) queue->nudge(output.period);
         stats.dropped_frames = queue->dropped();
         stats.queued_frames = queue->size();
+        stats.resample_ratio = queue->rate_ratio();
+        return fully_starved;
     }
 };
 
 #define API extern "C" __declspec(dllexport)
 // Bump when exported structures change; prevent mixed DLL/Python layouts.
-API uint32_t __cdecl wm_abi_version() { return 6; }
+API uint32_t __cdecl wm_abi_version() { return 7; }
 API void* __cdecl wm_open(const wchar_t* input, const wchar_t* output, const wchar_t* mirror,
                           uint32_t blocksize, float gain, uint32_t input_exclusive,
                           Info* info, char* error, uint32_t size) {

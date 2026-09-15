@@ -120,7 +120,8 @@ describe("studio microphone quality", () => {
   });
   test("room fallback pitch shift keeps the same low-latency window as native monitoring", () => {
     const source = readFileSync(new URL("../src/services/pitchShiftProcessor.js", import.meta.url), "utf8");
-    expect(source).toContain("sampleRate * 0.012");
+    expect(source).toContain("sampleRate * 0.006");
+    expect(source).not.toContain("sampleRate * 0.012");
     expect(source).not.toContain("this.bufferLength = 1536");
   });
   test("rolls back the raw stream when graph construction fails", () => {

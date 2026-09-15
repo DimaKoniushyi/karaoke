@@ -173,6 +173,110 @@ def test_audio_callback_reads_current_live_effect_parameters(monkeypatch):
     assert captured["params"] == (0.3, 0.4, 0.5)
 
 
+def test_audio_callback_primes_dsp_before_realtime_audio_without_reporting_fake_samples(monkeypatch):
+    """Cold DSP allocation must happen before the first device callback.
+
+    A cold effects chain delayed the first render phase by almost one complete
+    WASAPI quantum.  Priming must stay completely internal: no callback
+    counters and, especially, no silent packets sent to a room relay.
+    """
+    monkeypatch.setattr(
+        monitor_worker,
+        "_live_params",
+        {
+            "volume": 1.0,
+            "reverb": 0.4,
+            "echo": 0.3,
+            "delay": 0.2,
+            "octave": 0.0,
+            "noise_suppression": 0.35,
+            "dry_monitor": 0.0,
+        },
+    )
+    calls = {"quality": 0, "pitch": 0, "effects": 0, "relay": 0}
+
+    class FakeQuality:
+        def __init__(self, _sample_rate, _channels): pass
+        def process(self, samples, _gain, _suppression):
+            calls["quality"] += 1
+            return samples
+
+    class FakePitch:
+        def __init__(self, _sample_rate): pass
+        def process(self, samples, _octave):
+            calls["pitch"] += 1
+            return samples
+
+    class FakeEffects:
+        def __init__(self, _sample_rate): pass
+        def process(self, samples, _reverb, _echo, _delay):
+            calls["effects"] += 1
+            return samples
+
+    monkeypatch.setattr(monitor_worker, "StudioMicrophoneProcessor", FakeQuality)
+    monkeypatch.setattr(monitor_worker, "RealtimePitchShifter", FakePitch)
+    monkeypatch.setattr(monitor_worker, "MonitorEffectsChain", FakeEffects)
+    relay = SimpleNamespace(push=lambda *_args: calls.__setitem__("relay", calls["relay"] + 1))
+    stats = {}
+
+    monitor_worker._audio_callback(1.0, 48_000, stats, relay)
+
+    assert calls == {"quality": 8, "pitch": 8, "effects": 8, "relay": 0}
+    assert stats == {}
+
+
+def test_audio_callback_reports_pitch_latency_only_for_the_locally_heard_path(monkeypatch):
+    stats = {}
+    monkeypatch.setattr(
+        monitor_worker,
+        "_live_params",
+        {"volume": 1, "reverb": 0, "echo": 0, "delay": 0,
+         "octave": -0.5, "noise_suppression": 0, "dry_monitor": 0},
+    )
+    callback = monitor_worker._audio_callback(1.0, 48_000, stats)
+    callback(
+        np.zeros((64, 1), dtype=np.float32),
+        np.empty((64, 2), dtype=np.float32),
+        64, None, None,
+    )
+    assert stats["effect_latency_ms"] == pytest.approx(6.0, abs=0.07)
+
+    monitor_worker._live_params = {**monitor_worker._live_params, "dry_monitor": 1}
+    callback(
+        np.zeros((64, 1), dtype=np.float32),
+        np.empty((64, 2), dtype=np.float32),
+        64, None, None,
+    )
+    assert stats["effect_latency_ms"] == 0.0
+
+
+def test_native_raw_bypass_clears_stale_effect_latency_without_a_dsp_callback(monkeypatch):
+    reports = []
+    stream = Mock()
+
+    def stop_after_one_pump():
+        monkeypatch.setattr(monitor_worker, "_running", False)
+
+    stream.pump.side_effect = stop_after_one_pump
+    clock = iter((0.0, 0.2, 0.2))
+    monkeypatch.setattr(monitor_worker.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(monitor_worker, "_running", True)
+    monkeypatch.setattr(
+        monitor_worker, "_native_stream_target",
+        {"stream": stream, "raw_eligible": True},
+    )
+    monkeypatch.setattr(monitor_worker, "_live_params", {"dry_monitor": 1.0})
+    monkeypatch.setattr(monitor_worker, "_queue_report", reports.append)
+
+    monitor_worker._pump_reports(
+        stream, "wasapi-native-shared", threading.Event(),
+        {"effect_latency_ms": 6.0, "dsp_compute_ms": 0.2},
+    )
+
+    assert reports[0]["effect_latency_ms"] == 0.0
+    assert reports[0]["dsp_compute_ms"] is None
+
+
 def test_main_seeds_live_params_from_config_and_starts_reader_thread(monkeypatch, capsys):
     configure_argv(monkeypatch, {**options(), "reverb": 0.2, "echo": 0.5, "delay": 0.7})
     patch_attrs(monkeypatch, monitor_worker, _running=False, _live_params={'reverb': 0.0, 'echo': 0.0, 'delay': 0.0, 'noise_suppression': 0.35})
@@ -256,7 +360,9 @@ def test_dry_monitor_still_runs_the_dsp_chain_when_a_relay_is_configured(monkeyp
     relay = SimpleNamespace(push=lambda stream_id, sample_rate, samples: pushed.append(stream_id))
     callback = monitor_worker._audio_callback(1.0, 48000, {}, relay)
     callback(np.zeros((32, 1), dtype=np.float32), np.empty((32, 2), dtype=np.float32), 32, None, None)
-    assert calls == [True]
+    # Eight silent warm-up blocks prime the room DSP, then the first real
+    # block is processed once. Warm-up itself must never reach the relay.
+    assert calls == [True] * 9
     assert pushed == [monitor_worker.STREAM_DRY, monitor_worker.STREAM_WET]
 
 

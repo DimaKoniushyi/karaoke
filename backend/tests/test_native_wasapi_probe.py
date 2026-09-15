@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -6,6 +7,12 @@ import pytest
 
 from app.services import monitor_worker, native_wasapi
 from tools import probe_wasapi
+
+
+def test_probe_cli_accepts_the_production_low_latency_buffer():
+    source = Path(probe_wasapi.__file__).read_text(encoding="utf-8")
+    assert "choices=(16, 32, 64, 128, 256, 512, 1024, 2048)" in source
+    assert "1024, 2048), default=16" in source
 
 
 def test_native_probe_uses_actual_rate_mutes_dsp_and_closes(monkeypatch):
@@ -45,4 +52,125 @@ def test_native_probe_closes_if_dsp_initialization_fails(monkeypatch):
     monkeypatch.setattr(monitor_worker, "_audio_callback", Mock(side_effect=RuntimeError("DSP unavailable")))
     with pytest.raises(RuntimeError, match="DSP unavailable"):
         probe_wasapi.probe_native({"input": 1, "output": 2, "blocksize": 64, "duration": 1, "dsp": True})
+    stream.close.assert_called_once()
+
+
+def test_native_probe_applies_and_restores_the_requested_effect_stress_profile(monkeypatch):
+    original = dict(monitor_worker._live_params)
+    observed = {}
+    target_stats = {}
+    stream = SimpleNamespace(
+        info=SimpleNamespace(sample_rate=48_000),
+        diagnostics=lambda: {"sample_rate": 48_000},
+        close=Mock(),
+    )
+
+    def start(_callback):
+        observed.update(monitor_worker._live_params)
+
+    def pump():
+        statistics = target_stats["target"]
+        statistics["rendered_frames"] = statistics.get("rendered_frames", 0) + 64
+
+    stream.start, stream.pump = start, pump
+    monkeypatch.setattr(
+        native_wasapi, "NativeWasapiStream",
+        lambda _options, statistics: target_stats.update(target=statistics) or stream,
+    )
+    monkeypatch.setattr(probe_wasapi.sd, "query_devices", lambda index: {"name": f"device-{index}"})
+    monkeypatch.setattr(monitor_worker, "_audio_callback", Mock(return_value=lambda *_args: None))
+    times = iter([0, .1, .3, .4, .5, 2])
+    monkeypatch.setattr(probe_wasapi.time, "monotonic", lambda: next(times))
+    effects = {
+        "volume": 2.0, "reverb": 1.0, "echo": 1.0, "delay": 1.0,
+        "noise_suppression": 1.0, "octave": -0.5,
+    }
+
+    probe_wasapi.probe_native({
+        "input": 1, "output": 2, "blocksize": 64, "duration": 1,
+        "dsp": True, "effects": effects,
+    })
+
+    assert all(observed[name] == value for name, value in effects.items())
+    assert monitor_worker._live_params == original
+    stream.close.assert_called_once()
+
+
+def test_native_probe_exercises_silent_cpp_raw_bypass(monkeypatch):
+    statistics = {}
+    stream = SimpleNamespace(
+        info=SimpleNamespace(sample_rate=16_000),
+        diagnostics=lambda: {"sample_rate": 16_000},
+        start=Mock(), set_raw=Mock(), close=Mock(),
+    )
+
+    def create(options, target):
+        assert options["gain"] == 0.0
+        statistics["target"] = target
+        return stream
+
+    def pump():
+        target = statistics["target"]
+        target["rendered_frames"] = target.get("rendered_frames", 0) + 48
+
+    stream.pump = pump
+    monkeypatch.setattr(native_wasapi, "NativeWasapiStream", create)
+    monkeypatch.setattr(probe_wasapi.sd, "query_devices", lambda index: {"name": f"device-{index}"})
+    times = iter([0, .1, .3, .4, .5, 2])
+    monkeypatch.setattr(probe_wasapi.time, "monotonic", lambda: next(times))
+
+    probe_wasapi.probe_native({
+        "input": 1, "output": 2, "blocksize": 16, "duration": 1,
+        "dsp": False, "raw": True,
+    })
+
+    stream.set_raw.assert_called_once_with(True)
+    stream.close.assert_called_once()
+
+
+def test_native_probe_can_measure_the_production_hybrid_transport(monkeypatch):
+    observed = {}
+
+    def create(options, _statistics):
+        observed.update(options)
+        raise RuntimeError("probe stopped")
+
+    monkeypatch.setattr(native_wasapi, "NativeWasapiStream", create)
+    monkeypatch.setattr(probe_wasapi.sd, "query_devices", lambda index: {"name": f"device-{index}"})
+    with pytest.raises(RuntimeError, match="probe stopped"):
+        probe_wasapi.probe_native({
+            "input": 1, "output": 2, "blocksize": 16, "duration": 1,
+            "dsp": False, "input_exclusive": True,
+        })
+
+    assert observed["input_exclusive"] is True
+
+
+def test_plain_host_probe_does_not_attach_wasapi_stream_settings(monkeypatch):
+    observed = {}
+    stream = SimpleNamespace(
+        latency=(0.001, 0.001),
+        start=Mock(), abort=Mock(), close=Mock(),
+    )
+
+    def create(**options):
+        observed.update(options)
+        return stream
+
+    monkeypatch.setattr(probe_wasapi.sd, "Stream", create)
+    monkeypatch.setattr(
+        probe_wasapi.sd, "WasapiSettings",
+        Mock(side_effect=AssertionError("plain/WDM-KS must not receive WASAPI settings")),
+    )
+    monkeypatch.setattr(probe_wasapi, "host_buffer_frames", lambda _stream: {})
+    monkeypatch.setattr(probe_wasapi.time, "sleep", lambda _duration: None)
+
+    result = probe_wasapi.probe({
+        "input": 1, "output": 2, "rate": 48_000, "mode": "plain",
+        "kind": "duplex", "blocksize": 16, "latency": 16 / 48_000,
+        "duration": 0, "dsp": False,
+    })
+
+    assert "extra_settings" not in observed
+    assert result["reported_latency_seconds"] == (0.001, 0.001)
     stream.close.assert_called_once()

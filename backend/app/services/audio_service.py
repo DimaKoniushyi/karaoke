@@ -1094,15 +1094,9 @@ def _configure_monitoring(settings, *, adopt_driver_buffer: bool = False) -> Non
         return
     if settings.audio_driver == "auto" and not _monitor_relay_needed:
         devices = sd.query_devices() if _AUDIO_BACKEND_AVAILABLE else None
-        # Give a coexistence-verified WDM-KS duplex stream first refusal: it
-        # bypasses both slow Windows audio-engine legs.  Exclusive capture
-        # with shared render only removes the input leg and therefore cannot
-        # reach the same round-trip latency on consumer Realtek endpoints.
-        # Keep that hybrid WASAPI path as the broadly compatible fallback,
-        # followed by fully shared WASAPI.
-        if devices is not None and _try_automatic_wdmks_monitor(settings, devices=devices):
-            return
-        if devices is not None and _try_native_input_exclusive_monitor(
+        # If the selected endpoints themselves expose a <=16-ms fully shared
+        # path, use the preflighted native route and publish that capability.
+        if devices is not None and _try_native_low_latency_shared_monitor(
             settings, devices=devices
         ):
             return
@@ -1297,6 +1291,71 @@ def _try_native_input_exclusive_monitor(settings, *, devices=None) -> bool:
     except Exception as exc:
         logger.info("Native exclusive microphone capture unavailable: %s", exc)
         _stop_monitoring_process()
+        return False
+
+
+def _try_native_low_latency_shared_monitor(settings, *, devices=None) -> bool:
+    """Prefer genuine shared WASAPI when its own periods meet the 16-ms goal."""
+    if not _AUDIO_BACKEND_AVAILABLE:
+        return False
+    devices = sd.query_devices() if devices is None else devices
+    started = False
+    try:
+        from app.services.native_wasapi import NativeWasapiStream
+
+        input_name, output_name = _windows_endpoint_names(settings, devices)
+        diagnostics = NativeWasapiStream.probe(
+            {
+                "input_device_name": input_name,
+                "output_device_name": output_name,
+                "blocksize": settings.buffer_size,
+                "gain": 0.0,
+            },
+        )
+        reported = diagnostics.get("minimum_period_latency_ms")
+        if (
+            isinstance(reported, bool)
+            or not isinstance(reported, (int, float))
+            or reported != reported
+            or reported > 16.0
+        ):
+            logger.info(
+                "Fully shared WASAPI does not meet the 16-ms period target: %.3f ms",
+                reported if isinstance(reported, (int, float)) else -1.0,
+            )
+            return False
+        _start_shared_monitor(
+            settings,
+            driver="auto",
+            devices=devices,
+            input_exclusive=False,
+        )
+        started = True
+        negotiated = _monitor_control.snapshot().get("negotiated_period_latency_ms")
+        if (
+            isinstance(negotiated, (int, float))
+            and not isinstance(negotiated, bool)
+            and negotiated == negotiated
+            and negotiated > 16.0
+        ):
+            raise RuntimeError(
+                f"fully shared WASAPI opened at {negotiated:.3f} ms after probing at {reported:.3f} ms"
+            )
+        _monitor_control.publish(
+            transport_selection="native-fully-shared-low-latency",
+            requested_mode="Windows Driver",
+            input_exclusive=False,
+            output_exclusive=False,
+        )
+        return True
+    except MonitorCancelled:
+        if started:
+            _stop_monitoring_process()
+        raise
+    except Exception as exc:
+        logger.info("Low-latency fully shared WASAPI candidate rejected: %s", exc)
+        if started:
+            _stop_monitoring_process()
         return False
 
 
