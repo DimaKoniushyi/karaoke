@@ -32,6 +32,25 @@ inline bool prefer_engine_candidate(uint32_t candidate_frames, uint32_t candidat
     if (shorter_engine_period(current_frames, current_rate, candidate_frames, candidate_rate)) return false;
     return candidate_raw && !current_raw;
 }
+inline uint32_t capture_start_phase_delay_us(bool input_exclusive,
+                                             uint32_t render_period,
+                                             uint32_t render_rate) {
+    if (!input_exclusive || !render_period || !render_rate) return 0;
+    const uint64_t period_us =
+        (uint64_t(render_period) * 1000000 + render_rate / 2) / render_rate;
+    // Fast renderers are already below the perceptible target, and delaying
+    // their capture startup would add more scheduler uncertainty than it can
+    // remove. Consumer shared endpoints with 5-10 ms quanta benefit from
+    // starting exclusive capture near the middle of the render quantum: the
+    // completed capture packet then reaches the next writable render slot
+    // instead of missing it and waiting one full extra quantum. Keep a 10%
+    // pre-boundary guard against scheduler/timer jitter: the exact half-way
+    // point is the observed wrap boundary on 10-ms USB and WaveRT endpoints.
+    if (period_us < 4000) return 0;
+    const uint64_t aligned_phase_us =
+        (uint64_t(render_period) * 400000 + render_rate / 2) / render_rate;
+    return static_cast<uint32_t>(std::min<uint64_t>(aligned_phase_us, 20000));
+}
 inline uint32_t processing_chunk_size(uint32_t requested, uint32_t capture_period) {
     if (!requested || !capture_period)
         throw std::runtime_error("Invalid processing chunk size");

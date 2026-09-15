@@ -59,14 +59,15 @@ static double monotonic_seconds() {
 // product; backend/tools/probe_wasapi.py may set it in a short-lived child
 // process while output is forced to silence.  Keep it bounded so a malformed
 // environment cannot stall normal audio startup.
-static uint32_t capture_start_delay_us() {
+static uint32_t capture_start_delay_us(uint32_t automatic_delay_us) {
     wchar_t text[32]{};
     const DWORD length = GetEnvironmentVariableW(
         L"ADVOICE_WASAPI_CAPTURE_START_DELAY_US", text, DWORD(std::size(text)));
-    if (!length || length >= std::size(text)) return 0;
+    if (!length) return automatic_delay_us;
+    if (length >= std::size(text)) return automatic_delay_us;
     wchar_t* end = nullptr;
     const unsigned long parsed = std::wcstoul(text, &end, 10);
-    if (end == text || *end != L'\0') return 0;
+    if (end == text || *end != L'\0') return automatic_delay_us;
     const uint32_t requested = parsed > UINT32_MAX ? UINT32_MAX : uint32_t(parsed);
     return std::min<uint32_t>(requested, 20000);
 }
@@ -617,7 +618,16 @@ struct Engine {
         // endpoint instead of waiting through an extra renderer startup
         // quantum. No silent frames are inserted into our timestamped queue.
         output.start();
-        wait_capture_start_phase(capture_start_delay_us());
+        const uint32_t automatic_phase_delay =
+            shared_audio::capture_start_phase_delay_us(
+                input.exclusive, output.period, output.format->nSamplesPerSec);
+        if (input.exclusive && output.event.value) {
+            const DWORD boundary_timeout_ms = DWORD(std::min<uint64_t>(
+                uint64_t(output.period) * 2000 / output.format->nSamplesPerSec + 50,
+                250));
+            WaitForSingleObject(output.event.value, boundary_timeout_ms);
+        }
+        wait_capture_start_phase(capture_start_delay_us(automatic_phase_delay));
         input.start();
     }
     void pump(uint32_t timeout) {

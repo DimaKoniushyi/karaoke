@@ -448,5 +448,15 @@ int main() {
     low_jabra_reserve.nudge(480);
     verify(std::abs(low_jabra_reserve.rate_ratio()
         - 16000.0 / 48000.0) < 1e-12);
+    // Shared capture and render quanta must overlap in time.  Starting an
+    // exclusive capture immediately after a 10-ms shared renderer made the
+    // two device periods nearly sequential (15.94 ms measured on Jabra).
+    // Guarded mid-period phase alignment consistently reduced it to 10.94 ms and
+    // also reduced an unrelated Audient Windows path from 18.71 to 9.82 ms.
+    verify(shared_audio::capture_start_phase_delay_us(true, 480, 48000) == 4000);
+    verify(shared_audio::capture_start_phase_delay_us(true, 441, 44100) == 4000);
+    // Do not phase-shift fully shared capture or an already sub-4-ms renderer.
+    verify(shared_audio::capture_start_phase_delay_us(false, 480, 48000) == 0);
+    verify(shared_audio::capture_start_phase_delay_us(true, 144, 48000) == 0);
     std::cout << "Native shared audio tests passed: periods, PCM/float, saturation, bounded queue, underrun, resampling\n";
 }

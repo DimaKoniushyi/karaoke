@@ -171,6 +171,18 @@ class NativeWasapiStream:
     def diagnostics(self):
         input_rate = self.info.sample_rate
         output_rate = self.info.output_sample_rate
+        output_period_ms = (
+            self.info.output_period * 1000 / output_rate
+            if output_rate and self.info.output_period
+            else None
+        )
+        capture_start_phase_delay_ms = (
+            min(output_period_ms * 0.4, 20.0)
+            if self.info.input_exclusive
+            and output_period_ms is not None
+            and output_period_ms >= 4.0
+            else 0.0
+        )
         minimum_ms = (
             self.info.input_min_period * 1000 / input_rate
             + self.info.output_min_period * 1000 / output_rate
@@ -209,6 +221,7 @@ class NativeWasapiStream:
             "output_period_locked": bool(self.info.output_period_locked),
             "minimum_period_latency_ms": minimum_ms,
             "negotiated_period_latency_ms": negotiated_ms,
+            "capture_start_phase_delay_ms": capture_start_phase_delay_ms,
             "latency_limit": latency_limit,
             "input_latency_ms": self.info.input_latency_ms if self.info.input_latency_ms > 0 else None,
             "output_latency_ms": self.info.output_latency_ms if self.info.output_latency_ms > 0 else None,

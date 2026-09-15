@@ -196,6 +196,19 @@ def test_native_stream_requests_exclusive_capture_without_making_render_exclusiv
     stream.close()
 
 
+def test_native_stream_reports_automatic_capture_render_phase_alignment(dll):
+    stream = native_wasapi.NativeWasapiStream(
+        {**options(), "input_exclusive": True}, {}
+    )
+    try:
+        stream.info.output_period = 480
+        stream.info.output_sample_rate = 48_000
+
+        assert stream.diagnostics()["capture_start_phase_delay_ms"] == pytest.approx(4.0)
+    finally:
+        stream.close()
+
+
 def test_native_engine_uses_exclusive_mode_only_for_requested_capture_endpoint():
     source = (
         native_wasapi.library_path().parents[3]
@@ -547,6 +560,16 @@ def test_native_wasapi_has_a_bounded_capture_phase_probe_for_hardware_diagnostic
     assert "ADVOICE_WASAPI_CAPTURE_START_DELAY_US" in source
     assert "capture_start_delay_us" in source
     assert "std::min<uint32_t>(requested, 20000)" in source
+
+
+def test_native_wasapi_aligns_capture_to_an_observed_render_clock_boundary():
+    source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
+    start = source[source.index("void start(Process callback)"):source.index("void pump(uint32_t timeout)")]
+
+    render_start = start.index("output.start();")
+    observed_boundary = start.index("WaitForSingleObject(output.event.value", render_start)
+    capture_start = start.index("input.start();", observed_boundary)
+    assert render_start < observed_boundary < capture_start
 
 
 def test_native_wasapi_drift_target_is_the_requested_low_latency_block_not_a_full_device_period():
