@@ -51,6 +51,26 @@ inline uint32_t capture_start_phase_delay_us(bool input_exclusive,
         (uint64_t(render_period) * 400000 + render_rate / 2) / render_rate;
     return static_cast<uint32_t>(std::min<uint64_t>(aligned_phase_us, 20000));
 }
+inline uint32_t render_clock_phase_wait_us(uint64_t clock_position,
+                                           uint64_t clock_frequency,
+                                           uint32_t render_period,
+                                           uint32_t render_rate,
+                                           uint32_t target_phase_us) {
+    if (!clock_frequency || !render_period || !render_rate) return 0;
+    const uint64_t position_frames = static_cast<uint64_t>(std::floor(
+        static_cast<long double>(clock_position) * render_rate / clock_frequency));
+    const uint64_t target_frames = std::min<uint64_t>(
+        render_period - 1,
+        (uint64_t(target_phase_us) * render_rate + 500000) / 1000000);
+    const uint64_t phase = position_frames % render_period;
+    uint64_t delta = (target_frames + render_period - phase) % render_period;
+    // An exact-edge reading is already stale by the time IAudioClient::Start
+    // is called. Use the same phase in the next period rather than risking
+    // the just-expired render slot.
+    if (!delta) delta = render_period;
+    return static_cast<uint32_t>(
+        (delta * 1000000 + render_rate / 2) / render_rate);
+}
 inline uint32_t processing_chunk_size(uint32_t requested, uint32_t capture_period) {
     if (!requested || !capture_period)
         throw std::runtime_error("Invalid processing chunk size");

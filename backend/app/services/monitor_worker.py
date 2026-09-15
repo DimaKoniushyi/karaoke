@@ -30,7 +30,7 @@ except Exception:  # PortAudio may be unavailable in CI/diagnostics.
 
 if __name__ == "__main__":
     _stage("import microphone DSP")
-from app.services.audio_relay_protocol import STREAM_DRY, STREAM_WET  # noqa: E402
+from app.services.audio_relay_protocol import STREAM_CAPTURE, STREAM_DRY, STREAM_WET  # noqa: E402
 from app.services.microphone_quality import (  # noqa: E402 - staged worker startup
     MonitorEffectsChain,
     RealtimePitchShifter,
@@ -262,6 +262,12 @@ def _audio_callback(gain: float, sample_rate: float = 44_100, statistics=None, r
             params.get("octave", 0.0),
             params.get("dry_monitor", 0.0) >= 0.5,
         )
+        if relay is not None:
+            # Preserve the exact microphone timeline before gain, denoising,
+            # pitch or effects.  Karaoke recording consumes this stream while
+            # the same native WASAPI capture continues driving low-latency
+            # self-monitoring; no competing hardware stream is opened.
+            relay.push(STREAM_CAPTURE, sample_rate, indata[:, 0])
         # A momentary "listen to the raw voice" check bypasses the whole
         # gate/compressor/tone-shaping/effects chain for what the singer
         # hears locally. With no relay/room peer listening either, nothing

@@ -621,13 +621,21 @@ struct Engine {
         const uint32_t automatic_phase_delay =
             shared_audio::capture_start_phase_delay_us(
                 input.exclusive, output.period, output.format->nSamplesPerSec);
-        if (input.exclusive && output.event.value) {
+        const uint32_t target_phase_us =
+            capture_start_delay_us(automatic_phase_delay);
+        UINT64 startup_clock_position = 0, startup_clock_qpc = 0;
+        if (target_phase_us && clock && clock_frequency
+            && clock->GetPosition(&startup_clock_position, &startup_clock_qpc) == S_OK) {
+            wait_capture_start_phase(shared_audio::render_clock_phase_wait_us(
+                startup_clock_position, clock_frequency, output.period,
+                output.format->nSamplesPerSec, target_phase_us));
+        } else if (output.event.value) {
             const DWORD boundary_timeout_ms = DWORD(std::min<uint64_t>(
                 uint64_t(output.period) * 2000 / output.format->nSamplesPerSec + 50,
                 250));
             WaitForSingleObject(output.event.value, boundary_timeout_ms);
+            wait_capture_start_phase(target_phase_us);
         }
-        wait_capture_start_phase(capture_start_delay_us(automatic_phase_delay));
         input.start();
     }
     void pump(uint32_t timeout) {

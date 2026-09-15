@@ -994,6 +994,18 @@ def subscribe_monitor_relay() -> tuple[AudioRelayServer, queue.Queue] | None:
     return (relay, relay.subscribe(maxsize=LIVE_RELAY_QUEUE_MAX_FRAMES)) if relay is not None else None
 
 
+def subscribe_monitor_capture() -> tuple[AudioRelayServer, queue.Queue] | None:
+    """Subscribe to raw frames from the active native monitor for recording.
+
+    Unlike the live room relay, a recording may not discard an old frame just
+    to reduce latency.  Its consumer drains immediately on a dedicated thread;
+    the larger queue only absorbs short Python/OS scheduler stalls.
+    """
+    with _monitor_lock:
+        relay = _monitor_relay
+    return (relay, relay.subscribe(maxsize=4096)) if relay is not None else None
+
+
 def _send_live_update(payload: dict) -> None:
     from app.services import recording_service
     recording_service.update_capture_controls(payload)
@@ -1092,16 +1104,29 @@ def _configure_monitoring(settings, *, adopt_driver_buffer: bool = False) -> Non
             )
             _start_shared_monitor(settings, driver="auto", relay_needed=_monitor_relay_needed)
         return
-    if settings.audio_driver == "auto" and not _monitor_relay_needed:
+    if settings.audio_driver == "auto":
         devices = sd.query_devices() if _AUDIO_BACKEND_AVAILABLE else None
         # If the selected endpoints themselves expose a <=16-ms fully shared
         # path, use the preflighted native route and publish that capability.
         if devices is not None and _try_native_low_latency_shared_monitor(
-            settings, devices=devices
+            settings, devices=devices, relay_needed=_monitor_relay_needed
+        ):
+            return
+        # A 10-ms shared capture plus a 10-ms shared renderer cannot meet the
+        # monitoring target even when their phases are aligned. Keep render
+        # fully shared (radio, karaoke and every other application continue
+        # to play), but let the selected microphone expose its shorter native
+        # capture period. The native engine synchronizes that capture start to
+        # the observed shared render clock; if the endpoint rejects exclusive
+        # capture this helper closes it and we retain the ordinary shared
+        # fallback below.
+        if devices is not None and _try_native_input_exclusive_monitor(
+            settings, devices=devices, relay_needed=_monitor_relay_needed
         ):
             return
         _start_shared_monitor(
-            settings, driver=settings.audio_driver, relay_needed=False, devices=devices
+            settings, driver=settings.audio_driver,
+            relay_needed=_monitor_relay_needed, devices=devices
         )
         return
     _start_shared_monitor(settings, driver=settings.audio_driver, relay_needed=_monitor_relay_needed)
@@ -1269,7 +1294,9 @@ def _try_automatic_asio_monitor(settings, *, devices=None) -> bool:
     return False
 
 
-def _try_native_input_exclusive_monitor(settings, *, devices=None) -> bool:
+def _try_native_input_exclusive_monitor(
+    settings, *, devices=None, relay_needed: bool = False
+) -> bool:
     """Use exclusive capture while keeping render/radio in Windows Shared."""
     try:
         _start_shared_monitor(
@@ -1277,6 +1304,7 @@ def _try_native_input_exclusive_monitor(settings, *, devices=None) -> bool:
             driver="auto",
             devices=devices,
             input_exclusive=True,
+            relay_needed=relay_needed,
         )
         _monitor_control.publish(
             transport_selection="native-input-exclusive-output-shared",
@@ -1294,7 +1322,9 @@ def _try_native_input_exclusive_monitor(settings, *, devices=None) -> bool:
         return False
 
 
-def _try_native_low_latency_shared_monitor(settings, *, devices=None) -> bool:
+def _try_native_low_latency_shared_monitor(
+    settings, *, devices=None, relay_needed: bool = False
+) -> bool:
     """Prefer genuine shared WASAPI when its own periods meet the 16-ms goal."""
     if not _AUDIO_BACKEND_AVAILABLE:
         return False
@@ -1329,6 +1359,7 @@ def _try_native_low_latency_shared_monitor(settings, *, devices=None) -> bool:
             driver="auto",
             devices=devices,
             input_exclusive=False,
+            relay_needed=relay_needed,
         )
         started = True
         negotiated = _monitor_control.snapshot().get("negotiated_period_latency_ms")

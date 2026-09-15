@@ -53,7 +53,10 @@ def test_recording_monitor_configuration_handles_auto_and_temporary_asio(monkeyp
     stop, configure = Mock(), Mock()
     patch_attrs(monkeypatch, recording.audio_service, stop_monitoring=stop, configure_monitoring=configure)
     body = start_body()
-    assert (recording._configure_recording_monitor(audio_settings(), body) is True) and (recording._configure_recording_monitor(audio_settings(audio_driver='asio', monitoring_enabled=False), body) is True)
+    assert recording._configure_recording_monitor(audio_settings(), body) is False
+    assert recording._configure_recording_monitor(
+        audio_settings(audio_driver='asio', monitoring_enabled=False), body
+    ) is False
 
     current = audio_settings(audio_driver="asio", monitoring_enabled=True)
     original = vars(current).copy()
@@ -64,6 +67,7 @@ def test_recording_monitor_configuration_handles_auto_and_temporary_asio(monkeyp
         True, body.microphone_volume, body.reverb, body.echo, body.delay, body.octave
     )
     assert vars(current) == original
+    assert configure.call_args.kwargs == {"relay_needed": True}
 
     configure.side_effect = RuntimeError("ASIO failed")
     raises(RuntimeError, lambda: recording._configure_recording_monitor(current, body), match='ASIO failed')
@@ -83,10 +87,47 @@ def test_windows_recording_keeps_native_shared_monitor_instead_of_portaudio_dupl
     stop.assert_not_called()
 
 
+def test_windows_recording_reuses_native_monitor_capture_instead_of_reopening_busy_microphone(monkeypatch):
+    """Exclusive low-latency WASAPI capture must also be the recording source.
+
+    Opening a second PortAudio InputStream against that endpoint fails on real
+    Windows drivers with WdmSyncIoctl/PaErrorCode -9996.
+    """
+    database, body = Mock(), start_body()
+    song = SimpleNamespace(id="song")
+    settings = audio_settings(audio_driver="auto", monitoring_enabled=True)
+    capture_relay = (Mock(), Mock())
+    configure = Mock()
+    start = Mock(return_value="session")
+    patch_many(
+        monkeypatch,
+        (recording.repositories, "get_song", Mock(return_value=song)),
+        (recording.audio_service, "get_settings", Mock(return_value=settings)),
+        (recording.audio_service, "configure_monitoring", configure),
+        (recording.audio_service, "subscribe_monitor_capture", Mock(return_value=capture_relay)),
+        (recording.recording_service, "start_recording", start),
+    )
+    patch_attrs(
+        monkeypatch,
+        recording.audio_service,
+        preferred_input_device=Mock(return_value=3),
+        preferred_output_device=Mock(return_value=4),
+        preferred_sample_rate=Mock(return_value=48_000),
+    )
+
+    result = recording.start_recording(body, database)
+
+    assert result.recording_session_id == "session"
+    configure.assert_called_once()
+    assert configure.call_args.kwargs == {"relay_needed": True}
+    assert start.call_args.kwargs["capture_relay"] is capture_relay
+
+
 def test_start_recording_builds_session_without_driver_latency_adjustment(monkeypatch):
     database, body, song, settings = Mock(), start_body(), SimpleNamespace(id='song'), audio_settings(monitoring_enabled=True)
     patch_many(monkeypatch, (recording.repositories, "get_song", Mock(return_value=song)), (recording.audio_service, "get_settings", Mock(return_value=settings)), (recording, "_configure_recording_monitor", Mock(return_value=True)))
-    patch_attrs(monkeypatch, recording.audio_service, preferred_input_device=Mock(return_value=3), preferred_output_device=Mock(return_value=4), preferred_sample_rate=Mock(return_value=48000))
+    capture_relay = (Mock(), Mock())
+    patch_attrs(monkeypatch, recording.audio_service, preferred_input_device=Mock(return_value=3), preferred_output_device=Mock(return_value=4), preferred_sample_rate=Mock(return_value=48000), subscribe_monitor_capture=Mock(return_value=capture_relay))
     start = Mock(return_value="session")
     monkeypatch.setattr(recording.audio_service, "recording_monitor_mode", Mock(return_value="shared"))
     monkeypatch.setattr(recording.recording_service, "start_recording", start)
@@ -109,6 +150,7 @@ def test_start_recording_builds_session_without_driver_latency_adjustment(monkey
             noise_suppression=0.35,
             monitor_owner="native-monitor",
             monitor_mode=None,
+            capture_relay=capture_relay,
         )
 
 
@@ -157,17 +199,20 @@ def test_prepare_room_voice_relay_opens_the_relay_when_monitoring_is_on(monkeypa
     configure.assert_called_once_with(settings, relay_needed=True)
 
 
-def test_prepare_room_voice_relay_reports_unavailable_when_monitoring_is_off(monkeypatch):
+def test_prepare_room_voice_relay_captures_for_peers_without_local_monitoring(monkeypatch):
     database, settings = Mock(), audio_settings(monitoring_enabled=False)
-    stop_monitoring = Mock()
+    configure = Mock()
     patch_many(
         monkeypatch,
         (recording.audio_service, "get_settings", Mock(return_value=settings)),
-        (recording.audio_service, "stop_monitoring", stop_monitoring),
+        (recording.audio_service, "configure_monitoring", configure),
     )
 
-    assert recording.prepare_room_voice_relay(database) == {"relay_available": False}
-    stop_monitoring.assert_called_once_with()
+    assert recording.prepare_room_voice_relay(database) == {"relay_available": True}
+    relay_settings = configure.call_args.args[0]
+    assert relay_settings.monitoring_enabled is True
+    assert relay_settings.local_monitoring_enabled is False
+    configure.assert_called_once_with(relay_settings, relay_needed=True)
 
 
 def test_release_room_voice_relay_restores_ordinary_monitoring(monkeypatch):
@@ -196,6 +241,7 @@ def test_room_relay_recording_keeps_the_shared_monitor_running(monkeypatch):
         (recording.audio_service, "get_settings", Mock(return_value=settings)),
         (recording.audio_service, "stop_monitoring", stop_monitoring),
         (recording.audio_service, "configure_monitoring", configure),
+        (recording.audio_service, "subscribe_monitor_capture", Mock(return_value=(Mock(), Mock()))),
         (recording.recording_service, "start_recording", start),
     )
     patch_attrs(
@@ -213,6 +259,7 @@ def test_room_relay_recording_keeps_the_shared_monitor_running(monkeypatch):
     assert start.call_args.kwargs["monitoring_enabled"] is False
     assert start.call_args.kwargs["monitor_owner"] == "room-relay"
     assert start.call_args.kwargs["monitor_mode"] is None
+    assert start.call_args.kwargs["capture_relay"] is not None
 
 
 def test_room_relay_recording_falls_back_to_stopping_when_monitoring_is_disabled(monkeypatch):

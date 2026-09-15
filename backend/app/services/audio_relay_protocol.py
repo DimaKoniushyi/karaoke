@@ -13,6 +13,10 @@ import numpy as np
 
 STREAM_DRY = 0
 STREAM_WET = 1
+# Unmodified microphone frames.  The native low-latency monitor can own an
+# endpoint exclusively, so karaoke recording must tap this already-open
+# capture instead of trying to open the same microphone a second time.
+STREAM_CAPTURE = 2
 
 # All three live-relay hops use the same small budget. Dry and wet frames
 # are interleaved, so four 5ms-per-stream frames represent roughly 10ms of

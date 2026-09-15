@@ -27,7 +27,12 @@ from .audio_relay_protocol import LIVE_RELAY_QUEUE_MAX_FRAMES, encode_frame
 # audio but keeps this accumulator's own contribution close to a single
 # audio block instead of a noticeable chunk of the whole budget.
 _CHUNK_SECONDS = 0.005
-_QUEUE_MAXSIZE = LIVE_RELAY_QUEUE_MAX_FRAMES
+# The browser subscriber still keeps only LIVE_RELAY_QUEUE_MAX_FRAMES, so a
+# slow room client cannot build audible latency.  The local worker -> backend
+# hop also carries lossless recording frames, however; give that localhost
+# sender enough burst room that ordinary scheduler stalls cannot discard the
+# singer's take before the dedicated recording consumer receives it.
+_QUEUE_MAXSIZE = 256
 
 
 class _StreamAccumulator:

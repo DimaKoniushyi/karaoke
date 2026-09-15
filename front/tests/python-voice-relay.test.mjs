@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const STREAM_DRY = 0;
 const STREAM_WET = 1;
+const STREAM_CAPTURE = 2;
 
 // Matches audio_relay_protocol.py's _HEADER = struct.Struct("<IfI"): three
 // 4-byte fields (12 bytes total), so the PCM payload starts 4-byte aligned.
@@ -142,6 +143,33 @@ describe("python voice relay", () => {
     expect(Array.from(wetNode.port.postMessage.mock.calls[0][0])).toEqual([9, 8, 7]);
     expect(dryNode.port.postMessage).toHaveBeenCalledTimes(2);
     expect(Array.from(dryNode.port.postMessage.mock.calls[1][0])).toEqual([5]);
+  });
+
+  test("never mixes the recording-only raw capture stream into room audio", async () => {
+    const promise = createRelayVoiceGraph({ connectTimeoutMs: 500 });
+    await Promise.resolve();
+    await Promise.resolve();
+    const socket = FakeWebSocket.instances[0];
+
+    // Recording capture is published before the room dry/wet packets by the
+    // native monitor.  It must neither complete room graph startup nor be
+    // interpreted as dry voice, otherwise two timelines are interleaved and
+    // peers hear a robotic microphone while the speaking meter also lies.
+    socket.onmessage({ data: encodeFrame(STREAM_CAPTURE, 48000, [90, 91]) });
+    await Promise.resolve();
+    expect(FakeAudioContext.instances).toHaveLength(0);
+
+    socket.onmessage({ data: encodeFrame(STREAM_DRY, 48000, [1, 2]) });
+    const graph = await promise;
+    const [dryNode, wetNode] = FakeAudioWorkletNode.instances;
+    expect(dryNode.port.postMessage).toHaveBeenCalledTimes(1);
+    expect(Array.from(dryNode.port.postMessage.mock.calls[0][0])).toEqual([1, 2]);
+    expect(wetNode.port.postMessage).not.toHaveBeenCalled();
+
+    socket.onmessage({ data: encodeFrame(STREAM_CAPTURE, 48000, [92, 93]) });
+    expect(dryNode.port.postMessage).toHaveBeenCalledTimes(1);
+    expect(wetNode.port.postMessage).not.toHaveBeenCalled();
+    await graph.close();
   });
 
   test("buffers frames that arrive while the AudioWorklet module is still loading", async () => {

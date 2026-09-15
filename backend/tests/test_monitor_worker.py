@@ -303,6 +303,7 @@ def test_audio_callback_pushes_dry_and_wet_to_the_relay_when_configured(monkeypa
     callback = monitor_worker._audio_callback(1.0, 48000, {}, relay)
     callback(np.zeros((32, 1), dtype=np.float32), np.empty((32, 2), dtype=np.float32), 32, None, None)
     assert pushed == [
+        (monitor_worker.STREAM_CAPTURE, 48000, 32),
         (monitor_worker.STREAM_DRY, 48000, 32),
         (monitor_worker.STREAM_WET, 48000, 32),
     ]
@@ -363,7 +364,11 @@ def test_dry_monitor_still_runs_the_dsp_chain_when_a_relay_is_configured(monkeyp
     # Eight silent warm-up blocks prime the room DSP, then the first real
     # block is processed once. Warm-up itself must never reach the relay.
     assert calls == [True] * 9
-    assert pushed == [monitor_worker.STREAM_DRY, monitor_worker.STREAM_WET]
+    assert pushed == [
+        monitor_worker.STREAM_CAPTURE,
+        monitor_worker.STREAM_DRY,
+        monitor_worker.STREAM_WET,
+    ]
 
 
 def test_main_constructs_a_relay_link_only_when_a_relay_port_is_configured(monkeypatch, capsys):

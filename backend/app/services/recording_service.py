@@ -20,6 +20,7 @@ import models
 from AI.utils.numeric import clamp01
 from app import repositories
 from app.services import song_artifacts, song_service, storage_budget_service
+from app.services.audio_relay_protocol import FrameReader, STREAM_CAPTURE
 from app.services.audio_runtime import hardware_lock, run_on_audio_thread, serialized
 from app.services.db_utils import commit_refresh
 from app.services.microphone_quality import (
@@ -99,6 +100,7 @@ class RecordingSession:
         monitor_mode: str | None = None,
         monitor_owner: str = "recording",
         storage_reservations: list[storage_budget_service.Reservation] | None = None,
+        capture_relay: tuple[Any, queue.Queue] | None = None,
     ):
         self.session_id = session_id
         self.song_id = song_id
@@ -164,6 +166,11 @@ class RecordingSession:
         self._monitor_error = None
         self._teardown_error = None
         self._storage_reservations = storage_reservations or []
+        self._capture_relay = capture_relay
+        self._relay_stop = threading.Event()
+        self._relay_ready = threading.Event()
+        self._relay_thread: threading.Thread | None = None
+        self._stream = None
         self._signal = {"rms_db": -120.0, "clipping": False, "silent": True}
         self._signal_reported_at = 0.0
         self.noise_suppression = clamp01(noise_suppression)
@@ -178,7 +185,12 @@ class RecordingSession:
                 sd.WasapiSettings(exclusive=False, auto_convert=True),
                 sd.WasapiSettings(exclusive=False, auto_convert=True),
             )
-        if monitoring_enabled or (monitor_owner == "recording" and monitor_mode is not None):
+        if capture_relay is not None:
+            # The already-running native monitor owns capture (possibly in
+            # exclusive WASAPI mode) and supplies raw PCM over its local
+            # relay.  Do not touch the hardware a second time.
+            pass
+        elif monitoring_enabled or (monitor_owner == "recording" and monitor_mode is not None):
             output_info = (
                 sd.query_devices(output_device_id, kind="output")
                 if output_device_id is not None
@@ -213,6 +225,8 @@ class RecordingSession:
         # stream knows the rate it actually opened with; stamp the WAV and all
         # timeline/DSP state with that value or the voice plays too fast/slow.
         try:
+            if self._stream is None:
+                raise AttributeError
             negotiated_rate = float(self._stream.samplerate)
         except (AttributeError, TypeError, ValueError):
             negotiated_rate = float(sample_rate)
@@ -360,19 +374,30 @@ class RecordingSession:
                 return
             self._capture_stopped = True
             self._monitoring_enabled = False
+            if self._capture_relay is not None:
+                self._stop_capture_relay()
+                return
             # _teardown_error, not _capture_error: every sample has already
             # been captured and enqueued by this point (the callback simply
             # stops firing once the stream is stopped) -- a device raising
             # while closing must not discard an already-complete, valid take.
+            def teardown_stream():
+                teardown_error = None
+                try:
+                    self._stream.stop()
+                except BaseException as exc:
+                    teardown_error = exc
+                finally:
+                    try:
+                        self._stream.close()
+                    except BaseException as exc:
+                        teardown_error = teardown_error or exc
+                return teardown_error
+
             try:
-                self._stream.stop()
+                self._teardown_error = run_on_audio_thread(teardown_stream)
             except BaseException as exc:
                 self._teardown_error = exc
-            finally:
-                try:
-                    self._stream.close()
-                except BaseException as exc:
-                    self._teardown_error = self._teardown_error or exc
 
     def _write_audio(self) -> None:
         assert self._temporary_path is not None
@@ -478,11 +503,75 @@ class RecordingSession:
                 )
             self._temporary_path = None
 
+    def _consume_capture_relay(self) -> None:
+        assert self._capture_relay is not None
+        _relay, subscriber = self._capture_relay
+        reader = FrameReader()
+        try:
+            while not self._relay_stop.is_set() or not subscriber.empty():
+                try:
+                    payload = subscriber.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                reader.feed(payload)
+                for stream_id, sample_rate, samples in reader.pop_frames():
+                    if stream_id != STREAM_CAPTURE:
+                        continue
+                    actual_rate = int(round(float(sample_rate)))
+                    if actual_rate != self.sample_rate:
+                        raise RuntimeError(
+                            "Native monitor recording sample rate changed "
+                            f"from {self.sample_rate} to {actual_rate} Hz"
+                        )
+                    self._relay_ready.set()
+                    chunk = np.asarray(samples, dtype=np.float32).copy().reshape(-1, 1)
+                    self._update_signal(chunk)
+                    if not self._paused:
+                        self._enqueue(chunk)
+        except BaseException as exc:
+            self._capture_error = exc
+            self._relay_ready.set()
+
+    def _start_capture_relay(self) -> None:
+        self._relay_thread = threading.Thread(
+            target=self._consume_capture_relay,
+            name=f"recording-capture-{self.session_id[:8]}",
+            daemon=True,
+        )
+        self._relay_thread.start()
+        if not self._relay_ready.wait(timeout=3.0):
+            raise RuntimeError("Timed out waiting for native microphone capture")
+        if self._capture_error is not None:
+            raise RuntimeError(f"Native microphone capture failed: {self._capture_error}")
+
+    def _stop_capture_relay(self) -> None:
+        capture_relay, self._capture_relay = self._capture_relay, None
+        if capture_relay is None:
+            return
+        relay, subscriber = capture_relay
+        relay.unsubscribe(subscriber)
+        self._relay_stop.set()
+        thread = self._relay_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=3.0)
+            if thread.is_alive() and self._teardown_error is None:
+                self._teardown_error = RuntimeError("Timed out stopping native capture relay")
+        self._relay_thread = None
+
     def start(self) -> None:
         self._start_writer()
         try:
-            self._stream.start()
+            if self._capture_relay is not None:
+                self._start_capture_relay()
+                return
+            # The stream is opened through run_on_audio_thread in __init__.
+            # PortAudio's Windows backends bind part of their COM/KS state to
+            # that thread; starting it later on FastAPI's worker thread can
+            # fail with WdmSyncIoctl/AUDCLNT_E_DEVICE_IN_USE even though the
+            # selected endpoint is the correct Windows WASAPI device.
+            run_on_audio_thread(self._stream.start)
         except Exception:
+            self._stop_capture_relay()
             self._stop_writer()
             self._cleanup_temporary_file()
             raise
@@ -786,6 +875,7 @@ def start_recording(
     noise_suppression: float = 0.35,
     monitor_mode: str | None = None,
     monitor_owner: str = "recording",
+    capture_relay: tuple[Any, queue.Queue] | None = None,
 ) -> str:
     if not _AUDIO_BACKEND_AVAILABLE: raise RuntimeError(f"Аудио-бэкенд недоступен: {_AUDIO_BACKEND_ERROR}")
     if has_live_capture():
@@ -830,18 +920,31 @@ def start_recording(
             monitor_mode=monitor_mode,
             monitor_owner=monitor_owner,
             storage_reservations=storage_reservations,
+            capture_relay=capture_relay,
         )
         session.start()
         logger.info(
             "Recording audio started: input=%s output=%s requested_rate=%s actual_rate=%s "
             "requested_buffer=%s capture_buffer=%s monitor=%s requested_latency=%s",
-            device_id, output_device_id, sample_rate, session.sample_rate, blocksize, frames, keep_monitor_output, latency,
+            device_id, output_device_id, sample_rate, session.sample_rate, blocksize, frames,
+            keep_monitor_output, "native-relay" if capture_relay is not None else latency,
         )
     except Exception as exc:  # Audio drivers raise implementation-specific errors.
         if session is not None:
             with contextlib.suppress(Exception): session.close()
         storage_budget_service.release_all(storage_reservations)
-        raise RuntimeError(f"Could not start recording stream: {exc}") from exc
+        try:
+            selected = sd.query_devices(device_id, kind="input")
+            host = sd.query_hostapis(int(selected["hostapi"]))
+            device_context = (
+                f"input={device_id} ({selected.get('name', 'unknown')}; "
+                f"{host.get('name', 'unknown')}), rate={sample_rate}"
+            )
+        except Exception:  # Preserve the original driver failure if diagnostics fail.
+            device_context = f"input={device_id}, rate={sample_rate}"
+        raise RuntimeError(
+            f"Could not start recording stream [{device_context}]: {exc}"
+        ) from exc
     with _sessions_lock: _sessions[session_id] = session
     threading.Thread(
         target=_finalize_on_duration_limit,

@@ -490,6 +490,29 @@ def test_session_lifecycle_cleans_resources_on_errors(monkeypatch, tmp_path):
     assert idle._temporary_path is None and not temporary.exists()
 
 
+def test_recording_stream_lifecycle_stays_on_the_audio_thread(monkeypatch):
+    session, stream = make_session(monkeypatch)
+    dispatch = Mock(side_effect=lambda action, *args, **kwargs: action(*args, **kwargs))
+    monkeypatch.setattr(recording_service, "run_on_audio_thread", dispatch)
+    patch_attrs(
+        monkeypatch,
+        session,
+        _start_writer=Mock(),
+        _stop_writer=Mock(),
+        _cleanup_temporary_file=Mock(),
+    )
+
+    session.start()
+    dispatch.assert_any_call(stream.start)
+
+    session.stop_capture()
+    # Stop and close are dispatched together so no other device operation can
+    # be inserted between them on the thread that owns the PortAudio stream.
+    assert dispatch.call_count == 2
+    stream.stop.assert_called_once_with()
+    stream.close.assert_called_once_with()
+
+
 def test_stop_writer_signals_live_thread(monkeypatch):
     session, _stream = make_session(monkeypatch)
     thread = Mock()

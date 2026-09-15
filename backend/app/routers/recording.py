@@ -59,7 +59,10 @@ def _configure_room_relay_monitor(settings) -> bool:
 def _configure_recording_monitor(settings, body: schemas.RecordingStartRequest) -> bool:
     if not settings.monitoring_enabled:
         audio_service.stop_monitoring()
-        return True
+        # No monitor owns the microphone, so RecordingSession must open the
+        # ordinary input stream itself.  Reporting True here made the caller
+        # look for a nonexistent native capture relay and reject recording.
+        return False
 
     overrides = audio_service.settings_snapshot(
         settings,
@@ -70,7 +73,10 @@ def _configure_recording_monitor(settings, body: schemas.RecordingStartRequest) 
         delay=body.delay,
         octave=body.octave,
     )
-    audio_service.configure_monitoring(overrides)
+    # The native Windows monitor may own microphone capture exclusively to
+    # meet the low-latency target.  Open its local relay so the recording can
+    # consume that same capture rather than opening the busy endpoint again.
+    audio_service.configure_monitoring(overrides, relay_needed=True)
     return True
 
 
@@ -142,6 +148,13 @@ def start_recording(body: schemas.RecordingStartRequest, db: DatabaseSession):
             devices,
             device_name=getattr(settings, "input_device_name", None),
         )
+        capture_relay = (
+            audio_service.subscribe_monitor_capture()
+            if keep_native_monitor and settings.audio_driver == "auto"
+            else None
+        )
+        if keep_native_monitor and settings.audio_driver == "auto" and capture_relay is None:
+            raise RuntimeError("Native microphone capture is unavailable for recording")
         session_id = recording_service.start_recording(
             song_id=song.id,
             device_id=input_device_id,
@@ -184,6 +197,7 @@ def start_recording(body: schemas.RecordingStartRequest, db: DatabaseSession):
                 else "recording"
             ),
             monitor_mode=None if body.room_mode or keep_native_monitor else audio_service.recording_monitor_mode(input_device_id),
+            capture_relay=capture_relay,
         )
     except RuntimeError as exc:
         _restore_monitoring(db)

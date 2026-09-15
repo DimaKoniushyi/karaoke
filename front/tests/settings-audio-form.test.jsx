@@ -24,7 +24,9 @@ test("audio settings group devices, actions and levels semantically", () => {
     />
   );
 
-  expect(screen.getAllByRole("slider")).toHaveLength(2);
+  // Noise suppression lives on the Processing tab; Sound keeps only the
+  // realtime monitoring volume slider.
+  expect(screen.getAllByRole("slider")).toHaveLength(1);
   const meter = screen.getByRole("meter", { name: "Уровень микрофона" });
   expect(meter.getAttribute("aria-valuenow")).toBe("0");
   expect(meter.querySelector("path")).not.toBeNull();

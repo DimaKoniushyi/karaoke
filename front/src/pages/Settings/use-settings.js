@@ -142,7 +142,12 @@ function useAudio(open) {
   // below) -- polling this while it's off used to open the microphone for a
   // real sd.rec()/sd.wait() capture every cycle purely to throw the result
   // away as a hardcoded 0.
-  const signal = useOpenPoll(open && !!values.monitoring_enabled, api.getSignalQuality, POLL.realtimeSignal, null);
+  const signal = useOpenPoll(
+    open && !!values.monitoring_enabled,
+    api.getSignalQuality,
+    POLL.realtimeSignal,
+    null
+  );
   const asio = useOpenPoll(open, api.listAsioDrivers, POLL.devices, []);
   const fail = (key, error) => alert(tr(key, { 0: getErrorMessage(error) }));
   const merge = (patch) => setLocal((state) => ({ ...state, ...patch }));
@@ -166,10 +171,14 @@ function useAudio(open) {
     setBusy(true);
     try {
       const enabled = !!values.monitoring_enabled && !retry;
-      // Same direct-monitor toggle as Karaoke's "I hear myself" -- audio
-      // behavior (including whether effects are applied) must stay
-      // identical across every self-monitoring entry point.
-      const saved = await (enabled ? api.stopDirectMonitoring() : api.startDirectMonitoring());
+      // Settings is the device-check path: play the microphone exactly as it
+      // arrives (apart from the volume slider), without karaoke/room effects.
+      // Other monitoring entry points intentionally retain their effects.
+      const saved = await (
+        enabled
+          ? api.stopDirectMonitoring()
+          : api.startDirectMonitoring({ disabledEffects: true })
+      );
 
       merge({ monitoring_enabled: !enabled });
       emit(saved);

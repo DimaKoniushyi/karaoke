@@ -562,14 +562,15 @@ def test_native_wasapi_has_a_bounded_capture_phase_probe_for_hardware_diagnostic
     assert "std::min<uint32_t>(requested, 20000)" in source
 
 
-def test_native_wasapi_aligns_capture_to_an_observed_render_clock_boundary():
+def test_native_wasapi_aligns_capture_to_the_render_clock_phase():
     source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
     start = source[source.index("void start(Process callback)"):source.index("void pump(uint32_t timeout)")]
 
     render_start = start.index("output.start();")
-    observed_boundary = start.index("WaitForSingleObject(output.event.value", render_start)
-    capture_start = start.index("input.start();", observed_boundary)
-    assert render_start < observed_boundary < capture_start
+    clock = start.index("clock->GetPosition", render_start)
+    phase = start.index("render_clock_phase_wait_us", clock)
+    capture_start = start.index("input.start();", phase)
+    assert render_start < clock < phase < capture_start
 
 
 def test_native_wasapi_drift_target_is_the_requested_low_latency_block_not_a_full_device_period():

@@ -458,5 +458,15 @@ int main() {
     // Do not phase-shift fully shared capture or an already sub-4-ms renderer.
     verify(shared_audio::capture_start_phase_delay_us(false, 480, 48000) == 0);
     verify(shared_audio::capture_start_phase_delay_us(true, 144, 48000) == 0);
+    // Align against the absolute device clock, not an event that can already
+    // be signalled when the empty shared renderer starts.  At frame 100 the
+    // guarded 4-ms target of a 480-frame/48-kHz period is frame 192.
+    verify(shared_audio::render_clock_phase_wait_us(
+        100, 48000, 480, 48000, 4000) == 1917);
+    // If the target phase has passed, wait for that phase in the next period.
+    verify(shared_audio::render_clock_phase_wait_us(
+        200, 48000, 480, 48000, 4000) == 9833);
+    verify(shared_audio::render_clock_phase_wait_us(
+        0, 0, 480, 48000, 4000) == 0);
     std::cout << "Native shared audio tests passed: periods, PCM/float, saturation, bounded queue, underrun, resampling\n";
 }
