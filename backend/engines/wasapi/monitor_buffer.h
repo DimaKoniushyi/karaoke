@@ -48,6 +48,21 @@ inline uint32_t monitor_queue_target(uint32_t requested, uint32_t capture_period
     (void)input_exclusive;
     return requested;
 }
+inline uint32_t render_padding_target(uint32_t render_period, uint32_t render_buffer,
+                                      uint32_t capture_period, uint32_t capture_rate,
+                                      uint32_t render_rate, uint32_t requested) {
+    if (!render_period || !render_buffer || !capture_period || !capture_rate ||
+        !render_rate || !requested)
+        throw std::runtime_error("Invalid render padding target");
+    const auto convert = [&](uint32_t frames) {
+        return uint32_t((uint64_t(frames) * render_rate + capture_rate - 1) / capture_rate);
+    };
+    // The capture event wakes the same critical pump before the shared render
+    // event. Therefore the renderer only needs enough submitted audio to span
+    // the next capture wake-up, not its entire (often 10ms) engine quantum.
+    return std::min({render_period, render_buffer,
+                     std::max(convert(capture_period), convert(requested))});
+}
 // Mirrors the ASIO bridge's resolve_buffer_size: the device's own
 // min/max/fundamental always wins. A user-requested size outside that range
 // is clamped into it (and aligned up to the fundamental granularity) rather
@@ -86,7 +101,7 @@ class MonitorBuffer {
     std::vector<double> received_times, processed_times;
     size_t head = 0, used = 0, target_fill = 2;
     uint64_t lost = 0;
-    double ratio, base_ratio, phase = 0;
+    double ratio, base_ratio, phase = 0, drift_correction = 0;
 public:
     MonitorBuffer(size_t capacity, double rate_ratio, size_t requested_target_fill = 2) :
         samples(capacity), timestamps(capacity), received_times(capacity), processed_times(capacity),
@@ -110,22 +125,29 @@ public:
     // resampler's phase against them -- describe audio from before a gap
     // that never reached us. Stitching new post-gap audio onto that stale
     // queue is worse than the brief silence this produces instead.
-    void reset() { head = 0; used = 0; phase = 0; }
+    void reset() { head = 0; used = 0; phase = 0; ratio = base_ratio; drift_correction = 0; }
     // Genuine long-run clock drift between two independent physical devices
     // (no two "48kHz" clocks are ever exactly identical) is not something a
     // fixed ratio compensates for -- left alone, the queue slowly grows or
     // drains until it either drops samples (a click, see push() below) or
     // underruns. A tiny proportional nudge toward a mid-fill target corrects
-    // for it continuously; the correction is capped small enough (0.02%,
-    // ratio clamped to +/-0.1% of nominal) to never be audible as pitch
-    // wobble on its own. The target is the single safety period supplied by
+    // for it continuously. USB capture/render clocks can differ by more than
+    // 0.5%, so a tiny fixed proportional cap cannot work: it leaves a
+    // permanent backlog and eventually drops samples.  The integral term
+    // learns the persistent clock ratio while the small proportional term
+    // damps short queue excursions; both are bounded to +/-2%. The target is
+    // the single safety period supplied by
     // the engine, not half of the emergency allocation: spare capacity is
     // for stalls and must not become deliberate audible latency. Call once
     // per output callback.
     void nudge() {
         const double error = double(used) - double(target_fill);
-        const double correction = std::clamp(error / double(samples.size()) * 0.02, -0.0002, 0.0002);
-        ratio = std::clamp(base_ratio * (1.0 + correction), base_ratio * 0.999, base_ratio * 1.001);
+        const double normalized = error / double(samples.size());
+        drift_correction = std::clamp(
+            drift_correction + std::clamp(normalized * 0.00005, -0.00005, 0.00005),
+            -0.02, 0.02);
+        const double proportional = std::clamp(normalized * 0.001, -0.001, 0.001);
+        ratio = base_ratio * (1.0 + drift_correction + proportional);
     }
     void push(const float* input, size_t count, double captured_at = 0, double step = 0,
               double received_at = 0, double processed_at = 0) {

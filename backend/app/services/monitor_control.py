@@ -101,7 +101,7 @@ class MonitorControl:
                 now = time.monotonic()
                 # Logged periodically (not just once) so a latency chase has an
                 # ongoing trail to compare against, not a single early sample.
-                if (self.status.get("engine") == "wasapi-native-shared" and
+                if (str(self.status.get("engine", "")).startswith("wasapi-native-") and
                         isinstance(stream_latency, (int, float)) and math.isfinite(stream_latency) and
                         stream_latency > 0 and now - self.latency_breakdown_logged_at >= 5.0):
                     logger.info(
@@ -142,6 +142,7 @@ class MonitorControl:
             if event in {"started", "fallback"}:
                 for key in ("blocksize", "sample_rate", "mode", "engine", "driver", "requested_driver", "failed_driver", "latency", "latency_source", "input_latency_ms", "output_latency_ms",
                             "output_sample_rate", "input_period_frames", "output_period_frames",
+                            "input_raw", "output_raw", "input_exclusive", "output_exclusive",
                             "input_min_period_frames", "output_min_period_frames",
                             "input_period_locked", "output_period_locked", "minimum_period_latency_ms",
                             "negotiated_period_latency_ms", "latency_limit"):

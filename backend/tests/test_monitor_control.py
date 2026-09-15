@@ -548,6 +548,26 @@ def test_native_latency_breakdown_is_logged_once_per_connection(control, caplog)
     assert "output_period=144@48000" in records[0]
 
 
+def test_hybrid_wasapi_retains_raw_flags_and_logs_its_latency_breakdown(control, caplog):
+    caplog.set_level("INFO")
+    control.event(control.token, {
+        "event": "started", "engine": "wasapi-native-input-exclusive",
+        "input_raw": True, "output_raw": False,
+        "input_period_frames": 144, "output_period_frames": 480,
+        "sample_rate": 48000, "output_sample_rate": 48000,
+    })
+    control.event(control.token, {
+        "event": "level", "stream_latency_ms": 44.267,
+        "program_residence_ms": 8.397, "queue_residence_ms": 8.186,
+        "output_clock_lead_ms": 37.413, "render_padding_ms": 10.0,
+        "dsp_compute_ms": 0.163,
+    })
+
+    status = control.snapshot()
+    assert status["input_raw"] is True and status["output_raw"] is False
+    assert any("WASAPI latency breakdown" in record.message for record in caplog.records)
+
+
 def test_start_shared_monitor_opens_a_relay_and_passes_its_port_to_the_worker(control, monkeypatch):
     monkeypatch.setattr(audio_service, "_monitor_relay", None)
     devices = [

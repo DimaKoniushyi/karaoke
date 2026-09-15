@@ -43,6 +43,12 @@ int main() {
     // slower even while capture and render clocks were healthy.
     verify(monitor_queue_target(16, 441, true) == 16);
     verify(monitor_queue_target(64, 480, false) == 64);
+    // A fast 3ms exclusive capture event wakes the pump frequently enough to
+    // feed a 10ms shared renderer incrementally. Keeping the full 480-frame
+    // render period padded adds 7ms that is not required by the endpoint.
+    verify(render_padding_target(480, 960, 144, 48000, 48000, 16) == 144);
+    verify(render_padding_target(480, 960, 480, 48000, 48000, 16) == 480);
+    verify(render_padding_target(441, 882, 144, 48000, 44100, 16) == 133);
     verify(engine_period(64, 48, 480, 48) == 96);
     verify(engine_period(64, 441, 441, 441) == 441);
     verify(engine_period(128, 32, 1024, 32) == 128);
@@ -126,5 +132,19 @@ int main() {
         for (int frame = 0; frame < 64; ++frame) low_latency_drift.pop(result);
     }
     verify(low_latency_drift.size() <= 96);
+    // The Razer USB profile captured in production delivered about 0.5%
+    // more capture frames than its shared render clock consumed.  A fixed
+    // +/-0.02% proportional correction overflowed the queue and discarded
+    // tens of thousands of frames, leaving ~8ms of stale voice buffered.
+    MonitorBuffer usb_clock_skew(992, 1.0, 16);
+    float skew_packet[483]{};
+    for (int tick = 0; tick < 12000; ++tick) {
+        const size_t produced = tick % 5 < 2 ? 483 : 482; // average 482.4 / 480
+        usb_clock_skew.push(skew_packet, produced);
+        for (int frame = 0; frame < 480; ++frame) usb_clock_skew.pop(result);
+        usb_clock_skew.nudge();
+    }
+    verify(usb_clock_skew.dropped() < 100);
+    verify(usb_clock_skew.size() < 160);
     std::cout << "Native shared audio tests passed: periods, PCM/float, saturation, bounded queue, underrun, resampling\n";
 }

@@ -603,7 +603,6 @@ struct Engine {
         if (!mirror.client || !mirror_render || !mirror_queue) return;
         UINT32 padding = 0;
         check(mirror.client->GetCurrentPadding(&padding), "Get virtual microphone feed padding");
-        mirror_queue->nudge();
         const UINT32 target = std::min(mirror.period, mirror.buffer);
         const UINT32 ready = UINT32(mirror_queue->available());
         const UINT32 count = padding < target ? std::min(target - padding, ready) : 0;
@@ -616,16 +615,22 @@ struct Engine {
             mirror.write(data + index * mirror.format->nBlockAlign, sample);
         }
         check(mirror_render->ReleaseBuffer(count, 0), "Virtual microphone feed ReleaseBuffer");
+        // Observe the queue left *after* this render transfer. Before-pop
+        // fill includes the block we are about to consume and biases drift
+        // correction toward a needless permanent backlog.
+        mirror_queue->nudge();
         if (!mirror.started) mirror.start();
     }
     void render_ready() {
         UINT32 padding = 0;
         check(output.client->GetCurrentPadding(&padding), "GetCurrentPadding");
         stats.render_padding_ms = double(padding) * 1000 / output.format->nSamplesPerSec;
-        queue->nudge();
         // Allocation capacity is NOT a target queue depth. Submit at most one
         // engine period instead of filling the entire Windows render buffer.
-        const UINT32 target = std::min(output.period, output.buffer);
+        const UINT32 target = shared_audio::render_padding_target(
+            output.period, output.buffer, input.period,
+            input.format->nSamplesPerSec, output.format->nSamplesPerSec,
+            UINT32(source.size()));
         // An early render event must not enqueue a period of silence ahead of
         // microphone data that arrives a moment later. Submit only ready audio.
         const auto ready = UINT32(queue->available());
@@ -687,6 +692,10 @@ struct Engine {
             written_frames += count;
             stats.stream_latency_ms = timestamped ? transit * 1000 / timestamped : -1;
         }
+        // Clock control must measure residual audio after rendering, not the
+        // pending block itself. This lets the integral term learn independent
+        // USB input/output clock skew without retaining stale microphone data.
+        queue->nudge();
         stats.dropped_frames = queue->dropped();
         stats.queued_frames = queue->size();
     }
