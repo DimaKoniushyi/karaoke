@@ -84,15 +84,6 @@ inline bool should_adjust_drift(bool output_wakeup, bool capture_drain_complete)
     // starvation signal and destabilizes the clock controller.
     return output_wakeup && capture_drain_complete;
 }
-inline bool independent_audio_clocks(bool input_container_known,
-                                     bool output_container_known,
-                                     bool same_container) {
-    // Windows exposes capture/render endpoints separately even when both are
-    // ports of one physical USB headset or audio interface. Such endpoints
-    // share the device clock and need only the fixed nominal-rate conversion,
-    // never asynchronous drift steering.
-    return !input_container_known || !output_container_known || !same_container;
-}
 // Mirrors the ASIO bridge's resolve_buffer_size: the device's own
 // min/max/fundamental always wins. A user-requested size outside that range
 // is clamped into it (and aligned up to the fundamental granularity) rather
@@ -130,6 +121,9 @@ class MonitorBuffer {
     std::vector<double> timestamps;
     std::vector<double> received_times, processed_times;
     size_t head = 0, used = 0, target_fill = 2;
+    size_t pushed_since_nudge = 0;
+    uint64_t rate_input_frames = 0, rate_output_frames = 0;
+    unsigned rate_observations = 0;
     uint64_t lost = 0;
     double ratio, base_ratio, phase = 0, drift_correction = 0;
 public:
@@ -155,33 +149,42 @@ public:
     // resampler's phase against them -- describe audio from before a gap
     // that never reached us. Stitching new post-gap audio onto that stale
     // queue is worse than the brief silence this produces instead.
-    void reset() { head = 0; used = 0; phase = 0; ratio = base_ratio; drift_correction = 0; }
-    // Genuine long-run clock drift between two independent physical devices
-    // (no two "48kHz" clocks are ever exactly identical) is not something a
-    // fixed ratio compensates for -- left alone, the queue slowly grows or
-    // drains until it either drops samples (a click, see push() below) or
-    // underruns. USB capture/render clocks can differ by more than 0.5%, so a
-    // fixed nominal ratio can leave a permanent backlog. The bounded integral
-    // term learns persistent clock skew and the proportional term damps queue
-    // excursions. Spare capacity is for stalls and must not become deliberate
-    // audible latency. Call once per output callback.
-    void nudge(bool starved = false) {
-        // Called after rendering: an empty residual queue is the normal,
-        // bit-transparent state for equal clocks, not proof that capture is
-        // slow. Only a real render starvation may request negative drift.
-        const double normalized = starved
-            ? -0.25
-            : used > target_fill
-            ? (double(used) - double(target_fill)) / double(samples.size())
-            : 0.0;
-        drift_correction = std::clamp(
-            drift_correction + std::clamp(normalized * 0.0002, -0.00005, 0.00005),
-            -0.01, 0.01);
-        const double proportional = std::clamp(normalized * 0.002, -0.001, 0.001);
-        ratio = base_ratio * (1.0 + drift_correction + proportional);
+    void reset() {
+        head = 0; used = 0; pushed_since_nudge = 0;
+        rate_input_frames = rate_output_frames = 0; rate_observations = 0;
+        phase = 0; ratio = base_ratio; drift_correction = 0;
+    }
+    // Estimate independent endpoint clock drift from actual captured frames
+    // per render-engine period. This observes flow, not instantaneous queue
+    // phase: 432/432/576-frame capture bursts average to exactly 480 and
+    // therefore cannot wind the rate controller up. Coalesced/missed wake-ups
+    // are rejected as outliers rather than becoming permanent speed changes.
+    void nudge(size_t output_period_frames = 0) {
+        if (!output_period_frames) return;
+        if (pushed_since_nudge) {
+            const double observed_ratio = double(pushed_since_nudge) / double(output_period_frames);
+            const double relative_error = observed_ratio / base_ratio - 1.0;
+            if (std::abs(relative_error) <= 0.25) {
+                rate_input_frames += pushed_since_nudge;
+                rate_output_frames += output_period_frames;
+                ++rate_observations;
+            }
+        }
+        pushed_since_nudge = 0;
+        // Sixty 10-ms periods are long enough to average the common 3-event
+        // 144->480 packet phase exactly, yet short enough that even 0.5% USB
+        // clock skew accumulates only ~144 frames before correction.
+        if (rate_observations >= 60 && rate_output_frames) {
+            const double measured_ratio = double(rate_input_frames) / double(rate_output_frames);
+            drift_correction = std::clamp(measured_ratio / base_ratio - 1.0, -0.01, 0.01);
+            rate_input_frames = rate_output_frames = 0;
+            rate_observations = 0;
+        }
+        ratio = base_ratio * (1.0 + std::clamp(drift_correction, -0.01, 0.01));
     }
     void push(const float* input, size_t count, double captured_at = 0, double step = 0,
               double received_at = 0, double processed_at = 0) {
+        pushed_since_nudge += count;
         bool dropped_any = false;
         for (size_t i = 0; i < count; ++i) {
             if (used == samples.size()) { head = (head + 1) % samples.size(); --used; ++lost; dropped_any = true; }

@@ -66,13 +66,6 @@ int main() {
     verify(!should_adjust_drift(true, false));
     verify(should_adjust_drift(true, true));
     verify(!should_adjust_drift(false, true));
-    // Capture and render endpoints belonging to one physical USB/interface
-    // container share a hardware clock. Adaptive asynchronous-clock control
-    // must stay off for that duplex pair; otherwise normal burst phasing is
-    // mistaken for clock drift and periodically changes voice speed.
-    verify(!independent_audio_clocks(true, true, true));
-    verify(independent_audio_clocks(true, true, false));
-    verify(independent_audio_clocks(false, true, false));
     verify(engine_period(64, 48, 480, 48) == 96);
     verify(engine_period(64, 441, 441, 441) == 441);
     verify(engine_period(128, 32, 1024, 32) == 128);
@@ -152,7 +145,7 @@ int main() {
     MonitorBuffer low_latency_drift(1024, 1.0, 64);
     for (int tick = 0; tick < 100000; ++tick) {
         low_latency_drift.push(block, 64);
-        low_latency_drift.nudge();
+        low_latency_drift.nudge(64);
         for (int frame = 0; frame < 64; ++frame) low_latency_drift.pop(result);
     }
     verify(low_latency_drift.size() <= 96);
@@ -171,7 +164,7 @@ int main() {
             verify(transparent_clock.pop(result));
             verify(result == expected);
         }
-        transparent_clock.nudge();
+        transparent_clock.nudge(64);
     }
     verify(transparent_clock.size() == 0);
     verify(transparent_clock.dropped() == 0);
@@ -185,7 +178,7 @@ int main() {
         const size_t produced = tick % 5 < 2 ? 483 : 482; // average 482.4 / 480
         usb_clock_skew.push(skew_packet, produced);
         for (int frame = 0; frame < 480; ++frame) usb_clock_skew.pop(result);
-        usb_clock_skew.nudge();
+        usb_clock_skew.nudge(480);
     }
     verify(usb_clock_skew.dropped() < 100);
     verify(usb_clock_skew.size() < 160);
@@ -198,16 +191,36 @@ int main() {
     for (int tick = 0; tick < 12000; ++tick) {
         const size_t produced = tick % 5 < 3 ? 478 : 477; // average 477.6 / 480
         slow_usb_clock.push(skew_packet, produced);
-        bool starved = false;
         for (int frame = 0; frame < 480; ++frame) {
             if (!slow_usb_clock.pop(result)) {
                 ++slow_clock_misses;
-                starved = true;
             }
         }
-        slow_usb_clock.nudge(starved);
+        slow_usb_clock.nudge(480);
     }
     verify(slow_clock_misses < 2000);
     verify(slow_usb_clock.dropped() < 100);
+    // Equal-rate endpoints do not wake in equal-sized packets. The Razer
+    // profile supplies 144-frame capture bursts while shared render consumes
+    // 480-frame quanta. Over each three render periods the 432/432/576 input
+    // cadence is exactly 480 frames on average. A controller must absorb this
+    // normal phase pattern without winding its rate estimate to +/-1%, filling
+    // the emergency queue and periodically throwing away live microphone data.
+    MonitorBuffer burst_phased_clock(992, 1.0, 16);
+    uint64_t burst_misses = 0;
+    for (int tick = 0; tick < 30000; ++tick) {
+        const size_t produced = tick % 3 == 2 ? 576 : 432;
+        float burst[576]{};
+        burst_phased_clock.push(burst, produced);
+        for (int frame = 0; frame < 480; ++frame) {
+            if (!burst_phased_clock.pop(result)) {
+                ++burst_misses;
+            }
+        }
+        burst_phased_clock.nudge(480);
+    }
+    verify(burst_phased_clock.dropped() < 100);
+    verify(burst_phased_clock.size() < 160);
+    verify(burst_misses < 2000);
     std::cout << "Native shared audio tests passed: periods, PCM/float, saturation, bounded queue, underrun, resampling\n";
 }
