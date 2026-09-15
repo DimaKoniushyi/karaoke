@@ -431,6 +431,12 @@ export function OnlineRoomProvider({ children }) {
               return;
             }
             startSpeakingMeter("local", voice.getMeterStream?.() || stream);
+            // Initial startup was bound just above. Future relay reconnects
+            // can replace the MediaStream object without another connect(),
+            // so keep the indicator attached to the current native source.
+            voice.onLocalStream = (nextStream) => {
+              if (isCurrentConnection()) startSpeakingMeter("local", nextStream);
+            };
             voice.setMicrophoneMuted(microphoneMutedRef.current);
             client.send("presence", { micMuted: microphoneMutedRef.current });
           })

@@ -12,13 +12,17 @@ to the audio callback or to monitor_worker.py's startup sequence.
 from __future__ import annotations
 
 import contextlib
-import queue
+from collections import deque
 import socket
 import threading
 
 import numpy as np
 
-from .audio_relay_protocol import LIVE_RELAY_QUEUE_MAX_FRAMES, encode_frame
+from .audio_relay_protocol import (
+    LIVE_RELAY_QUEUE_MAX_FRAMES,
+    STREAM_CAPTURE,
+    encode_frame,
+)
 
 # A room duet is two-way live singing, not one-way speech -- every chunk here
 # is latency the other participant hears added on top of the network/WebRTC
@@ -32,7 +36,8 @@ _CHUNK_SECONDS = 0.005
 # hop also carries lossless recording frames, however; give that localhost
 # sender enough burst room that ordinary scheduler stalls cannot discard the
 # singer's take before the dedicated recording consumer receives it.
-_QUEUE_MAXSIZE = 256
+_QUEUE_MAXSIZE = LIVE_RELAY_QUEUE_MAX_FRAMES
+_CAPTURE_QUEUE_MAXSIZE = 256
 
 
 class _StreamAccumulator:
@@ -45,7 +50,14 @@ class _StreamAccumulator:
 
 class RelayLink:
     def __init__(self, port: int, sample_rate: float, connect_timeout: float = 1.0) -> None:
-        self._queue: queue.Queue[bytes | None] = queue.Queue(maxsize=_QUEUE_MAXSIZE)
+        # Live room audio and lossless recording cannot share one backlog:
+        # retaining 256 interleaved packets for the recorder also lets dry/wet
+        # voice become more than a second late. Keep live audio aggressively
+        # fresh while raw capture gets its own burst queue.
+        self._live_queue: deque[bytes] = deque(maxlen=_QUEUE_MAXSIZE)
+        self._capture_queue: deque[bytes] = deque(maxlen=_CAPTURE_QUEUE_MAXSIZE)
+        self._queue_condition = threading.Condition()
+        self._sender_closing = False
         self._sample_rate = sample_rate
         self._chunk_samples = max(1, round(sample_rate * _CHUNK_SECONDS))
         self._accumulators: dict[int, _StreamAccumulator] = {}
@@ -98,17 +110,31 @@ class RelayLink:
                 offset += take
                 remaining -= take
                 if accumulator.position >= len(accumulator.buffer):
-                    self._enqueue(encode_frame(stream_id, sample_rate, accumulator.buffer))
+                    self._enqueue(
+                        encode_frame(stream_id, sample_rate, accumulator.buffer),
+                        capture=stream_id == STREAM_CAPTURE,
+                    )
                     accumulator.position = 0
 
-    def _enqueue(self, payload: bytes) -> None:
-        try:
-            self._queue.put_nowait(payload)
-        except queue.Full:
-            with contextlib.suppress(queue.Empty):
-                self._queue.get_nowait()
-            with contextlib.suppress(queue.Full):
-                self._queue.put_nowait(payload)
+    def _enqueue(self, payload: bytes, *, capture: bool = False) -> None:
+        with self._queue_condition:
+            (self._capture_queue if capture else self._live_queue).append(payload)
+            self._queue_condition.notify()
+
+    def _next_payload(self, live_budget: int) -> tuple[bytes | None, int]:
+        with self._queue_condition:
+            while not self._live_queue and not self._capture_queue and not self._sender_closing:
+                self._queue_condition.wait()
+            if not self._live_queue and not self._capture_queue:
+                return None, live_budget
+            # Two room streams (dry/wet) are produced for every one capture
+            # stream. Round-robin in that ratio so neither recording nor live
+            # voice can starve the other.
+            if self._live_queue and (live_budget > 0 or not self._capture_queue):
+                return self._live_queue.popleft(), max(0, live_budget - 1)
+            if self._capture_queue:
+                return self._capture_queue.popleft(), 2
+            return self._live_queue.popleft(), max(0, live_budget - 1)
 
     def _connect_and_run(self, port: int) -> None:
         try:
@@ -123,8 +149,9 @@ class RelayLink:
                 return
             self._socket = sock
         try:
+            live_budget = 2
             while True:
-                item = self._queue.get()
+                item, live_budget = self._next_payload(live_budget)
                 if item is None:
                     return
                 try:
@@ -154,11 +181,13 @@ class RelayLink:
             for stream_id, accumulator in self._accumulators.items():
                 if accumulator.position:
                     self._enqueue(
-                        encode_frame(stream_id, self._sample_rate, accumulator.buffer[: accumulator.position])
+                        encode_frame(stream_id, self._sample_rate, accumulator.buffer[: accumulator.position]),
+                        capture=stream_id == STREAM_CAPTURE,
                     )
                     accumulator.position = 0
-        with contextlib.suppress(queue.Full):
-            self._queue.put_nowait(None)
+        with self._queue_condition:
+            self._sender_closing = True
+            self._queue_condition.notify_all()
         if sock is None:
             return
         # Give the sender thread a bounded chance to actually write the

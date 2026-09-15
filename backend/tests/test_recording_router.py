@@ -196,7 +196,10 @@ def test_prepare_room_voice_relay_opens_the_relay_when_monitoring_is_on(monkeypa
     )
 
     assert recording.prepare_room_voice_relay(database) == {"relay_available": True}
-    configure.assert_called_once_with(settings, relay_needed=True)
+    relay_settings = configure.call_args.args[0]
+    assert relay_settings.monitoring_enabled is True
+    assert relay_settings.local_monitoring_enabled is True
+    configure.assert_called_once_with(relay_settings, relay_needed=True)
 
 
 def test_prepare_room_voice_relay_captures_for_peers_without_local_monitoring(monkeypatch):
@@ -228,6 +231,30 @@ def test_release_room_voice_relay_restores_ordinary_monitoring(monkeypatch):
     configure.assert_called_once_with(settings, relay_needed=False)
 
 
+def test_room_local_monitoring_toggle_never_stops_peer_capture(monkeypatch):
+    toggle = Mock(return_value=True)
+    monkeypatch.setattr(recording.audio_service, "set_room_local_monitoring", toggle)
+
+    assert recording.set_room_local_monitoring(True) == {"monitoring": True}
+    toggle.assert_called_once_with(True)
+
+
+def test_prepare_browser_voice_releases_native_driver_without_changing_saved_preference(monkeypatch):
+    database, settings = Mock(), audio_settings(monitoring_enabled=True)
+    configure = Mock()
+    patch_many(
+        monkeypatch,
+        (recording.audio_service, "get_settings", Mock(return_value=settings)),
+        (recording.audio_service, "configure_monitoring", configure),
+    )
+
+    assert recording.prepare_room_browser_voice(database) == {"status": "ready"}
+    fallback_settings = configure.call_args.args[0]
+    assert fallback_settings.monitoring_enabled is False
+    assert settings.monitoring_enabled is True
+    configure.assert_called_once_with(fallback_settings, relay_needed=False)
+
+
 def test_room_relay_recording_keeps_the_shared_monitor_running(monkeypatch):
     database, body, song, settings = Mock(), start_body(), SimpleNamespace(id="song"), audio_settings(monitoring_enabled=True)
     body.room_mode = True
@@ -254,7 +281,10 @@ def test_room_relay_recording_keeps_the_shared_monitor_running(monkeypatch):
 
     recording.start_recording(body, database)
 
-    configure.assert_called_once_with(settings, relay_needed=True)
+    relay_settings = configure.call_args.args[0]
+    assert relay_settings.monitoring_enabled is True
+    assert relay_settings.local_monitoring_enabled is True
+    configure.assert_called_once_with(relay_settings, relay_needed=True)
     stop_monitoring.assert_not_called()
     assert start.call_args.kwargs["monitoring_enabled"] is False
     assert start.call_args.kwargs["monitor_owner"] == "room-relay"
@@ -262,7 +292,7 @@ def test_room_relay_recording_keeps_the_shared_monitor_running(monkeypatch):
     assert start.call_args.kwargs["capture_relay"] is not None
 
 
-def test_room_relay_recording_falls_back_to_stopping_when_monitoring_is_disabled(monkeypatch):
+def test_room_relay_recording_keeps_capture_when_local_monitoring_is_disabled(monkeypatch):
     database, body, song, settings = Mock(), start_body(), SimpleNamespace(id="song"), audio_settings(monitoring_enabled=False)
     body.room_mode = True
     body.voice_relay = True
@@ -275,6 +305,7 @@ def test_room_relay_recording_falls_back_to_stopping_when_monitoring_is_disabled
         (recording.audio_service, "get_settings", Mock(return_value=settings)),
         (recording.audio_service, "stop_monitoring", stop_monitoring),
         (recording.audio_service, "configure_monitoring", configure),
+        (recording.audio_service, "subscribe_monitor_capture", Mock(return_value=(Mock(), Mock()))),
         (recording.recording_service, "start_recording", start),
     )
     patch_attrs(
@@ -287,9 +318,13 @@ def test_room_relay_recording_falls_back_to_stopping_when_monitoring_is_disabled
 
     recording.start_recording(body, database)
 
-    stop_monitoring.assert_called_once_with()
-    configure.assert_not_called()
+    stop_monitoring.assert_not_called()
+    relay_settings = configure.call_args.args[0]
+    assert relay_settings.monitoring_enabled is True
+    assert relay_settings.local_monitoring_enabled is False
+    configure.assert_called_once_with(relay_settings, relay_needed=True)
     assert start.call_args.kwargs["monitor_owner"] == "room-relay"
+    assert start.call_args.kwargs["capture_relay"] is not None
 
 
 def test_room_relay_recording_falls_back_to_stopping_when_the_monitor_fails_to_start(monkeypatch):
@@ -317,7 +352,10 @@ def test_room_relay_recording_falls_back_to_stopping_when_the_monitor_fails_to_s
 
     recording.start_recording(body, database)
 
-    configure.assert_called_once_with(settings, relay_needed=True)
+    relay_settings = configure.call_args.args[0]
+    assert relay_settings.monitoring_enabled is True
+    assert relay_settings.local_monitoring_enabled is True
+    configure.assert_called_once_with(relay_settings, relay_needed=True)
     stop_monitoring.assert_called_once_with()
     assert start.call_args.kwargs["monitoring_enabled"] is False
 

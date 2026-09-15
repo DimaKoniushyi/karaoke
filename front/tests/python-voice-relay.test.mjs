@@ -124,6 +124,28 @@ describe("python voice relay", () => {
     await graph.close();
   });
 
+  test("delegates self-monitoring without changing either outgoing room stream", async () => {
+    const setLocalMonitoring = vi.fn().mockResolvedValueOnce({ monitoring: true }).mockResolvedValueOnce({ monitoring: false });
+    const promise = createRelayVoiceGraph({ connectTimeoutMs: 500, setLocalMonitoring });
+    await Promise.resolve();
+    await Promise.resolve();
+    const socket = FakeWebSocket.instances[0];
+    socket.onmessage({ data: encodeFrame(STREAM_DRY, 48000, [1]) });
+    const graph = await promise;
+    const dry = graph.stream;
+    const wet = graph.effectsStream;
+
+    await expect(graph.setMonitoring(true)).resolves.toBe(true);
+    await expect(graph.setMonitoring(false)).resolves.toBe(false);
+    expect(setLocalMonitoring).toHaveBeenNthCalledWith(1, true);
+    expect(setLocalMonitoring).toHaveBeenNthCalledWith(2, false);
+    expect(graph.stream).toBe(dry);
+    expect(graph.effectsStream).toBe(wet);
+    expect(dry.getAudioTracks()[0].stop).not.toHaveBeenCalled();
+    expect(wet.getAudioTracks()[0].stop).not.toHaveBeenCalled();
+    await graph.close();
+  });
+
   test("routes dry and wet frames to their own worklet node", async () => {
     const promise = createRelayVoiceGraph({ connectTimeoutMs: 500 });
     await Promise.resolve();
@@ -182,7 +204,12 @@ describe("python voice relay", () => {
       constructor(options) {
         super(options);
         this.audioWorklet = {
-          addModule: vi.fn(() => new Promise((resolve) => { resolveAddModule = resolve; }))
+          addModule: vi.fn(
+            () =>
+              new Promise((resolve) => {
+                resolveAddModule = resolve;
+              })
+          )
         };
       }
     }
@@ -215,7 +242,12 @@ describe("python voice relay", () => {
       constructor(options) {
         super(options);
         this.audioWorklet = {
-          addModule: vi.fn(() => new Promise((resolve) => { resolveAddModule = resolve; }))
+          addModule: vi.fn(
+            () =>
+              new Promise((resolve) => {
+                resolveAddModule = resolve;
+              })
+          )
         };
       }
     }

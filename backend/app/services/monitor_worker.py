@@ -52,6 +52,7 @@ _level = {"rms_db": -120.0, "clipping": False, "silent": True}
 _live_params = {
     "volume": 1.0, "reverb": 0.0, "echo": 0.0, "delay": 0.0, "noise_suppression": 0.35, "octave": 0.0,
     "dry_monitor": 0.0,
+    "local_monitoring_enabled": 1.0,
 }
 # Populated by main() once the stream is chosen; read by _read_live_updates().
 # "stream" is set for the native WASAPI engine regardless of relay (a live
@@ -154,7 +155,10 @@ def _read_live_updates() -> None:
             except json.JSONDecodeError:
                 continue
             next_params = dict(_live_params)
-            for key in ("volume", "reverb", "echo", "delay", "noise_suppression", "octave", "dry_monitor"):
+            for key in (
+                "volume", "reverb", "echo", "delay", "noise_suppression", "octave",
+                "dry_monitor", "local_monitoring_enabled",
+            ):
                 if key in update: next_params[key] = float(update[key])
             _live_params = next_params  # atomic rebind -- see module docstring above
             volume, dry_monitor = next_params.get("volume", 1.0), next_params.get("dry_monitor", 0.0) >= 0.5
@@ -197,6 +201,39 @@ def _update_level_report(level_source, time_info) -> None:
             ),
         }
     )
+
+
+def _process_audio_block(indata, gain, sample_rate, quality, pitch, effects, relay, statistics):
+    params = _live_params  # one atomic read of the current snapshot, no lock
+    live_gain = params.get("volume", gain)
+    dry_monitor = params.get("dry_monitor", 0.0) >= 0.5
+    if relay is not None:
+        # Recording consumes this exact pre-DSP timeline while the room gets
+        # independently processed dry/wet streams from the same capture.
+        relay.push(STREAM_CAPTURE, sample_rate, indata[:, 0])
+    if dry_monitor and relay is None:
+        monitor_output = np.clip(indata[:, 0] * live_gain, -1.0, 1.0).astype(np.float32)
+        level_source = monitor_output
+    else:
+        processed = quality.process(
+            indata[:, :1], live_gain, params.get("noise_suppression", 0.35)
+        )[:, 0]
+        dry = pitch.process(processed, params.get("octave", 0.0))
+        processed = effects.process(
+            dry, params["reverb"], params["echo"], params["delay"]
+        )
+        if relay is not None:
+            relay.push(STREAM_DRY, sample_rate, dry)
+            relay.push(STREAM_WET, sample_rate, processed)
+        monitor_output = (
+            np.clip(indata[:, 0] * live_gain, -1.0, 1.0).astype(np.float32)
+            if dry_monitor else processed
+        )
+        level_source = processed
+    statistics["effect_latency_ms"] = (
+        0.0 if dry_monitor else round(pitch.latency_ms(params.get("octave", 0.0)), 3)
+    )
+    return params, monitor_output, level_source
 
 
 def _audio_callback(gain: float, sample_rate: float = 44_100, statistics=None, relay: RelayLink | None = None):
@@ -252,54 +289,11 @@ def _audio_callback(gain: float, sample_rate: float = 44_100, statistics=None, r
         statistics["callback_count"] = statistics.get("callback_count", 0) + 1
         if status:
             statistics["glitch_count"] = statistics.get("glitch_count", 0) + 1
-        params = _live_params  # one atomic read of the current snapshot, no lock
-        live_gain, reverb, echo, delay, noise_suppression, octave, dry_monitor = (
-            params.get("volume", gain),
-            params["reverb"],
-            params["echo"],
-            params["delay"],
-            params.get("noise_suppression", 0.35),
-            params.get("octave", 0.0),
-            params.get("dry_monitor", 0.0) >= 0.5,
+        params, monitor_output, level_source = _process_audio_block(
+            indata, gain, sample_rate, quality, pitch, effects, relay, statistics
         )
-        if relay is not None:
-            # Preserve the exact microphone timeline before gain, denoising,
-            # pitch or effects.  Karaoke recording consumes this stream while
-            # the same native WASAPI capture continues driving low-latency
-            # self-monitoring; no competing hardware stream is opened.
-            relay.push(STREAM_CAPTURE, sample_rate, indata[:, 0])
-        # A momentary "listen to the raw voice" check bypasses the whole
-        # gate/compressor/tone-shaping/effects chain for what the singer
-        # hears locally. With no relay/room peer listening either, nothing
-        # needs the processed signal at all -- skip the DSP chain entirely
-        # instead of computing it just to discard it. (This function is the
-        # fallback PortAudio engine's callback; the native WASAPI engine
-        # already skips calling it at all for this same case -- see
-        # raw_active in monitor.cpp and _native_stream_target in main().)
-        if dry_monitor and relay is None:
-            monitor_output = np.clip(indata[:, 0] * live_gain, -1.0, 1.0).astype(np.float32)
-            level_source = monitor_output
-        else:
-            processed = quality.process(indata[:, :1], live_gain, noise_suppression)[:, 0]
-            dry = pitch.process(processed, octave)
-            processed = effects.process(dry, reverb, echo, delay)
-            if relay is not None:
-                relay.push(STREAM_DRY, sample_rate, dry)
-                relay.push(STREAM_WET, sample_rate, processed)
-            monitor_output = (
-                np.clip(indata[:, 0] * live_gain, -1.0, 1.0).astype(np.float32) if dry_monitor else processed
-            )
-            level_source = processed
-        # ADC/DAC and native audio-clock timestamps describe when the current
-        # callback's buffers travel through the driver.  They cannot observe
-        # that an active pitch shifter deliberately reads older samples from
-        # its history.  Keep that delay separate so consumers can add it once;
-        # the locally heard raw path has no such history even when room relay
-        # processing still runs in parallel.
-        statistics["effect_latency_ms"] = (
-            0.0 if dry_monitor else round(pitch.latency_ms(octave), 3)
-        )
-        for channel in range(outdata.shape[1]): outdata[:, channel] = monitor_output
+        if params.get("local_monitoring_enabled", 1.0) >= 0.5:
+            for channel in range(outdata.shape[1]): outdata[:, channel] = monitor_output
         if compute_started - level_state["reported_at"] >= _LEVEL_INTERVAL_SEC:
             level_state["reported_at"] = compute_started
             _update_level_report(level_source, time_info)
@@ -317,6 +311,7 @@ def _live_options(options: dict[str, Any], gain: float) -> dict[str, float]:
         "noise_suppression": float(options.get("noise_suppression", 0.35)),
         "octave": float(options.get("octave", 0.0)),
         "dry_monitor": float(options.get("dry_monitor", 0.0)),
+        "local_monitoring_enabled": float(options.get("local_monitoring_enabled", 1.0)),
     }
 
 

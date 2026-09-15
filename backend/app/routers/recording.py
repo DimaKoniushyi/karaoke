@@ -45,11 +45,17 @@ def _configure_room_relay_monitor(settings) -> bool:
     monitor already owns the one real output device, exactly as it does
     outside of room mode.
     """
-    if not settings.monitoring_enabled:
-        audio_service.stop_monitoring()
-        return False
+    # A room always needs microphone capture, regardless of whether the
+    # singer wants that microphone returned to their own headphones. Start
+    # the one native capture/relay engine in both cases and mute only its
+    # local output when self-monitoring is off.
+    relay_settings = audio_service.settings_snapshot(
+        settings,
+        monitoring_enabled=True,
+        local_monitoring_enabled=bool(settings.monitoring_enabled),
+    )
     try:
-        audio_service.configure_monitoring(settings, relay_needed=True)
+        audio_service.configure_monitoring(relay_settings, relay_needed=True)
     except RuntimeError:
         audio_service.stop_monitoring()
         return False
@@ -114,6 +120,27 @@ def release_room_voice_relay(db: DatabaseSession):
     """
     _restore_monitoring(db)
     return {"status": "released"}
+
+
+@router.post("/room/prepare-browser-voice")
+@serialized
+def prepare_room_browser_voice(db: DatabaseSession):
+    """Release the native device before the emergency browser capture path.
+
+    This does not alter the persisted monitoring preference; releasing the
+    room lease restores it through ``release_room_voice_relay``.
+    """
+    settings = audio_service.get_settings(db)
+    stopped = audio_service.settings_snapshot(settings, monitoring_enabled=False)
+    audio_service.configure_monitoring(stopped, relay_needed=False)
+    return {"status": "ready"}
+
+
+@router.post("/room/local-monitoring")
+@serialized
+def set_room_local_monitoring(enabled: bool):
+    """Changes only what the local singer hears; peer capture stays live."""
+    return {"monitoring": audio_service.set_room_local_monitoring(enabled)}
 
 
 @router.post("/start", response_model=schemas.RecordingStartOut)

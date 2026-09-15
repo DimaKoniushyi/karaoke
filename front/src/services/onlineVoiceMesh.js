@@ -6,13 +6,12 @@ import { MICROPHONE_CAPTURE_CONSTRAINTS } from "../utils/microphone-capture-cons
 import { resolveMicrophoneDevice } from "./microphoneDevice";
 import { createStudioMicrophoneGraph } from "./microphoneStudioQuality";
 import { suspendVoiceMicrophone } from "./onlineVoiceHardwareLifecycle";
-import { createRelayVoiceGraph } from "./pythonVoiceRelay";
 import { updatePeerIceServers } from "./onlineVoicePeerConfiguration";
 import OnlineVoicePeerRecovery from "./onlineVoicePeerRecovery";
 import { PEER_TIMEOUTS } from "./onlineVoicePeerTimeouts";
-// Audio is peer-to-peer; the signaling Worker never stores microphone data.
-
 import OnlineVoiceTransferSession from "./onlineVoiceTransferSession";
+import { createRelayVoiceGraph } from "./pythonVoiceRelay";
+// Audio is peer-to-peer; the signaling Worker never stores microphone data.
 
 const MAX_PENDING_ICE_CANDIDATES = 256;
 const OPUS_PACKET_TIME_MS = 5;
@@ -90,10 +89,12 @@ export default class OnlineVoiceMesh {
     // Audio DSP graph -- read by callers that need to tell the backend
     // which DSP source is live (see body.voice_relay in /recording/start).
     this.usingRelay = false;
+    this.backendVoiceLease = false;
     this.outputDeviceId = "";
     this.startPromise = null;
     this.lifecycleVersion = 0;
     this.onRemoteStream = null;
+    this.onLocalStream = null;
     this.onPeerClosed = null;
     this.canAcceptFile = null;
     this.onFile = null;
@@ -109,9 +110,6 @@ export default class OnlineVoiceMesh {
   }
 
   async start() {
-    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-      throw new Error(translateSaved("room.microphoneCaptureIsNotSupportedInThisEnvironment"));
-    }
     // Checked before any await below: two calls to start() landing in the
     // same tick (e.g. two components each mounting and calling voice.start()
     // on room join) must not both pass the stale-stream cleanup below and
@@ -161,6 +159,10 @@ export default class OnlineVoiceMesh {
       this.effectsStream.getAudioTracks().forEach((track) => {
         track.contentHint = "music";
       });
+      // A relay reconnect or native-to-browser emergency fallback replaces
+      // the MediaStream object. Rebind the local speaking meter immediately
+      // instead of leaving it attached to the ended old track.
+      this.onLocalStream?.(graph.rawStream || outgoingStream);
       await syncPeersAndInvite();
       return outgoingStream;
     };
@@ -186,24 +188,31 @@ export default class OnlineVoiceMesh {
         return null;
       }
       if (!prepared?.relay_available) return null;
+      this.backendVoiceLease = true;
       if (cancelled()) {
-        api.releaseRoomVoiceRelay().catch(() => {});
+        await api.releaseRoomVoiceRelay().catch(() => {});
+        this.backendVoiceLease = false;
         throw new Error(translateSaved("room.microphoneLaunchCanceled"));
       }
       let graph;
       try {
-        graph = await createRelayVoiceGraph({ connectTimeoutMs: 1500 });
+        graph = await createRelayVoiceGraph({
+          connectTimeoutMs: 1500,
+          setLocalMonitoring: (enabled) => api.setRoomLocalMonitoring(enabled)
+        });
       } catch {
         // prepareRoomVoiceRelay makes the backend keep the Python relay
         // enabled across monitor reconfigures. Give that lease back when
         // browser construction fails, otherwise every later local monitor
         // callback keeps paying the relay copy/encode/socket cost forever.
-        api.releaseRoomVoiceRelay().catch(() => {});
+        await api.releaseRoomVoiceRelay().catch(() => {});
+        this.backendVoiceLease = false;
         return null;
       }
       if (cancelled()) {
         await graph.close();
-        api.releaseRoomVoiceRelay().catch(() => {});
+        await api.releaseRoomVoiceRelay().catch(() => {});
+        this.backendVoiceLease = false;
         throw new Error(translateSaved("room.microphoneLaunchCanceled"));
       }
       this.usingRelay = true;
@@ -218,6 +227,19 @@ export default class OnlineVoiceMesh {
         const relayStream = await tryRelay(settings);
         if (relayStream) return relayStream;
         this.usingRelay = false;
+        // Installed desktop builds use the selected native driver and do not
+        // require Chromium to open the microphone a second time. Browser
+        // capture is only the emergency fallback when that native path is
+        // genuinely unavailable.
+        if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+          throw new Error(translateSaved("room.microphoneCaptureIsNotSupportedInThisEnvironment"));
+        }
+        // A native ASIO monitor (or a relay start that failed after opening
+        // the endpoint) must release the microphone before Chromium's
+        // emergency capture opens it. This also prevents two independent
+        // self-monitoring paths from playing the singer at once.
+        const browserPrepared = await api.prepareRoomBrowserVoice().catch(() => null);
+        this.backendVoiceLease = Boolean(browserPrepared);
         const deviceId = await resolveMicrophoneDevice(settings);
         if (cancelled()) throw new Error(translateSaved("room.microphoneLaunchCanceled"));
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -259,6 +281,10 @@ export default class OnlineVoiceMesh {
           this.microphoneGraph = null;
           this.stream = null;
         } else capturedStream?.getTracks?.().forEach((track) => track.stop());
+        if (this.backendVoiceLease && !this.stream) {
+          await api.releaseRoomVoiceRelay().catch(() => {});
+          this.backendVoiceLease = false;
+        }
         throw error;
       })
       .finally(() => {
@@ -289,7 +315,9 @@ export default class OnlineVoiceMesh {
     }
   }
 
-  getMeterStream() { return this.microphoneGraph?.rawStream || this.stream; }
+  getMeterStream() {
+    return this.microphoneGraph?.rawStream || this.stream;
+  }
 
   getOutgoingStream(participantId) {
     return this.peerEffectsEnabled.get(participantId) && this.effectsStream
@@ -321,7 +349,11 @@ export default class OnlineVoiceMesh {
     // added a missing track, never dropped an unwanted extra one, so a
     // stray sender just kept sending stale audio to the peer indefinitely.
     for (const sender of senders) {
-      if (sender.track && !selectedIds.has(sender.track.id) && typeof peer.removeTrack === "function") {
+      if (
+        sender.track &&
+        !selectedIds.has(sender.track.id) &&
+        typeof peer.removeTrack === "function"
+      ) {
         try {
           peer.removeTrack(sender);
           changed = true;
@@ -694,9 +726,13 @@ export default class OnlineVoiceMesh {
     });
   }
 
-  suspendMicrophone() { return suspendVoiceMicrophone(this); }
+  suspendMicrophone() {
+    return suspendVoiceMicrophone(this);
+  }
 
-  setupDataChannel(...args) { return this.transfers.setupDataChannel(...args); }
+  setupDataChannel(...args) {
+    return this.transfers.setupDataChannel(...args);
+  }
 
   waitForDataChannel(...args) {
     return this.transfers.waitForDataChannel(...args);
@@ -752,7 +788,8 @@ export default class OnlineVoiceMesh {
     // local voice capture stops, whether or not a recording ever actually
     // used it. Best-effort and fire-and-forget: stop() itself stays
     // synchronous, matching closeAudioContextQuietly just above.
-    if (this.usingRelay) api.releaseRoomVoiceRelay().catch(() => {});
+    if (this.backendVoiceLease) api.releaseRoomVoiceRelay().catch(() => {});
+    this.backendVoiceLease = false;
     this.usingRelay = false;
     this.stream = null;
     this.effectsStream = null;

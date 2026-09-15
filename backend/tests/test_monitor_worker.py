@@ -292,7 +292,7 @@ def test_main_seeds_live_params_from_config_and_starts_reader_thread(monkeypatch
     stream = Mock()
     monkeypatch.setattr(monitor_worker.sd, "Stream", Mock(return_value=stream))
 
-    assert (monitor_worker.main() == 0) and (monitor_worker._live_params == {'reverb': 0.2, 'echo': 0.5, 'delay': 0.7, 'noise_suppression': 0.35, 'octave': 0.0, 'volume': 2.0, 'dry_monitor': 0.0}) and (thread_started.is_set())
+    assert (monitor_worker.main() == 0) and (monitor_worker._live_params == {'reverb': 0.2, 'echo': 0.5, 'delay': 0.7, 'noise_suppression': 0.35, 'octave': 0.0, 'volume': 2.0, 'dry_monitor': 0.0, 'local_monitoring_enabled': 1.0}) and (thread_started.is_set())
     capsys.readouterr()
 
 
@@ -369,6 +369,33 @@ def test_dry_monitor_still_runs_the_dsp_chain_when_a_relay_is_configured(monkeyp
         monitor_worker.STREAM_DRY,
         monitor_worker.STREAM_WET,
     ]
+
+
+def test_room_capture_and_relay_continue_while_local_monitor_output_is_muted(monkeypatch):
+    monkeypatch.setattr(
+        monitor_worker,
+        "_live_params",
+        {
+            "volume": 1.0, "reverb": 0, "echo": 0, "delay": 0,
+            "octave": 0, "noise_suppression": 0,
+            "local_monitoring_enabled": 0.0,
+        },
+    )
+    pushed = []
+    relay = SimpleNamespace(push=lambda stream_id, _sample_rate, samples: pushed.append((stream_id, samples.copy())))
+    callback = monitor_worker._audio_callback(1.0, 48_000, {}, relay)
+    samples = np.full((32, 1), 0.25, dtype=np.float32)
+    output = np.full((32, 2), 123.0, dtype=np.float32)
+
+    callback(samples, output, 32, None, None)
+
+    assert np.count_nonzero(output) == 0
+    assert [stream_id for stream_id, _samples in pushed] == [
+        monitor_worker.STREAM_CAPTURE,
+        monitor_worker.STREAM_DRY,
+        monitor_worker.STREAM_WET,
+    ]
+    assert np.any(pushed[1][1])
 
 
 def test_main_constructs_a_relay_link_only_when_a_relay_port_is_configured(monkeypatch, capsys):

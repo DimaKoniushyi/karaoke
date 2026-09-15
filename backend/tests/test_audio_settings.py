@@ -303,6 +303,7 @@ def test_configure_monitoring_routes_auto_and_asio(monkeypatch):
                 "octave": 0.0,
                 "noise_suppression": 0.35,
                 "dry_monitor": 0.0,
+                "local_monitoring_enabled": True,
                 "wasapi_mode": "shared",
                 "native_shared": True,
                 "input_device_name": "Selected microphone",

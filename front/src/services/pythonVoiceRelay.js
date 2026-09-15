@@ -17,6 +17,7 @@ import { closeAudioContext } from "../utils/audio-context";
 import { apiToken } from "../utils/platform";
 
 const RELAY_PATH = "/audio/direct-monitor/relay";
+const STREAM_DRY = 0;
 const STREAM_WET = 1;
 // Matches audio_relay_protocol.py's _HEADER = struct.Struct("<IfI"): three
 // 4-byte fields, so the PCM payload starts at a 4-byte-aligned offset and a
@@ -43,6 +44,10 @@ function parseFrame(buffer) {
   // call), so there is no aliasing risk in holding a live view over it.
   const samples = new Float32Array(buffer, HEADER_BYTES, sampleCount);
   return { streamId, sampleRate, samples };
+}
+
+function isRoomVoiceFrame(frame) {
+  return frame.streamId === STREAM_DRY || frame.streamId === STREAM_WET;
 }
 
 function connectRelaySocket(timeoutMs) {
@@ -79,9 +84,20 @@ function connectRelaySocket(timeoutMs) {
     }, timeoutMs);
     socket.onmessage = (event) => {
       if (settled || !(event.data instanceof ArrayBuffer)) return;
+      let frame;
+      try {
+        frame = parseFrame(event.data);
+      } catch {
+        return;
+      }
+      // STREAM_CAPTURE belongs exclusively to the lossless karaoke
+      // recorder. The monitor publishes it before dry/wet room packets;
+      // treating it as dry voice interleaves two timelines and produces a
+      // robotic room microphone and false speaking levels.
+      if (!isRoomVoiceFrame(frame)) return;
       settled = true;
       clear();
-      resolve({ socket, firstFrame: parseFrame(event.data) });
+      resolve({ socket, firstFrame: frame });
     };
     socket.onclose = (event) => {
       if (settled) return;
@@ -128,7 +144,10 @@ function stopVoice(voice) {
   voice?.destination.stream.getTracks().forEach((track) => track.stop());
 }
 
-export async function createRelayVoiceGraph({ connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS } = {}) {
+export async function createRelayVoiceGraph({
+  connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS,
+  setLocalMonitoring
+} = {}) {
   const AudioContextCtor = globalThis.AudioContext ?? globalThis.webkitAudioContext;
   if (!AudioContextCtor?.prototype || typeof globalThis.AudioWorkletNode !== "function") {
     throw new Error("Web Audio is not supported in this environment");
@@ -168,6 +187,7 @@ export async function createRelayVoiceGraph({ connectTimeoutMs = DEFAULT_CONNECT
     let closed = false;
     let unavailableCallback = null;
     const deliver = (frame) => {
+      if (!isRoomVoiceFrame(frame)) return;
       const target = frame.streamId === STREAM_WET ? wet : dry;
       target.node.port.postMessage(frame.samples, [frame.samples.buffer]);
     };
@@ -203,11 +223,13 @@ export async function createRelayVoiceGraph({ connectTimeoutMs = DEFAULT_CONNECT
       setNoiseSuppression: () => {},
       setPitchShift: async () => 0,
       setEffects: () => false,
-      // Self-monitoring already runs on the Python side whenever monitoring
-      // is enabled, independent of this toggle -- this graph never plays
-      // anything locally (see the module docstring above), so the room's
-      // "hear yourself" control is intentionally inert here.
-      setMonitoring: () => false,
+      // This graph never plays locally. Toggle the native monitor's hardware
+      // output without touching capture or relay delivery to peers.
+      setMonitoring: async (enabled) => {
+        if (typeof setLocalMonitoring !== "function") return false;
+        const result = await setLocalMonitoring(Boolean(enabled));
+        return Boolean(result?.monitoring ?? result);
+      },
       getStream: ({ effectsEnabled = false } = {}) =>
         effectsEnabled ? wet.destination.stream : dry.destination.stream,
       getEffectsStream: () => wet.destination.stream,

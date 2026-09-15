@@ -3105,6 +3105,7 @@ test("uses the Python monitor relay instead of local capture when it is availabl
   );
 
   const mesh = makeMesh();
+  mesh.onLocalStream = vi.fn();
   let outgoing;
   try {
     outgoing = await mesh.start();
@@ -3112,7 +3113,10 @@ test("uses the Python monitor relay instead of local capture when it is availabl
     vi.unstubAllGlobals();
   }
 
-  expect(relayMocks.createRelayVoiceGraph).toHaveBeenCalledWith({ connectTimeoutMs: 1500 });
+  expect(relayMocks.createRelayVoiceGraph).toHaveBeenCalledWith({
+    connectTimeoutMs: 1500,
+    setLocalMonitoring: expect.any(Function)
+  });
   expect(capture).not.toHaveBeenCalled();
   expect(mesh.usingRelay).toBe(true);
   expect(mesh.microphoneGraph).toBe(graph);
@@ -3120,6 +3124,32 @@ test("uses the Python monitor relay instead of local capture when it is availabl
   expect(mesh.stream).toBe(graph.stream);
   expect(mesh.effectsStream).toBe(graph.effectsStream);
   expect(graph.onUnavailable).toHaveBeenCalledWith(expect.any(Function));
+  expect(mesh.onLocalStream).toHaveBeenCalledWith(graph.rawStream);
+});
+
+test("starts from the native relay even when browser microphone capture is unavailable", async () => {
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: { mediaDevices: {} }
+  });
+  const graph = fakeRelayGraph();
+  relayMocks.createRelayVoiceGraph.mockReset().mockResolvedValue(graph);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ relay_available: true })
+    })
+  );
+
+  try {
+    const mesh = makeMesh();
+    await expect(mesh.start()).resolves.toBe(graph.stream);
+    expect(mesh.usingRelay).toBe(true);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
 
 test("releases a prepared backend relay when browser relay construction fails", async () => {
@@ -3152,14 +3182,12 @@ test("skips the relay entirely for an ASIO driver and falls back to local captur
     configurable: true,
     value: { mediaDevices: { getUserMedia: capture } }
   });
-  vi.stubGlobal(
-    "fetch",
-    vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify({ audio_driver: "asio" })
-    })
-  );
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({ audio_driver: "asio" })
+  });
+  vi.stubGlobal("fetch", fetchMock);
 
   const mesh = makeMesh();
   try {
@@ -3171,6 +3199,8 @@ test("skips the relay entirely for an ASIO driver and falls back to local captur
   expect(relayMocks.createRelayVoiceGraph).not.toHaveBeenCalled();
   expect(capture).toHaveBeenCalled();
   expect(mesh.usingRelay).toBe(false);
+  const urls = fetchMock.mock.calls.map(([url]) => String(url));
+  expect(urls.some((url) => url.includes("prepare-browser-voice"))).toBe(true);
 });
 
 test("falls back to local capture and re-syncs peers when the relay drops mid-call", async () => {
@@ -3181,10 +3211,7 @@ test("falls back to local capture and re-syncs peers when the relay drops mid-ca
     value: { mediaDevices: { getUserMedia: capture } }
   });
   const graph = fakeRelayGraph();
-  relayMocks.createRelayVoiceGraph
-    .mockReset()
-    .mockResolvedValueOnce(graph)
-    .mockRejectedValue(new Error("relay gone after dropping"));
+  relayMocks.createRelayVoiceGraph.mockReset().mockResolvedValueOnce(graph).mockRejectedValue(new Error("relay gone after dropping"));
   vi.stubGlobal(
     "fetch",
     vi.fn().mockResolvedValue({

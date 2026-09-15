@@ -1063,6 +1063,16 @@ def configure_monitoring(
     )
 
 
+def set_room_local_monitoring(enabled: bool) -> bool:
+    """Mute/unmute only the room relay's hardware monitor output."""
+    if not _monitor_relay_needed:
+        return False
+    _monitor_control.update_live(
+        lambda: _send_live_update({"local_monitoring_enabled": 1.0 if enabled else 0.0})
+    )
+    return bool(enabled)
+
+
 def _configure_monitoring(settings, *, adopt_driver_buffer: bool = False) -> None:
     _stop_monitoring_process()
     _monitor_control.check()
@@ -1519,6 +1529,12 @@ def _start_shared_monitor(
         # instead of only after a later live update -- see
         # _native_stream_target in monitor_worker.py.
         "dry_monitor": 1.0 if (_monitor_effects_disabled or _monitor_dry_bypass) else 0.0,
+        # Room capture stays alive when the singer disables hearing themself.
+        # This switch affects hardware output only; dry/wet relay packets
+        # still feed the WebRTC peers and speaking meter.
+        "local_monitoring_enabled": bool(
+            getattr(settings, "local_monitoring_enabled", settings.monitoring_enabled)
+        ),
         "wasapi_mode": wasapi_mode,
     }
     if wasapi:

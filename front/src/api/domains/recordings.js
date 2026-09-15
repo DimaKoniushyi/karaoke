@@ -15,7 +15,11 @@ export const recordingsApi = {
   // connect to it (see onlineVoiceMesh.js's tryRelay), or the relay never
   // has a reason to exist yet.
   prepareRoomVoiceRelay: () => request("/recording/room/prepare-voice-relay", { method: "POST" }),
+  prepareRoomBrowserVoice: () =>
+    request("/recording/room/prepare-browser-voice", { method: "POST" }),
   releaseRoomVoiceRelay: () => request("/recording/room/release-voice-relay", { method: "POST" }),
+  setRoomLocalMonitoring: (enabled) =>
+    request(`/recording/room/local-monitoring?enabled=${Boolean(enabled)}`, { method: "POST" }),
   startRecording: (
     songId,
     positionSec = 0,
