@@ -58,6 +58,14 @@ int main() {
     verify(render_transfer_count(0, 441, 532, false) == 441);
     verify(render_transfer_count(0, 441, 133, true) == 133);
     verify(render_transfer_count(200, 441, 300, true) == 241);
+    // When capture and render events become ready together, the render event
+    // must not teach the drift controller that the microphone is starved
+    // before the already-ready capture packet has been drained. That false
+    // negative correction accumulated for about 90 seconds, overflowed the
+    // queue, then produced a burst of underruns and perceptible delay.
+    verify(!should_adjust_drift(true, false));
+    verify(should_adjust_drift(true, true));
+    verify(!should_adjust_drift(false, true));
     verify(engine_period(64, 48, 480, 48) == 96);
     verify(engine_period(64, 441, 441, 441) == 441);
     verify(engine_period(128, 32, 1024, 32) == 128);

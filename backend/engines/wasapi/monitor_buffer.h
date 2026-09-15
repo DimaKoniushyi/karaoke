@@ -77,6 +77,13 @@ inline uint32_t render_transfer_count(uint32_t padding, uint32_t target,
     if (!started && ready < missing) return 0;
     return std::min(missing, ready);
 }
+inline bool should_adjust_drift(bool output_wakeup, bool capture_drain_complete) {
+    // A shared render event may be observed at the same instant as an
+    // exclusive capture packet. Measuring the residual queue before draining
+    // that already-ready packet turns normal event ordering into a false
+    // starvation signal and destabilizes the clock controller.
+    return output_wakeup && capture_drain_complete;
+}
 // Mirrors the ASIO bridge's resolve_buffer_size: the device's own
 // min/max/fundamental always wins. A user-requested size outside that range
 // is clamped into it (and aligned up to the fundamental granularity) rather

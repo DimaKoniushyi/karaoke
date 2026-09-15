@@ -547,8 +547,10 @@ struct Engine {
             throw std::runtime_error("Audio event wait failed");
         const bool output_wakeup = awakened == WAIT_OBJECT_0 + 1;
         stats.event_wait_ms = (monotonic_seconds() - entering) * 1000;
-        // A ready output block must not wait behind another capture/DSP burst.
-        render_ready(output_wakeup);
+        // Submit anything already available immediately, but do not sample
+        // clock drift until the capture packet that woke at the same time has
+        // also been drained below.
+        render_ready(false);
         mirror_ready();
         UINT32 available = 0;
         check(capture->GetNextPacketSize(&available), "GetNextPacketSize");
@@ -604,6 +606,11 @@ struct Engine {
             mirror_ready();
             check(capture->GetNextPacketSize(&available), "GetNextPacketSize");
         }
+        // The drift controller must observe the residual queue only after all
+        // capture data already exposed by the endpoint has been consumed.
+        // Otherwise a simultaneous render/capture wake is misclassified as
+        // starvation and creates a repeating overflow/underrun cycle.
+        render_ready(shared_audio::should_adjust_drift(output_wakeup, available == 0));
         pump_finished = monotonic_seconds();
     }
     void mirror_ready() {
@@ -651,7 +658,7 @@ struct Engine {
         // A low padding level is not itself an underrun: an input event can
         // wake this pump just before its packet is drained below. Count only
         // when the render engine has actually exhausted both sources.
-        if (!padding && !count) ++stats.underruns;
+        if (adjust_drift && !padding && !count) ++stats.underruns;
         const bool fully_starved = !padding && !count;
         if (count) {
             double presentation = 0;

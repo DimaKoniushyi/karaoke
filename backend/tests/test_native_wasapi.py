@@ -447,11 +447,16 @@ def test_native_wasapi_render_target_never_underfills_one_shared_output_period()
     assert "output.period" in call
 
 
-def test_native_wasapi_adjusts_clock_drift_only_on_the_render_clock_event():
+def test_native_wasapi_adjusts_clock_drift_only_after_capture_is_drained_on_render_event():
     source = (Path(__file__).parents[1] / "engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
     assert "const bool output_wakeup =" in source
-    assert "render_ready(output_wakeup);" in source
-    assert source.count("render_ready(false);") >= 1
+    adjustment = "render_ready(shared_audio::should_adjust_drift(output_wakeup, available == 0));"
+    assert adjustment in source
+    assert source.index(adjustment) > source.index(
+        'check(capture->GetNextPacketSize(&available), "GetNextPacketSize");',
+        source.index("for (unsigned packet = 0;"),
+    )
+    assert source.count("render_ready(false);") >= 2
     assert "if (adjust_drift) queue->nudge(fully_starved);" in source
 
 
@@ -471,7 +476,7 @@ def test_native_underrun_counts_only_when_render_buffer_and_queue_are_both_empty
         / "backend/engines/wasapi/monitor.cpp"
     ).read_text(encoding="utf-8")
 
-    assert "if (!padding && !count) ++stats.underruns;" in source
+    assert "if (adjust_drift && !padding && !count) ++stats.underruns;" in source
     assert "if (padding < target && !count) ++stats.underruns;" not in source
 
 
