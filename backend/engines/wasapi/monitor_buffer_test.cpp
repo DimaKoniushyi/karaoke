@@ -50,6 +50,14 @@ int main() {
     verify(render_padding_target(480, 960, 144, 48000, 48000, 16) == 480);
     verify(render_padding_target(480, 960, 480, 48000, 48000, 16) == 480);
     verify(render_padding_target(441, 882, 144, 48000, 44100, 16) == 441);
+    // Do not start a 441-frame shared renderer with only the first 133-frame
+    // capture packet. It would run dry before the next shared-engine wake and
+    // can remain in a permanently starved, robotic cadence. Once started,
+    // partial top-ups from faster capture events are still useful.
+    verify(render_transfer_count(0, 441, 133, false) == 0);
+    verify(render_transfer_count(0, 441, 532, false) == 441);
+    verify(render_transfer_count(0, 441, 133, true) == 133);
+    verify(render_transfer_count(200, 441, 300, true) == 241);
     verify(engine_period(64, 48, 480, 48) == 96);
     verify(engine_period(64, 441, 441, 441) == 441);
     verify(engine_period(128, 32, 1024, 32) == 128);

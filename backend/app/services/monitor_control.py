@@ -1,5 +1,6 @@
 """One coalescing hardware-command lane; no DB sessions cross thread boundaries."""
 
+import json
 import logging
 import math
 import threading
@@ -14,6 +15,10 @@ _STREAM_STATISTICS = ("callback_frames", "callback_count", "glitch_count", "queu
                       "capture_delivery_ms", "program_residence_ms", "queue_residence_ms", "output_clock_lead_ms",
                       "render_submit_ms", "render_padding_ms", "capture_processing_ms", "event_wait_ms", "pump_gap_ms",
                       "captured_frames", "rendered_frames")
+_DIAGNOSTIC_COUNTERS = (
+    "callback_count", "glitch_count", "queue_underruns", "queue_dropped_frames",
+    "captured_frames", "rendered_frames",
+)
 
 
 class MonitorCancelled(RuntimeError):
@@ -31,12 +36,16 @@ class MonitorControl:
         self.thread = None
         self.latency_breakdown_logged_at = 0.0
         self.real_latency_logged_at = 0.0
+        self.monitor_diagnostics_logged_at = 0.0
+        self.monitor_diagnostics_previous = {}
         self.status = {"state": "idle", "fallback_count": 0, "glitch_fallback_count": 0}
 
     def _begin(self, state, details):
         self.token.set()
         self.token = threading.Event()
         self.live = None
+        self.monitor_diagnostics_logged_at = 0.0
+        self.monitor_diagnostics_previous = {}
         self.status = {
             "state": state, "fallback_count": 0, "glitch_fallback_count": 0,
             "requested_at": time.monotonic(), **details,
@@ -99,6 +108,29 @@ class MonitorControl:
                         self.status[key] = message[key]
                 stream_latency = message.get("stream_latency_ms")
                 now = time.monotonic()
+                if (self.status.get("state") == "running" and
+                        now - self.monitor_diagnostics_logged_at >= 5.0):
+                    payload = dict(self.status)
+                    requested_at = payload.pop("requested_at", None)
+                    if requested_at is not None:
+                        payload["elapsed_ms"] = round((now - requested_at) * 1000)
+                    for key in _DIAGNOSTIC_COUNTERS:
+                        current = payload.get(key)
+                        previous = self.monitor_diagnostics_previous.get(key)
+                        if isinstance(current, (int, float)) and not isinstance(current, bool):
+                            payload[f"delta_{key}"] = (
+                                current - previous
+                                if isinstance(previous, (int, float)) and not isinstance(previous, bool)
+                                else current
+                            )
+                    self.monitor_diagnostics_previous = {
+                        key: payload[key] for key in _DIAGNOSTIC_COUNTERS if key in payload
+                    }
+                    logger.info(
+                        "AUDIO_MONITOR_DIAGNOSTICS %s",
+                        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                    )
+                    self.monitor_diagnostics_logged_at = now
                 # Logged periodically (not just once) so a latency chase has an
                 # ongoing trail to compare against, not a single early sample.
                 if (str(self.status.get("engine", "")).startswith("wasapi-native-") and
@@ -141,6 +173,7 @@ class MonitorControl:
                             message[f"{kind}_latency_ms"] = samples * 1000 / rate
             if event in {"started", "fallback"}:
                 for key in ("blocksize", "sample_rate", "mode", "engine", "driver", "requested_driver", "failed_driver", "latency", "latency_source", "input_latency_ms", "output_latency_ms",
+                            "input_device", "output_device", "requested_blocksize",
                             "output_sample_rate", "input_period_frames", "output_period_frames",
                             "input_raw", "output_raw", "input_exclusive", "output_exclusive",
                             "input_min_period_frames", "output_min_period_frames",

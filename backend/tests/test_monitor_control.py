@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 from types import SimpleNamespace
@@ -566,6 +567,42 @@ def test_hybrid_wasapi_retains_raw_flags_and_logs_its_latency_breakdown(control,
     status = control.snapshot()
     assert status["input_raw"] is True and status["output_raw"] is False
     assert any("WASAPI latency breakdown" in record.message for record in caplog.records)
+
+
+def test_running_monitor_prints_copyable_full_diagnostics_with_counter_deltas(control, caplog):
+    control.event(control.token, {
+        "event": "started", "engine": "wasapi-native-input-exclusive",
+        "input_device": "USB Microphone", "output_device": "USB Headphones",
+        "sample_rate": 44100, "output_sample_rate": 44100,
+        "input_period_frames": 133, "output_period_frames": 441,
+    })
+    with caplog.at_level("INFO", logger="app.services.monitor_control"):
+        control.event(control.token, {
+            "event": "level", "callback_count": 100,
+            "captured_frames": 13300, "rendered_frames": 8820,
+            "queue_dropped_frames": 4300, "queue_underruns": 2,
+            "queue_ms": 20.7, "stream_latency_ms": 19.4,
+        })
+        control.monitor_diagnostics_logged_at = 0
+        control.event(control.token, {
+            "event": "level", "callback_count": 200,
+            "captured_frames": 26600, "rendered_frames": 17640,
+            "queue_dropped_frames": 8600, "queue_underruns": 3,
+            "queue_ms": 20.7, "stream_latency_ms": 19.2,
+        })
+
+    records = [record.message for record in caplog.records if record.message.startswith("AUDIO_MONITOR_DIAGNOSTICS ")]
+    assert len(records) == 2
+    payload = json.loads(records[-1].removeprefix("AUDIO_MONITOR_DIAGNOSTICS "))
+    assert payload["state"] == "running"
+    assert payload["engine"] == "wasapi-native-input-exclusive"
+    assert payload["input_device"] == "USB Microphone"
+    assert payload["captured_frames"] == 26600
+    assert payload["rendered_frames"] == 17640
+    assert payload["delta_captured_frames"] == 13300
+    assert payload["delta_rendered_frames"] == 8820
+    assert payload["delta_queue_dropped_frames"] == 4300
+    assert payload["delta_queue_underruns"] == 1
 
 
 def test_start_shared_monitor_opens_a_relay_and_passes_its_port_to_the_worker(control, monkeypatch):

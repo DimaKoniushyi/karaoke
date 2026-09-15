@@ -641,7 +641,8 @@ struct Engine {
         // An early render event must not enqueue a period of silence ahead of
         // microphone data that arrives a moment later. Submit only ready audio.
         const auto ready = UINT32(queue->available());
-        const UINT32 count = padding < target ? std::min(target - padding, ready) : 0;
+        const UINT32 count = shared_audio::render_transfer_count(
+            padding, target, ready, output.started);
         // Windows wants audio and the queue has none at all -- the block
         // below (which is where underruns were counted) never runs in this
         // case, so a fully-starved queue was previously invisible in the

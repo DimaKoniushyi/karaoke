@@ -67,6 +67,16 @@ inline uint32_t render_padding_target(uint32_t render_period, uint32_t render_bu
     (void)requested;
     return std::min(render_period, render_buffer);
 }
+inline uint32_t render_transfer_count(uint32_t padding, uint32_t target,
+                                      uint32_t ready, bool started) {
+    if (!target || padding >= target) return 0;
+    const uint32_t missing = target - padding;
+    // Starting with a partial shared-engine quantum immediately underruns on
+    // endpoints that expose padding only once per engine wake-up. Prime one
+    // complete quantum; after start, accept every safe partial top-up.
+    if (!started && ready < missing) return 0;
+    return std::min(missing, ready);
+}
 // Mirrors the ASIO bridge's resolve_buffer_size: the device's own
 // min/max/fundamental always wins. A user-requested size outside that range
 // is clamped into it (and aligned up to the fundamental granularity) rather
