@@ -346,10 +346,12 @@ def _matching_wdmks_endpoints(
         selected_tokens = _hardware_tokens(selected_name)
         selected_signature = endpoint_signature(selected_name)
         candidates: list[tuple[int, int]] = []
+        directional: list[tuple[int, str]] = []
         for index, device in enumerate(devices):
             if int(device.get(capability, 0)) < 1 or not _is_wdm_ks_device(device):
                 continue
             candidate_name = str(device.get("name", ""))
+            directional.append((index, candidate_name))
             overlap = selected_tokens & _hardware_tokens(candidate_name)
             signature_match = bool(
                 selected_signature and selected_signature == endpoint_signature(candidate_name)
@@ -357,7 +359,15 @@ def _matching_wdmks_endpoints(
             if overlap or signature_match:
                 candidates.append((len(overlap) * 100 + int(signature_match), index))
         if not candidates:
-            return None
+            # Some PortAudio/Windows combinations irreversibly expose the KS
+            # pin label as U+FFFD replacement characters.  With one and only
+            # one pin in this direction its identity is unambiguous; refusing
+            # it made the only full-duplex low-latency path unreachable on
+            # otherwise ordinary Realtek machines.  Never guess when names
+            # are readable or when more than one corrupted pin is available.
+            if len(directional) != 1 or "\ufffd" not in directional[0][1]:
+                return None
+            candidates.append((0, directional[0][0]))
         result.append(max(candidates)[1])
     return result[0], result[1]
 
@@ -1084,15 +1094,17 @@ def _configure_monitoring(settings, *, adopt_driver_buffer: bool = False) -> Non
         return
     if settings.audio_driver == "auto" and not _monitor_relay_needed:
         devices = sd.query_devices() if _AUDIO_BACKEND_AVAILABLE else None
-        # Windows Driver first tries native exclusive capture while render
-        # remains shared, so radio and other playback continue normally. If
-        # the microphone rejects every exclusive PCM/float format, fall back
-        # to coexistence-verified WDM-KS and finally fully shared WASAPI.
+        # Give a coexistence-verified WDM-KS duplex stream first refusal: it
+        # bypasses both slow Windows audio-engine legs.  Exclusive capture
+        # with shared render only removes the input leg and therefore cannot
+        # reach the same round-trip latency on consumer Realtek endpoints.
+        # Keep that hybrid WASAPI path as the broadly compatible fallback,
+        # followed by fully shared WASAPI.
+        if devices is not None and _try_automatic_wdmks_monitor(settings, devices=devices):
+            return
         if devices is not None and _try_native_input_exclusive_monitor(
             settings, devices=devices
         ):
-            return
-        if devices is not None and _try_automatic_wdmks_monitor(settings, devices=devices):
             return
         _start_shared_monitor(
             settings, driver=settings.audio_driver, relay_needed=False, devices=devices
@@ -1141,8 +1153,6 @@ def _transport_preserves_shared_endpoints(settings, *, verify_activity: bool = F
     therefore a direct coexistence test, not a driver-name assumption. The
     temporary stream is never started and emits no sound.
     """
-    from app.services.native_wasapi import NativeWasapiStream
-
     stream = None
     try:
         callbacks_before = None
@@ -1158,6 +1168,55 @@ def _transport_preserves_shared_endpoints(settings, *, verify_activity: bool = F
                 time.sleep(0.05)
             if callbacks_before is None:
                 return False
+        if verify_activity:
+            # WDM-KS legitimately owns the capture pin while it is running.
+            # Reopening that same microphone through NativeWasapiStream made
+            # the coexistence check reject a healthy low-latency transport.
+            # Karaoke/radio only needs the selected *render* endpoint to stay
+            # shared, so exercise exactly that path with a silent stream.
+            devices = sd.query_devices()
+            input_id = preferred_input_device(
+                settings.input_device_id,
+                "auto",
+                devices=devices,
+                device_name=getattr(settings, "input_device_name", None),
+            )
+            output_id = preferred_output_device(
+                input_id,
+                "auto",
+                settings.output_device_id,
+                devices=devices,
+                device_name=getattr(settings, "output_device_name", None),
+            )
+            resolved_output = _resolved_device_index(output_id, "output", devices)
+            output = devices[resolved_output]
+            channels = min(2, int(output.get("max_output_channels", 0)))
+            if channels < 1 or not _is_wasapi_device(output):
+                return False
+
+            def silence(buffer, _frames, _clock, _status):
+                buffer.fill(0)
+
+            stream = sd.OutputStream(
+                device=resolved_output,
+                samplerate=float(output.get("default_samplerate", 0) or 48_000),
+                channels=channels,
+                dtype="float32",
+                blocksize=0,
+                latency="low",
+                extra_settings=sd.WasapiSettings(exclusive=False, auto_convert=True),
+                callback=silence,
+            )
+            stream.start()
+            time.sleep(0.15)
+            callbacks_after = _monitor_control.snapshot().get("callback_count")
+            return (
+                isinstance(callbacks_after, int)
+                and not isinstance(callbacks_after, bool)
+                and callbacks_after - callbacks_before >= 32
+            )
+
+        from app.services.native_wasapi import NativeWasapiStream
         stream = NativeWasapiStream(
             {
                 "input_device_name": settings.input_device_name or "",
@@ -1167,30 +1226,6 @@ def _transport_preserves_shared_endpoints(settings, *, verify_activity: bool = F
             },
             {},
         )
-        if verify_activity:
-            def silence(_input, output, _frames, _time_info, _status):
-                output.fill(0)
-
-            # Opening a shared endpoint can return success while silently
-            # freezing a supposedly low-latency KS stream. Actually start and
-            # pump both shared endpoints, keep them alive long enough for two
-            # worker reports, and require multiple new KS callbacks.
-            stream.start(silence)
-            for _ in range(6):
-                stream.pump()
-            time.sleep(0.15)
-            callbacks_after = _monitor_control.snapshot().get("callback_count")
-            return (
-                isinstance(callbacks_after, int)
-                and not isinstance(callbacks_after, bool)
-                # A nominal 16-frame stream that advances only at the usual
-                # ~10 ms Windows cadence is not a low-latency stream; several
-                # drivers do exactly that while still reporting 0.36 ms.
-                # Thirty-two blocks inside this ~0.2 s simultaneous test
-                # requires real sub-6.25-ms callback delivery and therefore
-                # rejects both frozen and merely cosmetic tiny buffers.
-                and callbacks_after - callbacks_before >= 32
-            )
         return True
     except Exception as exc:
         logger.info("Direct audio transport rejected because Windows Shared could not coexist: %s", exc)

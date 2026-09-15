@@ -323,6 +323,12 @@ struct Endpoint {
             try_candidate(AudioCategory_Communications, static_cast<AUDCLNT_STREAMOPTIONS>(0));
         } else {
             try_candidate(AudioCategory_Media, AUDCLNT_STREAMOPTIONS_RAW);
+            // Render categories are mapped to OEM-specific processing graphs.
+            // Consumer Realtek drivers can leave Media on their legacy graph
+            // while neutral/RTC categories expose a genuinely shorter engine
+            // period. Probe them all, then select by the reported duration.
+            try_candidate(AudioCategory_Other, AUDCLNT_STREAMOPTIONS_RAW);
+            try_candidate(AudioCategory_Communications, AUDCLNT_STREAMOPTIONS_RAW);
             // GameChat is the real-time render category that explicitly
             // does not attenuate other streams. Some consumer drivers offer
             // it a shorter shared period than Media; it only wins below when
@@ -334,6 +340,8 @@ struct Endpoint {
             // Keep the same non-ducking set as a normal-mode compatibility
             // fallback for endpoints that reject RAW entirely.
             try_candidate(AudioCategory_Media, static_cast<AUDCLNT_STREAMOPTIONS>(0));
+            try_candidate(AudioCategory_Other, static_cast<AUDCLNT_STREAMOPTIONS>(0));
+            try_candidate(AudioCategory_Communications, static_cast<AUDCLNT_STREAMOPTIONS>(0));
             try_candidate(AudioCategory_GameChat, static_cast<AUDCLNT_STREAMOPTIONS>(0));
             try_candidate(AudioCategory_Movie, static_cast<AUDCLNT_STREAMOPTIONS>(0));
             try_candidate(AudioCategory_SoundEffects, static_cast<AUDCLNT_STREAMOPTIONS>(0));
@@ -490,11 +498,12 @@ struct Engine {
         // the app. Retain only the requested processing block (or less when
         // the endpoint period itself is shorter); spare capacity still
         // absorbs scheduling stalls without becoming intentional latency.
-        // Exclusive capture and shared render usually have different event
-        // quanta (for example 133 vs 441 frames). Retain one already-captured
-        // input quantum so the render engine never alternates between a short
-        // write and starvation. Shared/shared keeps the user's smaller target.
-        const size_t queue_target = input.exclusive ? input.period : blocksize;
+        // Do not retain a full capture period merely because capture is
+        // exclusive. On consumer endpoints that period is often 10 ms and is
+        // then pure extra user-mode latency. Spare allocation still handles
+        // occasional scheduling stalls without making them the steady state.
+        const size_t queue_target = shared_audio::monitor_queue_target(
+            blocksize, input.period, input.exclusive);
         const size_t safety_frames = std::max<size_t>(2, std::min<size_t>(queue_target,
             size_t(std::ceil(output.period * ratio))));
         queue = std::make_unique<shared_audio::MonitorBuffer>(capacity, ratio, safety_frames);

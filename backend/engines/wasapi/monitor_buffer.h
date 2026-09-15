@@ -36,6 +36,18 @@ inline uint32_t processing_chunk_size(uint32_t requested, uint32_t capture_perio
         throw std::runtime_error("Invalid processing chunk size");
     return std::max(requested, capture_period);
 }
+inline uint32_t monitor_queue_target(uint32_t requested, uint32_t capture_period,
+                                     bool input_exclusive) {
+    if (!requested || !capture_period)
+        throw std::runtime_error("Invalid monitor queue target");
+    // Exclusive mode changes how the endpoint obtains samples, not how much
+    // audio the user-mode bridge must deliberately retain.  Keeping a whole
+    // capture packet here adds that packet's duration directly to the audible
+    // round trip.  The emergency allocation still absorbs scheduling stalls;
+    // drift control targets only the user's small processing block.
+    (void)input_exclusive;
+    return requested;
+}
 // Mirrors the ASIO bridge's resolve_buffer_size: the device's own
 // min/max/fundamental always wins. A user-requested size outside that range
 // is clamped into it (and aligned up to the fundamental granularity) rather

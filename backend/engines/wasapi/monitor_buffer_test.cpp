@@ -37,6 +37,12 @@ int main() {
     // calls cannot make it audible sooner; it only adds interpreter crossings.
     verify(processing_chunk_size(16, 480) == 480);
     verify(processing_chunk_size(64, 48) == 64);
+    // Exclusive capture must not manufacture a whole additional capture
+    // period in the user-mode drift queue.  A 441-frame Realtek period is
+    // already 10 ms; retaining another one made the hybrid path measurably
+    // slower even while capture and render clocks were healthy.
+    verify(monitor_queue_target(16, 441, true) == 16);
+    verify(monitor_queue_target(64, 480, false) == 64);
     verify(engine_period(64, 48, 480, 48) == 96);
     verify(engine_period(64, 441, 441, 441) == 441);
     verify(engine_period(128, 32, 1024, 32) == 128);

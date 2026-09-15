@@ -410,6 +410,21 @@ def test_native_render_probes_game_chat_for_low_latency_without_ducking_other_au
     assert "try_candidate(AudioCategory_GameChat, AUDCLNT_STREAMOPTIONS_RAW);" in render_branch
 
 
+def test_native_render_probes_neutral_and_realtime_categories_before_accepting_legacy_period():
+    source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
+    render_branch = source[source.index("} else {"):source.index("if (!client) throw")]
+
+    # OEM drivers map categories to different signal-processing modes and
+    # periods.  Realtek commonly keeps Media on a legacy period while Other
+    # or Communications exposes its RTC period; candidate selection already
+    # chooses by measured duration, so omitting these categories silently
+    # strands the endpoint on the slower graph.
+    assert "try_candidate(AudioCategory_Other, AUDCLNT_STREAMOPTIONS_RAW);" in render_branch
+    assert "try_candidate(AudioCategory_Communications, AUDCLNT_STREAMOPTIONS_RAW);" in render_branch
+    assert "try_candidate(AudioCategory_Other, static_cast<AUDCLNT_STREAMOPTIONS>(0));" in render_branch
+    assert "try_candidate(AudioCategory_Communications, static_cast<AUDCLNT_STREAMOPTIONS>(0));" in render_branch
+
+
 def test_native_wasapi_pump_requests_critical_pro_audio_mmcss_priority():
     source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
     registered = source.index('AvSetMmThreadCharacteristicsW(L"Pro Audio"')
@@ -424,13 +439,14 @@ def test_native_wasapi_drift_target_is_the_requested_low_latency_block_not_a_ful
     assert "MonitorBuffer>(capacity, ratio, safety_frames)" in source
 
 
-def test_exclusive_capture_keeps_one_capture_period_to_prevent_render_starvation():
+def test_exclusive_capture_does_not_retain_a_capture_period_in_the_user_queue():
     source = (
         native_wasapi.library_path().parents[3]
         / "backend/engines/wasapi/monitor.cpp"
     ).read_text(encoding="utf-8")
 
-    assert "input.exclusive ? input.period : blocksize" in source
+    assert "monitor_queue_target(" in source
+    assert "input.exclusive ? input.period : blocksize" not in source
 
 
 def test_native_underrun_counts_only_when_render_buffer_and_queue_are_both_empty():

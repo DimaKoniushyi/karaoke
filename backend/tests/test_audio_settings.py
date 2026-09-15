@@ -399,6 +399,44 @@ def test_wdmks_matches_a_numbered_pin_when_its_name_omits_the_hardware_brand(mon
     ) == (0, 1)
 
 
+def test_wdmks_uses_unique_directional_pins_when_portaudio_names_are_corrupted(monkeypatch):
+    devices = [
+        {"name": "�������� ��������", "hostapi": 1,
+         "max_input_channels": 2, "max_output_channels": 0},
+        {"name": "��������", "hostapi": 1,
+         "max_input_channels": 0, "max_output_channels": 2},
+    ]
+    monkeypatch.setattr(
+        audio_service.sd, "query_hostapis", lambda _index: {"name": "Windows WDM-KS"}
+    )
+
+    assert audio_service._matching_wdmks_endpoints(
+        devices,
+        "Microphone (Realtek(R) Audio)",
+        "Speakers (Realtek(R) Audio)",
+    ) == (0, 1)
+
+
+def test_wdmks_never_guesses_between_ambiguous_corrupted_pins(monkeypatch):
+    devices = [
+        {"name": "�������� 1", "hostapi": 1,
+         "max_input_channels": 2, "max_output_channels": 0},
+        {"name": "�������� 2", "hostapi": 1,
+         "max_input_channels": 2, "max_output_channels": 0},
+        {"name": "��������", "hostapi": 1,
+         "max_input_channels": 0, "max_output_channels": 2},
+    ]
+    monkeypatch.setattr(
+        audio_service.sd, "query_hostapis", lambda _index: {"name": "Windows WDM-KS"}
+    )
+
+    assert audio_service._matching_wdmks_endpoints(
+        devices,
+        "Microphone (Realtek(R) Audio)",
+        "Speakers (Realtek(R) Audio)",
+    ) is None
+
+
 @pytest.mark.parametrize(
     ("endpoint", "expected"),
     [
@@ -440,6 +478,38 @@ def test_windows_driver_uses_only_a_coexistence_verified_wdmks_fast_path(monkeyp
     automatic.assert_not_called()
     wdmks.assert_called_once_with(current, devices=devices)
     shared.assert_not_called()
+
+
+def test_windows_driver_tries_full_duplex_wdmks_before_hybrid_wasapi(monkeypatch):
+    """A capture-only fast path still leaves the slow shared render in series.
+
+    A verified WDM-KS duplex stream can remove both Windows engine legs, so it
+    must get first refusal.  The hybrid exclusive-capture/shared-render path is
+    the fallback when the selected consumer pins cannot coexist with normal
+    application playback.
+    """
+    from app.services import recording_service
+
+    current = settings(audio_driver="auto", monitoring_enabled=True)
+    devices = [{"name": "placeholder"}]
+    order = []
+    monkeypatch.setattr(recording_service, "apply_monitor_settings", lambda *_: False)
+    monkeypatch.setattr(audio_service, "_AUDIO_BACKEND_AVAILABLE", True)
+    monkeypatch.setattr(audio_service.sd, "query_devices", Mock(return_value=devices))
+    monkeypatch.setattr(
+        audio_service,
+        "_try_automatic_wdmks_monitor",
+        lambda *_args, **_kwargs: order.append("wdmks") or True,
+    )
+    monkeypatch.setattr(
+        audio_service,
+        "_try_native_input_exclusive_monitor",
+        lambda *_args, **_kwargs: order.append("hybrid-wasapi") or True,
+    )
+
+    audio_service.configure_monitoring(current)
+
+    assert order == ["wdmks"]
 
 
 def test_windows_driver_native_fast_path_exclusively_captures_but_keeps_output_shared(
@@ -569,10 +639,20 @@ def test_windows_driver_keeps_wasapi_when_room_relay_is_required(
 
 
 def test_wdmks_coexistence_rejects_a_transport_whose_callbacks_freeze(monkeypatch):
-    from app.services import native_wasapi
-
+    devices = [
+        {"name": "Selected mic", "hostapi": 0, "max_input_channels": 1,
+         "max_output_channels": 0, "default_samplerate": 48_000},
+        {"name": "Selected speakers", "hostapi": 0, "max_input_channels": 0,
+         "max_output_channels": 2, "default_samplerate": 48_000},
+    ]
     stream = Mock()
-    monkeypatch.setattr(native_wasapi, "NativeWasapiStream", Mock(return_value=stream))
+    monkeypatch.setattr(audio_service.sd, "query_devices", Mock(return_value=devices))
+    monkeypatch.setattr(audio_service, "preferred_input_device", Mock(return_value=0))
+    monkeypatch.setattr(audio_service, "preferred_output_device", Mock(return_value=1))
+    monkeypatch.setattr(audio_service, "_resolved_device_index", lambda value, *_args: value)
+    monkeypatch.setattr(audio_service, "_is_wasapi_device", lambda _device: True)
+    monkeypatch.setattr(audio_service.sd, "WasapiSettings", Mock(return_value="shared"))
+    monkeypatch.setattr(audio_service.sd, "OutputStream", Mock(return_value=stream))
     monkeypatch.setattr(audio_service.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(
         audio_service._monitor_control,
@@ -588,14 +668,66 @@ def test_wdmks_coexistence_rejects_a_transport_whose_callbacks_freeze(monkeypatc
         ),
         verify_activity=True,
     )
-    stream.close.assert_called_once()
+    stream.close.assert_called_once_with()
+
+
+def test_wdmks_coexistence_probes_only_shared_render_not_the_busy_capture_pin(monkeypatch):
+    from app.services import native_wasapi
+
+    devices = [
+        {"name": "Selected mic", "hostapi": 0, "max_input_channels": 1,
+         "max_output_channels": 0, "default_samplerate": 48_000},
+        {"name": "Selected speakers", "hostapi": 0, "max_input_channels": 0,
+         "max_output_channels": 2, "default_samplerate": 48_000},
+    ]
+    stream = Mock()
+    monkeypatch.setattr(
+        native_wasapi,
+        "NativeWasapiStream",
+        Mock(side_effect=AssertionError("capture must not be reopened")),
+    )
+    monkeypatch.setattr(audio_service.sd, "query_devices", Mock(return_value=devices))
+    monkeypatch.setattr(audio_service, "preferred_input_device", Mock(return_value=0))
+    monkeypatch.setattr(audio_service, "preferred_output_device", Mock(return_value=1))
+    monkeypatch.setattr(audio_service, "_resolved_device_index", lambda value, *_args: value)
+    monkeypatch.setattr(audio_service, "_is_wasapi_device", lambda _device: True)
+    monkeypatch.setattr(audio_service.sd, "WasapiSettings", Mock(return_value="shared"))
+    monkeypatch.setattr(audio_service.sd, "OutputStream", Mock(return_value=stream))
+    monkeypatch.setattr(audio_service.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        audio_service._monitor_control,
+        "snapshot",
+        Mock(side_effect=[{"callback_count": 12}, {"callback_count": 60}]),
+    )
+
+    assert audio_service._transport_preserves_shared_endpoints(
+        settings(
+            input_device_name="Selected mic",
+            output_device_name="Selected speakers",
+            buffer_size=16,
+        ),
+        verify_activity=True,
+    )
+    audio_service.sd.OutputStream.assert_called_once()
+    stream.start.assert_called_once_with()
+    stream.close.assert_called_once_with()
 
 
 def test_wdmks_coexistence_rejects_a_fake_tiny_buffer_with_slow_callbacks(monkeypatch):
-    from app.services import native_wasapi
-
+    devices = [
+        {"name": "Selected mic", "hostapi": 0, "max_input_channels": 1,
+         "max_output_channels": 0, "default_samplerate": 48_000},
+        {"name": "Selected speakers", "hostapi": 0, "max_input_channels": 0,
+         "max_output_channels": 2, "default_samplerate": 48_000},
+    ]
     stream = Mock()
-    monkeypatch.setattr(native_wasapi, "NativeWasapiStream", Mock(return_value=stream))
+    monkeypatch.setattr(audio_service.sd, "query_devices", Mock(return_value=devices))
+    monkeypatch.setattr(audio_service, "preferred_input_device", Mock(return_value=0))
+    monkeypatch.setattr(audio_service, "preferred_output_device", Mock(return_value=1))
+    monkeypatch.setattr(audio_service, "_resolved_device_index", lambda value, *_args: value)
+    monkeypatch.setattr(audio_service, "_is_wasapi_device", lambda _device: True)
+    monkeypatch.setattr(audio_service.sd, "WasapiSettings", Mock(return_value="shared"))
+    monkeypatch.setattr(audio_service.sd, "OutputStream", Mock(return_value=stream))
     monkeypatch.setattr(audio_service.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(
         audio_service._monitor_control,
