@@ -440,12 +440,11 @@ def test_native_wasapi_drift_target_is_the_requested_low_latency_block_not_a_ful
     assert "MonitorBuffer>(capacity, ratio, safety_frames)" in source
 
 
-def test_native_wasapi_render_target_uses_the_requested_ui_buffer_not_the_capture_chunk():
+def test_native_wasapi_render_target_never_underfills_one_shared_output_period():
     source = (Path(__file__).parents[1] / "engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
     call = source[source.index("shared_audio::render_padding_target("):]
     call = call[:call.index(");")]
-    assert "requested_blocksize" in call
-    assert "source.size()" not in call
+    assert "output.period" in call
 
 
 def test_native_wasapi_adjusts_clock_drift_only_on_the_render_clock_event():

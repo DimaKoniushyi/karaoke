@@ -43,12 +43,13 @@ int main() {
     // slower even while capture and render clocks were healthy.
     verify(monitor_queue_target(16, 441, true) == 16);
     verify(monitor_queue_target(64, 480, false) == 64);
-    // A fast 3ms exclusive capture event wakes the pump frequently enough to
-    // feed a 10ms shared renderer incrementally. Keeping the full 480-frame
-    // render period padded adds 7ms that is not required by the endpoint.
-    verify(render_padding_target(480, 960, 144, 48000, 48000, 16) == 144);
+    // A shared renderer whose engine wakes once per 480-frame period must be
+    // given the whole period. On the real Audient profile, targeting the
+    // 144-frame capture period rendered only ~14k of the ~48k captured frames
+    // per second, overflowed the queue and produced robotic gaps.
+    verify(render_padding_target(480, 960, 144, 48000, 48000, 16) == 480);
     verify(render_padding_target(480, 960, 480, 48000, 48000, 16) == 480);
-    verify(render_padding_target(441, 882, 144, 48000, 44100, 16) == 133);
+    verify(render_padding_target(441, 882, 144, 48000, 44100, 16) == 441);
     verify(engine_period(64, 48, 480, 48) == 96);
     verify(engine_period(64, 441, 441, 441) == 441);
     verify(engine_period(128, 32, 1024, 32) == 128);

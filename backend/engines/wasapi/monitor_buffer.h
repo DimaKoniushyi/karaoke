@@ -54,14 +54,18 @@ inline uint32_t render_padding_target(uint32_t render_period, uint32_t render_bu
     if (!render_period || !render_buffer || !capture_period || !capture_rate ||
         !render_rate || !requested)
         throw std::runtime_error("Invalid render padding target");
-    const auto convert = [&](uint32_t frames) {
-        return uint32_t((uint64_t(frames) * render_rate + capture_rate - 1) / capture_rate);
-    };
-    // The capture event wakes the same critical pump before the shared render
-    // event. Therefore the renderer only needs enough submitted audio to span
-    // the next capture wake-up, not its entire (often 10ms) engine quantum.
-    return std::min({render_period, render_buffer,
-                     std::max(convert(capture_period), convert(requested))});
+    // Shared WASAPI consumes one complete engine quantum per render wake-up.
+    // GetCurrentPadding can remain unchanged between those wakes even when a
+    // faster exclusive-capture event calls render_ready(). Submitting only a
+    // capture-sized fragment therefore leaves the rest of the output quantum
+    // silent and permanently overflows the microphone queue. Keep exactly one
+    // render period ready: never the whole allocation, but never less than the
+    // endpoint consumes at its next wake-up.
+    (void)capture_period;
+    (void)capture_rate;
+    (void)render_rate;
+    (void)requested;
+    return std::min(render_period, render_buffer);
 }
 // Mirrors the ASIO bridge's resolve_buffer_size: the device's own
 // min/max/fundamental always wins. A user-requested size outside that range
