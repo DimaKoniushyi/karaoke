@@ -84,6 +84,16 @@ static std::wstring property_of(IMMDevice* device, const PROPERTYKEY& key) {
     check(hr, "Get endpoint property");
     return name;
 }
+static bool guid_property_of(IMMDevice* device, const PROPERTYKEY& key, GUID& result) {
+    ComPtr<IPropertyStore> store;
+    if (FAILED(device->OpenPropertyStore(STGM_READ, &store))) return false;
+    PROPVARIANT value{};
+    const HRESULT hr = store->GetValue(key, &value);
+    const bool available = SUCCEEDED(hr) && value.vt == VT_CLSID && value.puuid;
+    if (available) result = *value.puuid;
+    PropVariantClear(&value);
+    return available;
+}
 // Interface/product label used by the Windows audio endpoint property store
 // (for example "Audient iD14" or "Realtek(R) Audio").
 static const PROPERTYKEY kAudioInterfaceName = {
@@ -149,6 +159,8 @@ struct Endpoint {
     WAVEFORMATEX* format = nullptr;
     Handle event;
     UINT32 period = 0, minimum_period = 0, buffer = 0;
+    GUID container_id{};
+    bool container_id_valid = false;
     bool started = false, floating = false, raw = false, period_locked = false;
     bool exclusive = false;
     ~Endpoint() {
@@ -159,6 +171,7 @@ struct Endpoint {
     void open(IMMDeviceEnumerator* enumerator, EDataFlow flow, const wchar_t* name,
               uint32_t requested, bool initialize, bool request_exclusive = false) {
         auto device = find_device(enumerator, flow, name);
+        container_id_valid = guid_property_of(device.Get(), PKEY_Device_ContainerId, container_id);
         auto valid_format = [](WAVEFORMATEX* value, bool& is_float) {
             WORD tag = value->wFormatTag;
             if (tag == WAVE_FORMAT_EXTENSIBLE && value->cbSize >= 22) {
@@ -452,6 +465,7 @@ struct Engine {
     HANDLE scheduling = nullptr;
     double pump_finished = 0;
     uint32_t requested_blocksize = 0;
+    bool independent_clocks = true;
     // Live-updatable (wm_set_gain) so a volume-slider change applies to the
     // native raw pass-through the same way it already does to the Python DSP
     // path -- relaxed ordering for the same reason as raw_active below.
@@ -476,6 +490,10 @@ struct Engine {
         check(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator)), "Create enumerator");
         input.open(enumerator.Get(), eCapture, input_name, blocksize, initialize, input_exclusive);
         output.open(enumerator.Get(), eRender, output_name, blocksize, initialize, false);
+        independent_clocks = shared_audio::independent_audio_clocks(
+            input.container_id_valid, output.container_id_valid,
+            input.container_id_valid && output.container_id_valid
+                && IsEqualGUID(input.container_id, output.container_id));
         if (mirror_name && *mirror_name)
             mirror.open(enumerator.Get(), eRender, mirror_name, blocksize, initialize, false);
         info = {input.format->nSamplesPerSec, output.format->nSamplesPerSec, blocksize, input.period, output.period,
@@ -711,7 +729,7 @@ struct Engine {
         // Clock control must measure residual audio after rendering, not the
         // pending block itself. This lets the integral term learn independent
         // USB input/output clock skew without retaining stale microphone data.
-        if (adjust_drift) queue->nudge(fully_starved);
+        if (adjust_drift && independent_clocks) queue->nudge(fully_starved);
         stats.dropped_frames = queue->dropped();
         stats.queued_frames = queue->size();
     }

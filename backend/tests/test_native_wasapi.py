@@ -457,7 +457,14 @@ def test_native_wasapi_adjusts_clock_drift_only_after_capture_is_drained_on_rend
         source.index("for (unsigned packet = 0;"),
     )
     assert source.count("render_ready(false);") >= 2
-    assert "if (adjust_drift) queue->nudge(fully_starved);" in source
+    assert "if (adjust_drift && independent_clocks) queue->nudge(fully_starved);" in source
+
+
+def test_native_wasapi_disables_async_drift_control_for_one_physical_device():
+    source = (Path(__file__).parents[1] / "engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
+    assert "PKEY_Device_ContainerId" in source
+    assert "IsEqualGUID(input.container_id, output.container_id)" in source
+    assert "if (adjust_drift && independent_clocks)" in source
 
 
 def test_exclusive_capture_does_not_retain_a_capture_period_in_the_user_queue():

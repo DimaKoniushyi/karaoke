@@ -84,6 +84,15 @@ inline bool should_adjust_drift(bool output_wakeup, bool capture_drain_complete)
     // starvation signal and destabilizes the clock controller.
     return output_wakeup && capture_drain_complete;
 }
+inline bool independent_audio_clocks(bool input_container_known,
+                                     bool output_container_known,
+                                     bool same_container) {
+    // Windows exposes capture/render endpoints separately even when both are
+    // ports of one physical USB headset or audio interface. Such endpoints
+    // share the device clock and need only the fixed nominal-rate conversion,
+    // never asynchronous drift steering.
+    return !input_container_known || !output_container_known || !same_container;
+}
 // Mirrors the ASIO bridge's resolve_buffer_size: the device's own
 // min/max/fundamental always wins. A user-requested size outside that range
 // is clamped into it (and aligned up to the fundamental granularity) rather

@@ -66,6 +66,13 @@ int main() {
     verify(!should_adjust_drift(true, false));
     verify(should_adjust_drift(true, true));
     verify(!should_adjust_drift(false, true));
+    // Capture and render endpoints belonging to one physical USB/interface
+    // container share a hardware clock. Adaptive asynchronous-clock control
+    // must stay off for that duplex pair; otherwise normal burst phasing is
+    // mistaken for clock drift and periodically changes voice speed.
+    verify(!independent_audio_clocks(true, true, true));
+    verify(independent_audio_clocks(true, true, false));
+    verify(independent_audio_clocks(false, true, false));
     verify(engine_period(64, 48, 480, 48) == 96);
     verify(engine_period(64, 441, 441, 441) == 441);
     verify(engine_period(128, 32, 1024, 32) == 128);
