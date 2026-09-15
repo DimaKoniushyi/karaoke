@@ -451,6 +451,7 @@ struct Engine {
     Process process = nullptr;
     HANDLE scheduling = nullptr;
     double pump_finished = 0;
+    uint32_t requested_blocksize = 0;
     // Live-updatable (wm_set_gain) so a volume-slider change applies to the
     // native raw pass-through the same way it already does to the Python DSP
     // path -- relaxed ordering for the same reason as raw_active below.
@@ -469,6 +470,7 @@ struct Engine {
               uint32_t blocksize, float requested_gain, bool input_exclusive,
               Info& info, bool initialize) {
         gain = requested_gain;
+        requested_blocksize = blocksize;
         if (!blocksize || blocksize > 8192) throw std::runtime_error("Invalid fixed processing buffer");
         ComPtr<IMMDeviceEnumerator> enumerator;
         check(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator)), "Create enumerator");
@@ -540,11 +542,13 @@ struct Engine {
         stats.pump_gap_ms = pump_finished ? (entering - pump_finished) * 1000 : 0;
         HANDLE events[] = {input.event.value, output.event.value, mirror.event.value};
         const DWORD event_count = mirror.client ? 3 : 2;
-        if (WaitForMultipleObjects(event_count, events, FALSE, timeout) == WAIT_FAILED)
+        const DWORD awakened = WaitForMultipleObjects(event_count, events, FALSE, timeout);
+        if (awakened == WAIT_FAILED)
             throw std::runtime_error("Audio event wait failed");
+        const bool output_wakeup = awakened == WAIT_OBJECT_0 + 1;
         stats.event_wait_ms = (monotonic_seconds() - entering) * 1000;
         // A ready output block must not wait behind another capture/DSP burst.
-        render_ready();
+        render_ready(output_wakeup);
         mirror_ready();
         UINT32 available = 0;
         check(capture->GetNextPacketSize(&available), "GetNextPacketSize");
@@ -593,7 +597,10 @@ struct Engine {
             stats.capture_processing_ms = (monotonic_seconds() - received_at) * 1000;
             if (!ok) throw std::runtime_error("Microphone processing callback failed");
             stats.captured_frames += frames;
-            render_ready();
+            // This call is driven by newly captured data, not by the output
+            // clock. It may submit audio immediately, but must not teach the
+            // asynchronous resampler that a normal capture burst is drift.
+            render_ready(false);
             mirror_ready();
             check(capture->GetNextPacketSize(&available), "GetNextPacketSize");
         }
@@ -621,7 +628,7 @@ struct Engine {
         mirror_queue->nudge();
         if (!mirror.started) mirror.start();
     }
-    void render_ready() {
+    void render_ready(bool adjust_drift) {
         UINT32 padding = 0;
         check(output.client->GetCurrentPadding(&padding), "GetCurrentPadding");
         stats.render_padding_ms = double(padding) * 1000 / output.format->nSamplesPerSec;
@@ -630,7 +637,7 @@ struct Engine {
         const UINT32 target = shared_audio::render_padding_target(
             output.period, output.buffer, input.period,
             input.format->nSamplesPerSec, output.format->nSamplesPerSec,
-            UINT32(source.size()));
+            requested_blocksize);
         // An early render event must not enqueue a period of silence ahead of
         // microphone data that arrives a moment later. Submit only ready audio.
         const auto ready = UINT32(queue->available());
@@ -644,6 +651,7 @@ struct Engine {
         // wake this pump just before its packet is drained below. Count only
         // when the render engine has actually exhausted both sources.
         if (!padding && !count) ++stats.underruns;
+        const bool fully_starved = !padding && !count;
         if (count) {
             double presentation = 0;
             UINT64 position = 0, qpc = 0;
@@ -695,7 +703,7 @@ struct Engine {
         // Clock control must measure residual audio after rendering, not the
         // pending block itself. This lets the integral term learn independent
         // USB input/output clock skew without retaining stale microphone data.
-        queue->nudge();
+        if (adjust_drift) queue->nudge(fully_starved);
         stats.dropped_frames = queue->dropped();
         stats.queued_frames = queue->size();
     }

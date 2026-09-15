@@ -1,4 +1,5 @@
 import ctypes as ct
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -437,6 +438,22 @@ def test_native_wasapi_drift_target_is_the_requested_low_latency_block_not_a_ful
     source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
     assert "std::min<size_t>(blocksize" in source
     assert "MonitorBuffer>(capacity, ratio, safety_frames)" in source
+
+
+def test_native_wasapi_render_target_uses_the_requested_ui_buffer_not_the_capture_chunk():
+    source = (Path(__file__).parents[1] / "engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
+    call = source[source.index("shared_audio::render_padding_target("):]
+    call = call[:call.index(");")]
+    assert "requested_blocksize" in call
+    assert "source.size()" not in call
+
+
+def test_native_wasapi_adjusts_clock_drift_only_on_the_render_clock_event():
+    source = (Path(__file__).parents[1] / "engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
+    assert "const bool output_wakeup =" in source
+    assert "render_ready(output_wakeup);" in source
+    assert source.count("render_ready(false);") >= 1
+    assert "if (adjust_drift) queue->nudge(fully_starved);" in source
 
 
 def test_exclusive_capture_does_not_retain_a_capture_period_in_the_user_queue():

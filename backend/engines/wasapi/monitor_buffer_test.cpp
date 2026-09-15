@@ -132,6 +132,25 @@ int main() {
         for (int frame = 0; frame < 64; ++frame) low_latency_drift.pop(result);
     }
     verify(low_latency_drift.size() <= 96);
+    // A perfectly synchronous input/output pair must remain bit-transparent.
+    // The controller is sampled after each render transfer, so an empty
+    // residual queue is the healthy steady state, not evidence that capture
+    // is running slow.  Treating it as negative drift eventually changed the
+    // resampling ratio by -2%, producing the reported robotic/warbling voice.
+    MonitorBuffer transparent_clock(1024, 1.0, 64);
+    uint64_t transparent_frame = 0;
+    for (int tick = 0; tick < 6000; ++tick) {
+        float signal[64]{};
+        for (float& sample : signal) sample = float(++transparent_frame);
+        transparent_clock.push(signal, 64);
+        for (float expected : signal) {
+            verify(transparent_clock.pop(result));
+            verify(result == expected);
+        }
+        transparent_clock.nudge();
+    }
+    verify(transparent_clock.size() == 0);
+    verify(transparent_clock.dropped() == 0);
     // The Razer USB profile captured in production delivered about 0.5%
     // more capture frames than its shared render clock consumed.  A fixed
     // +/-0.02% proportional correction overflowed the queue and discarded
@@ -146,5 +165,25 @@ int main() {
     }
     verify(usb_clock_skew.dropped() < 100);
     verify(usb_clock_skew.size() < 160);
+    // The inverse clock mismatch must converge as well. A slower capture
+    // clock presents as a real render starvation signal; the controller may
+    // adapt, but it must not manufacture a permanently slowed, robotic
+    // stream merely because the healthy residual queue is empty.
+    MonitorBuffer slow_usb_clock(992, 1.0, 16);
+    uint64_t slow_clock_misses = 0;
+    for (int tick = 0; tick < 12000; ++tick) {
+        const size_t produced = tick % 5 < 3 ? 478 : 477; // average 477.6 / 480
+        slow_usb_clock.push(skew_packet, produced);
+        bool starved = false;
+        for (int frame = 0; frame < 480; ++frame) {
+            if (!slow_usb_clock.pop(result)) {
+                ++slow_clock_misses;
+                starved = true;
+            }
+        }
+        slow_usb_clock.nudge(starved);
+    }
+    verify(slow_clock_misses < 2000);
+    verify(slow_usb_clock.dropped() < 100);
     std::cout << "Native shared audio tests passed: periods, PCM/float, saturation, bounded queue, underrun, resampling\n";
 }

@@ -130,23 +130,24 @@ public:
     // (no two "48kHz" clocks are ever exactly identical) is not something a
     // fixed ratio compensates for -- left alone, the queue slowly grows or
     // drains until it either drops samples (a click, see push() below) or
-    // underruns. A tiny proportional nudge toward a mid-fill target corrects
-    // for it continuously. USB capture/render clocks can differ by more than
-    // 0.5%, so a tiny fixed proportional cap cannot work: it leaves a
-    // permanent backlog and eventually drops samples.  The integral term
-    // learns the persistent clock ratio while the small proportional term
-    // damps short queue excursions; both are bounded to +/-2%. The target is
-    // the single safety period supplied by
-    // the engine, not half of the emergency allocation: spare capacity is
-    // for stalls and must not become deliberate audible latency. Call once
-    // per output callback.
-    void nudge() {
-        const double error = double(used) - double(target_fill);
-        const double normalized = error / double(samples.size());
+    // underruns. USB capture/render clocks can differ by more than 0.5%, so a
+    // fixed nominal ratio can leave a permanent backlog. The bounded integral
+    // term learns persistent clock skew and the proportional term damps queue
+    // excursions. Spare capacity is for stalls and must not become deliberate
+    // audible latency. Call once per output callback.
+    void nudge(bool starved = false) {
+        // Called after rendering: an empty residual queue is the normal,
+        // bit-transparent state for equal clocks, not proof that capture is
+        // slow. Only a real render starvation may request negative drift.
+        const double normalized = starved
+            ? -0.25
+            : used > target_fill
+            ? (double(used) - double(target_fill)) / double(samples.size())
+            : 0.0;
         drift_correction = std::clamp(
-            drift_correction + std::clamp(normalized * 0.00005, -0.00005, 0.00005),
-            -0.02, 0.02);
-        const double proportional = std::clamp(normalized * 0.001, -0.001, 0.001);
+            drift_correction + std::clamp(normalized * 0.0002, -0.00005, 0.00005),
+            -0.01, 0.01);
+        const double proportional = std::clamp(normalized * 0.002, -0.001, 0.001);
         ratio = base_ratio * (1.0 + drift_correction + proportional);
     }
     void push(const float* input, size_t count, double captured_at = 0, double step = 0,
