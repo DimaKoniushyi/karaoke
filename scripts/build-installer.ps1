@@ -66,6 +66,9 @@ $PackagedSceneVideo = Join-Path $Unpacked "resources\media\videoplayback.webm"
 $Asio = Join-Path $Backend "engines\asio"
 $AsioBuild = Join-Path $Build "asio"
 $AsioSdk = Join-Path $Downloads "engines\asio-sdk"
+$VirtualAudioPrepare = Join-Path $Root "scripts\prepare-virtual-audio.ps1"
+$VirtualAudioBuild = Join-Path $Build "virtual-audio"
+$VirtualAudioPackage = Join-Path $VirtualAudioBuild "package"
 
 $Models = Join-Path $Downloads "models"
 $MsstEngine = Join-Path $Downloads "engines\msst"
@@ -2044,6 +2047,35 @@ call "$VcVars" >nul && "$CMake" -S "$Asio" -B "$AsioBuild" -G Ninja -DCMAKE_BUIL
     Require-File (Join-Path $AsioBuild "KaraokeWasapi.dll") "Compiled shared WASAPI library"
 }
 
+function Build-VirtualAudio {
+    Write-Host ""
+    Write-Host "Compiling A&D Voice virtual microphone driver..."
+    Require-File $VirtualAudioPrepare "Virtual audio preparation script"
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $VirtualAudioPrepare -Root $Root
+    if ($LASTEXITCODE -ne 0) { throw "ADVoiceVirtualAudio compilation failed." }
+
+    $driver = Join-Path $VirtualAudioPackage "SimpleAudioSample.sys"
+    $catalog = Join-Path $VirtualAudioPackage "SimpleAudioSample.cat"
+    $inf = Join-Path $VirtualAudioPackage "ADVoiceVirtualAudio.inf"
+    Require-File $driver "ADVoiceVirtualAudio kernel driver"
+    Require-File $catalog "ADVoiceVirtualAudio catalog"
+    Require-File $inf "ADVoiceVirtualAudio INF"
+
+    # The binary is signed before regenerating the catalog because the catalog
+    # contains the binary hash. The finished catalog is signed last.
+    Sign-File $driver
+    $inf2cat = Get-ChildItem -LiteralPath (Join-Path $Downloads "engines\windows-driver-samples\packages") `
+        -Recurse -Filter "Inf2Cat.exe" | Select-Object -First 1
+    if (-not $inf2cat) { throw "Inf2Cat was not restored with the virtual audio build dependencies." }
+    & $inf2cat.FullName "/driver:$VirtualAudioPackage" /os:10_X64
+    if ($LASTEXITCODE -ne 0) { throw "ADVoiceVirtualAudio catalog generation failed." }
+    Sign-File $catalog
+
+    $destination = Join-Path $BackendDist "drivers\ADVoiceVirtualAudio"
+    New-Item -ItemType Directory -Force -Path $destination | Out-Null
+    Copy-Item -Path (Join-Path $VirtualAudioPackage "*") -Destination $destination -Force
+}
+
 function Sign-File([string]$Path) {
     Require-File $SignScript "Signing script"
 
@@ -2066,6 +2098,7 @@ function Finalize-Asio {
 
     Require-File $bridge "Compiled KaraokeAsioBridge.exe"
     Require-Directory $BackendDist "Packaged backend directory"
+    Build-VirtualAudio
 
     Copy-Item -LiteralPath $bridge -Destination (Join-Path $BackendDist "KaraokeAsioBridge.exe") -Force
     $sharedLibrary = Join-Path $AsioBuild "KaraokeWasapi.dll"
@@ -2101,6 +2134,9 @@ function Verify-BackendBase {
     Require-File (Join-Path $BackendDist "_internal\ffmpeg.exe") "Bundled FFmpeg"
     Require-File (Join-Path $BackendDist "KaraokeAsioBridge.exe") "KaraokeAsioBridge.exe"
     Require-File (Join-Path $BackendDist "KaraokeWasapi.dll") "KaraokeWasapi.dll"
+    Require-File (Join-Path $BackendDist "drivers\ADVoiceVirtualAudio\ADVoiceVirtualAudio.inf") "ADVoiceVirtualAudio.inf"
+    Require-File (Join-Path $BackendDist "drivers\ADVoiceVirtualAudio\SimpleAudioSample.sys") "ADVoiceVirtualAudio driver"
+    Require-File (Join-Path $BackendDist "drivers\ADVoiceVirtualAudio\SimpleAudioSample.cat") "ADVoiceVirtualAudio catalog"
     Require-Directory (Join-Path $BackendDist "_internal") "PyInstaller internal directory"
     Require-File `
         (Join-Path $BackendDist "_internal\torchfcpe\assets\fcpe_c_v001.pt") `

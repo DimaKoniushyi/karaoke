@@ -141,7 +141,10 @@ class MonitorControl:
                             message[f"{kind}_latency_ms"] = samples * 1000 / rate
             if event in {"started", "fallback"}:
                 for key in ("blocksize", "sample_rate", "mode", "engine", "driver", "requested_driver", "failed_driver", "latency", "latency_source", "input_latency_ms", "output_latency_ms",
-                            "output_sample_rate", "input_period_frames", "output_period_frames"):
+                            "output_sample_rate", "input_period_frames", "output_period_frames",
+                            "input_min_period_frames", "output_min_period_frames",
+                            "input_period_locked", "output_period_locked", "minimum_period_latency_ms",
+                            "negotiated_period_latency_ms", "latency_limit"):
                     if key in message:
                         self.status[key] = message[key]
                 if event == "started":

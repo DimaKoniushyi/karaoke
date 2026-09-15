@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- MSBuild 17.14 no longer treats dotted SDK versions as numbers. The WDK
+       26100 file compares them numerically, so pin the matching Windows 11
+       target constants instead of performing the invalid comparisons. -->
+  <Choose>
+    <When Condition="'$(TargetVersion)'=='Windows10'">
+      <PropertyGroup>
+        <Valid_NTTARGETVERSIONS>0xA000010;0xA00000C;0xA00000B;0xA00000A;0xA000009;0xA000008;0xA000007;0xA000006;0xA000005;0xA000004;0xA000003;0xA000002;0xA000001;0x0A00;0x0603;0x0602;0x0601</Valid_NTTARGETVERSIONS>
+        <_NT_TARGET_VERSION Condition="'$(_NT_TARGET_VERSION)'==''">0xA000010</_NT_TARGET_VERSION>
+        <CURRENT_NTDDI_VERSION Condition="'$(CURRENT_NTDDI_VERSION)'==''">0xA000010</CURRENT_NTDDI_VERSION>
+        <CURRENT_WIN32_WINNT_VERSION>0x0A00</CURRENT_WIN32_WINNT_VERSION>
+        <SUBSYSTEM_VERSION_LATEST>10.00</SUBSYSTEM_VERSION_LATEST>
+        <DDKSpec>winV10.0</DDKSpec>
+        <Inf2CatWindowsVersionList Condition="'$(Inf2CatWindowsVersionList)'==''">10_$(DDKPlatform)</Inf2CatWindowsVersionList>
+      </PropertyGroup>
+    </When>
+    <Otherwise>
+      <PropertyGroup><UnknownTargetVersion>true</UnknownTargetVersion></PropertyGroup>
+    </Otherwise>
+  </Choose>
+  <PropertyGroup>
+    <NTDDI_VERSION Condition="'$(NTDDI_VERSION)'==''">$(CURRENT_NTDDI_VERSION)</NTDDI_VERSION>
+    <WIN32_WINNT_VERSION Condition="'$(WIN32_WINNT_VERSION)'==''">$(CURRENT_WIN32_WINNT_VERSION)</WIN32_WINNT_VERSION>
+    <WINVER_VERSION Condition="'$(WINVER_VERSION)'==''">$(WIN32_WINNT_VERSION)</WINVER_VERSION>
+    <SUBSYSTEM_NATVER Condition="'$(SUBSYSTEM_VERSION)'!=''">$(SUBSYSTEM_VERSION)</SUBSYSTEM_NATVER>
+    <SUBSYSTEM_NATVER Condition="'$(SUBSYSTEM_VERSION)'==''">$(SUBSYSTEM_VERSION_LATEST)</SUBSYSTEM_NATVER>
+    <OverrideTargetVersionDefines Condition="'$(OverrideTargetVersionDefines)'==''">false</OverrideTargetVersionDefines>
+  </PropertyGroup>
+</Project>

@@ -80,6 +80,19 @@ def test_input_device_name_is_bounded_and_backend_aware(monkeypatch):
     assert (audio_service._input_device_name(0) == 'Mic') and (audio_service._input_device_name(1) is None) and (audio_service._input_device_name(3) is None) and (audio_service._input_device_name(None) is None)
 
 
+def test_virtual_microphone_feed_is_enabled_only_for_a_complete_wasapi_bridge(monkeypatch):
+    devices = [
+        {"name": "A&D Voice Virtual Microphone Feed", "hostapi": 2,
+         "max_input_channels": 0, "max_output_channels": 2},
+        {"name": "A&D Voice Virtual Microphone", "hostapi": 2,
+         "max_input_channels": 2, "max_output_channels": 0},
+    ]
+    monkeypatch.setattr(audio_service.sd, "query_hostapis", lambda _index: {"name": "Windows WASAPI"})
+
+    assert audio_service._virtual_microphone_feed_name(devices) == "A&D Voice Virtual Microphone Feed"
+    assert audio_service._virtual_microphone_feed_name(devices[:1]) is None
+
+
 def test_normalized_settings_patch_handles_defaults_devices_and_asio(monkeypatch):
     current = settings(input_device_id=1, input_device_name="Old", output_device_id=2)
     patch_attrs(monkeypatch, audio_service, _AUDIO_BACKEND_AVAILABLE=True)
@@ -285,6 +298,7 @@ def test_configure_monitoring_routes_auto_and_asio(monkeypatch):
                 "dry_monitor": 0.0,
             "wasapi_mode": "shared",
             "native_shared": True,
+            "input_exclusive": True,
             "input_device_name": "Selected microphone",
             "output_device_name": "Selected speakers",
     }
@@ -365,6 +379,26 @@ def test_automatic_asio_matches_the_selected_windows_hardware_not_a_generic_driv
     ) == ["Realtek ASIO"]
 
 
+def test_wdmks_matches_a_numbered_pin_when_its_name_omits_the_hardware_brand(monkeypatch):
+    devices = [
+        {"name": "Analogue 1/2 (Analogue 1/2)", "hostapi": 1,
+         "max_input_channels": 2, "max_output_channels": 0},
+        {"name": "Analogue 1/2 (Analogue 1/2)", "hostapi": 1,
+         "max_input_channels": 0, "max_output_channels": 2},
+        {"name": "Analogue 3/4 (Analogue 3/4)", "hostapi": 1,
+         "max_input_channels": 0, "max_output_channels": 2},
+    ]
+    monkeypatch.setattr(
+        audio_service.sd, "query_hostapis", lambda _index: {"name": "Windows WDM-KS"}
+    )
+
+    assert audio_service._matching_wdmks_endpoints(
+        devices,
+        "Analogue 1/2 (2- Audient iD14)",
+        "Analogue 1/2 (2- Audient iD14)",
+    ) == (0, 1)
+
+
 @pytest.mark.parametrize(
     ("endpoint", "expected"),
     [
@@ -378,7 +412,7 @@ def test_asio_channel_base_follows_the_selected_windows_endpoint_pair(endpoint, 
     assert audio_service._asio_channel_base(endpoint) == expected
 
 
-def test_windows_driver_never_substitutes_asio_or_wdmks_for_wasapi_shared(monkeypatch):
+def test_windows_driver_uses_only_a_coexistence_verified_wdmks_fast_path(monkeypatch):
     from app.services import recording_service
 
     current = settings(
@@ -391,6 +425,9 @@ def test_windows_driver_never_substitutes_asio_or_wdmks_for_wasapi_shared(monkey
     devices = []
     monkeypatch.setattr(audio_service, "_AUDIO_BACKEND_AVAILABLE", True)
     monkeypatch.setattr(audio_service.sd, "query_devices", Mock(return_value=devices))
+    monkeypatch.setattr(
+        audio_service, "_try_native_input_exclusive_monitor", Mock(return_value=False)
+    )
     automatic = Mock(return_value=True)
     wdmks = Mock(return_value=True)
     shared = Mock()
@@ -401,10 +438,82 @@ def test_windows_driver_never_substitutes_asio_or_wdmks_for_wasapi_shared(monkey
     audio_service.configure_monitoring(current)
 
     automatic.assert_not_called()
-    wdmks.assert_not_called()
-    shared.assert_called_once_with(
-        current, driver="auto", relay_needed=False, devices=devices
+    wdmks.assert_called_once_with(current, devices=devices)
+    shared.assert_not_called()
+
+
+def test_windows_driver_native_fast_path_exclusively_captures_but_keeps_output_shared(
+    monkeypatch,
+):
+    current = settings(
+        audio_driver="auto",
+        monitoring_enabled=True,
+        input_device_name="Microphone (Realtek Audio)",
+        output_device_name="Speakers (Realtek Audio)",
     )
+    devices = [{"name": "placeholder"}]
+    start = Mock()
+    publish = Mock()
+    monkeypatch.setattr(audio_service, "_start_shared_monitor", start)
+    monkeypatch.setattr(audio_service._monitor_control, "publish", publish)
+
+    assert audio_service._try_native_input_exclusive_monitor(
+        current, devices=devices
+    )
+    start.assert_called_once_with(
+        current,
+        driver="auto",
+        devices=devices,
+        input_exclusive=True,
+    )
+    publish.assert_called_once_with(
+        transport_selection="native-input-exclusive-output-shared",
+        requested_mode="Windows Driver",
+        input_exclusive=True,
+        output_exclusive=False,
+    )
+
+
+def test_native_exclusive_capture_failure_closes_worker_and_allows_fallback(monkeypatch):
+    current = settings(audio_driver="auto", monitoring_enabled=True)
+    monkeypatch.setattr(
+        audio_service,
+        "_start_shared_monitor",
+        Mock(side_effect=RuntimeError("exclusive capture unsupported")),
+    )
+    stop = Mock()
+    monkeypatch.setattr(audio_service, "_stop_monitoring_process", stop)
+
+    assert not audio_service._try_native_input_exclusive_monitor(current, devices=[])
+    stop.assert_called_once_with()
+
+
+def test_exclusive_capture_is_never_claimed_for_a_non_wasapi_endpoint(monkeypatch):
+    devices = [
+        {"name": "MME microphone", "hostapi": 0, "default_samplerate": 44_100,
+         "max_input_channels": 1, "max_output_channels": 0},
+        {"name": "MME speakers", "hostapi": 0, "default_samplerate": 44_100,
+         "max_input_channels": 0, "max_output_channels": 2},
+    ]
+    monkeypatch.setattr(audio_service, "preferred_input_device", Mock(return_value=0))
+    monkeypatch.setattr(audio_service, "preferred_output_device", Mock(return_value=1))
+    monkeypatch.setattr(
+        audio_service, "_resolved_device_index", lambda value, *_args: value
+    )
+    monkeypatch.setattr(
+        audio_service.sd, "query_hostapis", lambda _index: {"name": "MME"}
+    )
+    launch = Mock()
+    monkeypatch.setattr(audio_service, "_start_monitor_worker", launch)
+
+    raises(
+        RuntimeError,
+        lambda: audio_service._start_shared_monitor(
+            settings(), driver="auto", devices=devices, input_exclusive=True
+        ),
+        match="WASAPI",
+    )
+    launch.assert_not_called()
 
 
 def test_windows_driver_falls_back_to_shared_when_no_safe_asio_transport_exists(
@@ -417,6 +526,9 @@ def test_windows_driver_falls_back_to_shared_when_no_safe_asio_transport_exists(
     devices = []
     monkeypatch.setattr(audio_service, "_AUDIO_BACKEND_AVAILABLE", True)
     monkeypatch.setattr(audio_service.sd, "query_devices", Mock(return_value=devices))
+    monkeypatch.setattr(
+        audio_service, "_try_native_input_exclusive_monitor", Mock(return_value=False)
+    )
     monkeypatch.setattr(audio_service, "_try_automatic_asio_monitor", Mock(return_value=False))
     monkeypatch.setattr(audio_service, "_try_automatic_wdmks_monitor", Mock(return_value=False))
     shared = Mock()
@@ -424,13 +536,15 @@ def test_windows_driver_falls_back_to_shared_when_no_safe_asio_transport_exists(
 
     audio_service.configure_monitoring(current)
 
-    audio_service._try_automatic_wdmks_monitor.assert_not_called()
+    audio_service._try_automatic_wdmks_monitor.assert_called_once_with(
+        current, devices=devices
+    )
     shared.assert_called_once_with(
         current, driver="auto", relay_needed=False, devices=devices
     )
 
 
-def test_windows_driver_does_not_substitute_wdmks_when_asio_is_unavailable(
+def test_windows_driver_keeps_wasapi_when_room_relay_is_required(
     monkeypatch,
 ):
     from app.services import recording_service
@@ -446,11 +560,56 @@ def test_windows_driver_does_not_substitute_wdmks_when_asio_is_unavailable(
     monkeypatch.setattr(audio_service, "_try_automatic_wdmks_monitor", wdmks)
     monkeypatch.setattr(audio_service, "_start_shared_monitor", shared)
 
-    audio_service.configure_monitoring(current)
+    audio_service.configure_monitoring(current, relay_needed=True)
 
     wdmks.assert_not_called()
     shared.assert_called_once_with(
-        current, driver="auto", relay_needed=False, devices=devices
+        current, driver="auto", relay_needed=True
+    )
+
+
+def test_wdmks_coexistence_rejects_a_transport_whose_callbacks_freeze(monkeypatch):
+    from app.services import native_wasapi
+
+    stream = Mock()
+    monkeypatch.setattr(native_wasapi, "NativeWasapiStream", Mock(return_value=stream))
+    monkeypatch.setattr(audio_service.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        audio_service._monitor_control,
+        "snapshot",
+        Mock(return_value={"callback_count": 12}),
+    )
+
+    assert not audio_service._transport_preserves_shared_endpoints(
+        settings(
+            input_device_name="Microphone (Realtek Audio)",
+            output_device_name="Speakers (Realtek Audio)",
+            buffer_size=16,
+        ),
+        verify_activity=True,
+    )
+    stream.close.assert_called_once()
+
+
+def test_wdmks_coexistence_rejects_a_fake_tiny_buffer_with_slow_callbacks(monkeypatch):
+    from app.services import native_wasapi
+
+    stream = Mock()
+    monkeypatch.setattr(native_wasapi, "NativeWasapiStream", Mock(return_value=stream))
+    monkeypatch.setattr(audio_service.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        audio_service._monitor_control,
+        "snapshot",
+        Mock(side_effect=[{"callback_count": 12}, {"callback_count": 30}]),
+    )
+
+    assert not audio_service._transport_preserves_shared_endpoints(
+        settings(
+            input_device_name="Microphone (Realtek Audio)",
+            output_device_name="Speakers (Realtek Audio)",
+            buffer_size=16,
+        ),
+        verify_activity=True,
     )
 
 

@@ -505,6 +505,26 @@ def test_native_stage_timings_are_exposed_and_cleared_on_restart(control):
     assert not any(name in control.snapshot() for name in values)
 
 
+def test_native_period_capability_is_retained_in_monitor_status(control):
+    capability = {
+        "input_min_period_frames": 96,
+        "output_min_period_frames": 48,
+        "input_period_locked": True,
+        "output_period_locked": False,
+        "minimum_period_latency_ms": 3.177,
+        "negotiated_period_latency_ms": 13.0,
+        "latency_limit": "engine-period-locked",
+    }
+
+    control.event(control.token, {
+        "event": "started",
+        "engine": "wasapi-native-shared",
+        **capability,
+    })
+
+    assert control.snapshot() | capability == control.snapshot()
+
+
 def test_native_latency_breakdown_is_logged_once_per_connection(control, caplog):
     control.event(control.token, {
         "event": "started", "engine": "wasapi-native-shared",

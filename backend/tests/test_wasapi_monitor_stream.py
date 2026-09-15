@@ -157,3 +157,72 @@ def test_start_failure_aborts_both_endpoints():
         stream.start()
     stream.input.abort.assert_called_once()
     stream.output.abort.assert_called_once()
+
+
+def test_mirrored_duplex_keeps_local_callback_direct_and_feeds_virtual_microphone():
+    local = Mock(latency=(.002, .003))
+    mirror = Mock(latency=.01)
+    sd = SimpleNamespace(Stream=Mock(return_value=local), OutputStream=Mock(return_value=mirror))
+    candidate = dict(samplerate=48000, blocksize=64, channels=(1, 2), device=(3, 7), latency=64 / 48000)
+
+    def process(indata, outdata, *_args):
+        outdata[:] = indata[:, :1] * 2
+
+    stream = monitor.MirroredDuplexStream(
+        sd, candidate, process, {}, threading.Event(), "A&D Voice Virtual Microphone Feed"
+    )
+    local_output = np.empty((64, 2), dtype=np.float32)
+    sd.Stream.call_args.kwargs["callback"](
+        np.ones((64, 1), dtype=np.float32), local_output, 64, None, None
+    )
+    assert np.all(local_output == 2)
+
+    virtual_output = np.empty((64, 2), dtype=np.float32)
+    sd.OutputStream.call_args.kwargs["callback"](virtual_output, 64, None, None)
+    assert np.all(virtual_output == 2)
+    assert sd.OutputStream.call_args.kwargs["device"] == "A&D Voice Virtual Microphone Feed"
+    stream.start()
+    local.start.assert_called_once()
+    mirror.start.assert_called_once()
+
+
+def test_split_stream_feeds_virtual_microphone_without_consuming_local_queue():
+    input_stream = Mock(latency=.006)
+    local_output = Mock(latency=.003)
+    virtual_output = Mock(latency=.01)
+    sd = SimpleNamespace(
+        InputStream=Mock(return_value=input_stream),
+        OutputStream=Mock(side_effect=[local_output, virtual_output]),
+    )
+    config = dict(
+        samplerate=48_000,
+        blocksize=64,
+        channels=(1, 2),
+        device=(3, 7),
+        latency=64 / 48_000,
+        extra_settings=(None, "shared-output"),
+    )
+
+    stream = monitor.WasapiMonitorStream(
+        sd,
+        config,
+        lambda data, output, *_: output.__setitem__(slice(None), data * 3),
+        {},
+        threading.Event(),
+        mirror_device="A&D Voice Virtual Microphone Feed",
+    )
+    capture = sd.InputStream.call_args.kwargs["callback"]
+    capture(np.ones((64, 1), dtype=np.float32), 64, None, None)
+    capture(np.ones((64, 1), dtype=np.float32), 64, None, None)
+
+    physical = np.empty((64, 2), dtype=np.float32)
+    virtual = np.empty((64, 2), dtype=np.float32)
+    sd.OutputStream.call_args_list[0].kwargs["callback"](physical, 64, None, None)
+    sd.OutputStream.call_args_list[1].kwargs["callback"](virtual, 64, None, None)
+
+    assert np.all(physical == 3)
+    assert np.all(virtual == 3)
+    assert sd.OutputStream.call_args_list[1].kwargs["device"] == (
+        "A&D Voice Virtual Microphone Feed"
+    )
+    stream.close()

@@ -37,11 +37,12 @@ def dll(monkeypatch):
     library = SimpleNamespace(
         wm_close=Mock(), wm_start=Mock(return_value=1), wm_pump=Mock(return_value=1), wm_set_raw=Mock()
     )
-    def open_stream(input_name, output_name, blocksize, _gain, info, _error, _size):
+    def open_stream(input_name, output_name, _mirror_name, blocksize, _gain, input_exclusive, info, _error, _size):
         assert (input_name, output_name, blocksize) == ("Chosen microphone", "Chosen speakers", 64)
         for name, value in {"sample_rate": 44100, "output_sample_rate": 48000, "blocksize": 64,
                             "input_period": 441, "output_period": 144,
-                            "input_latency_ms": 10, "output_latency_ms": 3}.items():
+                            "input_latency_ms": 10, "output_latency_ms": 3,
+                            "input_exclusive": input_exclusive}.items():
             setattr(info._obj, name, value)
         return 42
     library.wm_open = Mock(side_effect=open_stream)
@@ -62,12 +63,33 @@ def test_native_stream_reports_real_format_and_periods_without_changing_settings
     dll.wm_close.assert_called_once_with(42)
 
 
+def test_native_stream_distinguishes_driver_minimum_from_an_engine_period_locked_by_another_app(dll):
+    stream = native_wasapi.NativeWasapiStream(options(), {})
+    try:
+        stream.info.input_min_period = 96
+        stream.info.output_min_period = 48
+        stream.info.input_period_locked = 1
+        stream.info.output_period_locked = 0
+
+        info = stream.diagnostics()
+
+        assert info["input_min_period_frames"] == 96
+        assert info["output_min_period_frames"] == 48
+        assert info["input_period_locked"] is True
+        assert info["output_period_locked"] is False
+        assert info["minimum_period_latency_ms"] == pytest.approx(96 / 44.1 + 48 / 48)
+        assert info["negotiated_period_latency_ms"] == pytest.approx(441 / 44.1 + 144 / 48)
+        assert info["latency_limit"] == "engine-period-locked"
+    finally:
+        stream.close()
+
+
 def test_native_stream_reports_whether_raw_mode_actually_engaged(monkeypatch):
     library = SimpleNamespace(
         wm_close=Mock(), wm_start=Mock(return_value=1), wm_pump=Mock(return_value=1), wm_set_raw=Mock()
     )
 
-    def open_stream(_input_name, _output_name, _blocksize, _gain, info, _error, _size):
+    def open_stream(_input_name, _output_name, _mirror_name, _blocksize, _gain, _exclusive, info, _error, _size):
         # A driver that rejected AUDCLNT_STREAMOPTIONS_RAW on the input side
         # (see Endpoint::open's try_candidate fallback) but accepted it for
         # output -- both are reported independently.
@@ -87,7 +109,7 @@ def test_native_stream_reports_whether_raw_mode_actually_engaged(monkeypatch):
 def test_native_stream_threads_gain_and_toggles_raw_mode(dll):
     stream = native_wasapi.NativeWasapiStream({**options(), "gain": 2.5}, {})
     dll.wm_open.assert_called_once()
-    assert dll.wm_open.call_args.args[3] == pytest.approx(2.5)
+    assert dll.wm_open.call_args.args[4] == pytest.approx(2.5)
 
     stream.set_raw(True)
     dll.wm_set_raw.assert_called_once_with(42, 1)
@@ -98,6 +120,55 @@ def test_native_stream_threads_gain_and_toggles_raw_mode(dll):
     dll.wm_set_raw.reset_mock()
     stream.set_raw(True)  # No handle after close(): must not call into a freed engine.
     dll.wm_set_raw.assert_not_called()
+
+
+def test_native_stream_opens_an_optional_virtual_microphone_feed_without_replacing_headphones(dll):
+    native_wasapi.NativeWasapiStream(
+        {**options(), "virtual_output_device_name": "A&D Voice Virtual Microphone Feed"},
+        {},
+    ).close()
+
+    assert dll.wm_open.call_args.args[:4] == (
+        "Chosen microphone",
+        "Chosen speakers",
+        "A&D Voice Virtual Microphone Feed",
+        64,
+    )
+
+
+def test_native_stream_requests_exclusive_capture_without_making_render_exclusive(dll):
+    stream = native_wasapi.NativeWasapiStream(
+        {**options(), "input_exclusive": True}, {}
+    )
+
+    assert dll.wm_open.call_args.args[5] == 1
+    diagnostics = stream.diagnostics()
+    assert diagnostics["input_exclusive"] is True
+    assert diagnostics["output_exclusive"] is False
+    stream.close()
+
+
+def test_native_engine_uses_exclusive_mode_only_for_requested_capture_endpoint():
+    source = (
+        native_wasapi.library_path().parents[3]
+        / "backend/engines/wasapi/monitor.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "AUDCLNT_SHAREMODE_EXCLUSIVE" in source
+    assert "input.open(enumerator.Get(), eCapture" in source
+    assert "output.open(enumerator.Get(), eRender" in source
+    assert "input_exclusive" in source
+
+
+def test_native_endpoint_lookup_accepts_portaudio_decorated_windows_names():
+    source = (
+        native_wasapi.library_path().parents[3]
+        / "backend/engines/wasapi/monitor.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "PKEY_Device_DeviceDesc" in source
+    assert "endpoint_name_matches" in source
+    assert "description" in source[source.index("endpoint_name_matches") : source.index("struct Endpoint")]
 
 
 def test_native_callback_reuses_existing_dsp_and_supports_partial_engine_packets(dll):
@@ -282,7 +353,7 @@ def test_native_shared_probes_only_categories_valid_for_capture_and_render():
     assert "try_candidate(AudioCategory_Media, static_cast<AUDCLNT_STREAMOPTIONS>(0))" in source
     assert "AudioCategory_GameMedia" not in source
     assert "AUDCLNT_STREAMOPTIONS_RAW" in source
-    assert "AUDCLNT_SHAREMODE_EXCLUSIVE" not in source
+    assert "output.open(enumerator.Get(), eRender, output_name, blocksize, initialize, false)" in source
 
 
 def test_native_shared_compares_raw_and_non_raw_candidates_before_selecting():
@@ -330,7 +401,7 @@ def test_native_shared_falls_back_to_current_period_when_an_existing_app_locks_e
     current = source.index("GetCurrentSharedModeEnginePeriod")
     current_initialize = source.index("InitializeSharedAudioStream", current)
     assert current < current_initialize
-    assert "AUDCLNT_SHAREMODE_EXCLUSIVE" not in source
+    assert "output.open(enumerator.Get(), eRender, output_name, blocksize, initialize, false)" in source
 
 
 def test_native_render_probes_game_chat_for_low_latency_without_ducking_other_audio():
@@ -351,6 +422,25 @@ def test_native_wasapi_drift_target_is_the_requested_low_latency_block_not_a_ful
     source = (native_wasapi.library_path().parents[3] / "backend/engines/wasapi/monitor.cpp").read_text(encoding="utf-8")
     assert "std::min<size_t>(blocksize" in source
     assert "MonitorBuffer>(capacity, ratio, safety_frames)" in source
+
+
+def test_exclusive_capture_keeps_one_capture_period_to_prevent_render_starvation():
+    source = (
+        native_wasapi.library_path().parents[3]
+        / "backend/engines/wasapi/monitor.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "input.exclusive ? input.period : blocksize" in source
+
+
+def test_native_underrun_counts_only_when_render_buffer_and_queue_are_both_empty():
+    source = (
+        native_wasapi.library_path().parents[3]
+        / "backend/engines/wasapi/monitor.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "if (!padding && !count) ++stats.underruns;" in source
+    assert "if (padding < target && !count) ++stats.underruns;" not in source
 
 
 def test_worker_uses_native_event_pump_and_native_rate(monkeypatch, dll, capsys):

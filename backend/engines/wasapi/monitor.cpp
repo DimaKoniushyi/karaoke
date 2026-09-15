@@ -1,4 +1,4 @@
-// Local shared-mode I/O only. DSP stays in the existing monitor worker.
+// Event-driven local I/O. Render remains shared; capture may be exclusive.
 #define NOMINMAX
 #include <windows.h>
 #include <audioclient.h>
@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cwctype>
 #include <cstring>
 #include <memory>
 #include <sstream>
@@ -32,6 +33,9 @@ struct Info {
     // the path and can add their own latency. Previously invisible: the
     // engine still opened and ran normally either way.
     uint32_t input_raw, output_raw;
+    uint32_t input_min_period, output_min_period;
+    uint32_t input_period_locked, output_period_locked;
+    uint32_t input_exclusive, output_exclusive;
 };
 struct Statistics {
     uint64_t captured_frames = 0, rendered_frames = 0, dropped_frames = 0;
@@ -70,15 +74,52 @@ struct Handle {
     HANDLE value = nullptr;
     ~Handle() { if (value) CloseHandle(value); }
 };
-static std::wstring name_of(IMMDevice* device) {
+static std::wstring property_of(IMMDevice* device, const PROPERTYKEY& key) {
     ComPtr<IPropertyStore> store;
     check(device->OpenPropertyStore(STGM_READ, &store), "OpenPropertyStore");
     PROPVARIANT value{};
-    const HRESULT hr = store->GetValue(PKEY_Device_FriendlyName, &value);
+    const HRESULT hr = store->GetValue(key, &value);
     std::wstring name = SUCCEEDED(hr) && value.vt == VT_LPWSTR ? value.pwszVal : L"";
     PropVariantClear(&value);
-    check(hr, "Get endpoint name");
+    check(hr, "Get endpoint property");
     return name;
+}
+// Interface/product label used by the Windows audio endpoint property store
+// (for example "Audient iD14" or "Realtek(R) Audio").
+static const PROPERTYKEY kAudioInterfaceName = {
+    {0xb3f8fa53, 0x0004, 0x438e, {0x90, 0x03, 0x51, 0xa4, 0x6e, 0x13, 0x9b, 0xfc}}, 6
+};
+static std::wstring name_of(IMMDevice* device) {
+    auto name = property_of(device, PKEY_Device_FriendlyName);
+    return name.empty() ? property_of(device, PKEY_Device_DeviceDesc) : name;
+}
+static bool endpoint_name_matches(IMMDevice* device, const wchar_t* requested) {
+    auto lowercase = [](std::wstring value) {
+        std::transform(value.begin(), value.end(), value.begin(), towlower);
+        return value;
+    };
+    const auto friendly = lowercase(name_of(device));
+    const auto wanted = lowercase(requested ? requested : L"");
+    if (friendly == wanted) return true;
+    auto without_instance_ordinal = [](std::wstring value) {
+        const auto open = value.find(L'(');
+        if (open == std::wstring::npos) return value;
+        auto cursor = open + 1;
+        while (cursor < value.size() && iswdigit(value[cursor])) ++cursor;
+        if (cursor > open + 1 && cursor + 1 < value.size()
+            && value[cursor] == L'-' && value[cursor + 1] == L' ')
+            value.erase(open + 1, cursor + 1 - open);
+        return value;
+    };
+    if (without_instance_ordinal(friendly) == without_instance_ordinal(wanted))
+        return true;
+    const auto description = lowercase(property_of(device, kAudioInterfaceName));
+    // PortAudio decorates the MMDevice friendly name with interface text and
+    // sometimes a Windows instance ordinal: "Microphone (2- Realtek Audio)".
+    // MMDevice exposes those as two properties. Compare both rather than
+    // silently replacing the selected endpoint with a default device.
+    return !friendly.empty() && !description.empty() && wanted.starts_with(friendly)
+        && wanted.find(description, friendly.size()) != std::wstring::npos;
 }
 static ComPtr<IMMDevice> find_device(IMMDeviceEnumerator* enumerator, EDataFlow flow, const wchar_t* name) {
     ComPtr<IMMDevice> result;
@@ -93,25 +134,30 @@ static ComPtr<IMMDevice> find_device(IMMDeviceEnumerator* enumerator, EDataFlow 
     for (UINT index = 0; index < count; ++index) {
         ComPtr<IMMDevice> item;
         check(devices->Item(index, &item), "Get endpoint");
-        if (name_of(item.Get()) != name) continue;
+        if (!endpoint_name_matches(item.Get(), name)) continue;
         if (result) throw std::runtime_error("Selected audio endpoint name is ambiguous");
         result = item;
     }
-    if (!result) throw std::runtime_error("Selected audio endpoint is unavailable; no default-device substitution");
+    if (!result) throw std::runtime_error(
+        flow == eCapture
+            ? "Selected capture endpoint is unavailable; no default-device substitution"
+            : "Selected render endpoint is unavailable; no default-device substitution");
     return result;
 }
 struct Endpoint {
     ComPtr<IAudioClient3> client;
     WAVEFORMATEX* format = nullptr;
     Handle event;
-    UINT32 period = 0, buffer = 0;
-    bool started = false, floating = false, raw = false;
+    UINT32 period = 0, minimum_period = 0, buffer = 0;
+    bool started = false, floating = false, raw = false, period_locked = false;
+    bool exclusive = false;
     ~Endpoint() {
         if (started) client->Stop();
         client.Reset();
         if (format) CoTaskMemFree(format);
     }
-    void open(IMMDeviceEnumerator* enumerator, EDataFlow flow, const wchar_t* name, uint32_t requested, bool initialize) {
+    void open(IMMDeviceEnumerator* enumerator, EDataFlow flow, const wchar_t* name,
+              uint32_t requested, bool initialize, bool request_exclusive = false) {
         auto device = find_device(enumerator, flow, name);
         auto valid_format = [](WAVEFORMATEX* value, bool& is_float) {
             WORD tag = value->wFormatTag;
@@ -126,6 +172,99 @@ struct Endpoint {
             return (is_float || pcm) && value->nChannels && value->nSamplesPerSec &&
                 value->nBlockAlign == value->nChannels * (value->wBitsPerSample / 8);
         };
+        if (request_exclusive) {
+            if (flow != eCapture)
+                throw std::runtime_error("Exclusive mode is permitted only for microphone capture");
+            check(device->Activate(__uuidof(IAudioClient3), CLSCTX_ALL, nullptr,
+                                   reinterpret_cast<void**>(client.GetAddressOf())),
+                  "Activate exclusive capture");
+            check(client->GetMixFormat(&format), "Get exclusive capture format");
+            auto adopt_format = [&](const WAVEFORMATEX* candidate) {
+                if (client->IsFormatSupported(
+                        AUDCLNT_SHAREMODE_EXCLUSIVE, candidate, nullptr) != S_OK)
+                    return false;
+                const size_t bytes = sizeof(WAVEFORMATEX) + candidate->cbSize;
+                auto* accepted = static_cast<WAVEFORMATEX*>(CoTaskMemAlloc(bytes));
+                if (!accepted) throw std::bad_alloc();
+                std::memcpy(accepted, candidate, bytes);
+                CoTaskMemFree(format);
+                format = accepted;
+                return valid_format(format, floating);
+            };
+            bool accepted = valid_format(format, floating) && adopt_format(format);
+            const UINT32 rates[] = {format->nSamplesPerSec, 48000, 44100, 96000};
+            for (const auto rate : rates) {
+                if (accepted) break;
+                for (const WORD bits : {WORD(32), WORD(24), WORD(16)}) {
+                    WAVEFORMATEXTENSIBLE candidate{};
+                    candidate.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+                    candidate.Format.nChannels = format->nChannels;
+                    candidate.Format.nSamplesPerSec = rate;
+                    candidate.Format.wBitsPerSample = bits;
+                    candidate.Format.nBlockAlign = WORD(candidate.Format.nChannels * bits / 8);
+                    candidate.Format.nAvgBytesPerSec = rate * candidate.Format.nBlockAlign;
+                    candidate.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+                    candidate.Samples.wValidBitsPerSample = bits;
+                    candidate.dwChannelMask = candidate.Format.nChannels == 1
+                        ? SPEAKER_FRONT_CENTER
+                        : SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+                    candidate.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
+                    if (adopt_format(&candidate.Format)) { accepted = true; break; }
+                }
+                if (accepted) break;
+                WAVEFORMATEXTENSIBLE candidate{};
+                candidate.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+                candidate.Format.nChannels = format->nChannels;
+                candidate.Format.nSamplesPerSec = rate;
+                candidate.Format.wBitsPerSample = 32;
+                candidate.Format.nBlockAlign = WORD(candidate.Format.nChannels * 4);
+                candidate.Format.nAvgBytesPerSec = rate * candidate.Format.nBlockAlign;
+                candidate.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+                candidate.Samples.wValidBitsPerSample = 32;
+                candidate.dwChannelMask = candidate.Format.nChannels == 1
+                    ? SPEAKER_FRONT_CENTER
+                    : SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+                candidate.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+                accepted = adopt_format(&candidate.Format);
+            }
+            if (!accepted)
+                throw std::runtime_error("Selected microphone exposes no supported exclusive PCM/float format");
+            REFERENCE_TIME default_period = 0, minimum = 0;
+            check(client->GetDevicePeriod(&default_period, &minimum), "Get exclusive capture period");
+            minimum_period = std::max<UINT32>(1, UINT32(std::ceil(
+                double(minimum) * format->nSamplesPerSec / 10000000.0)));
+            period = std::max(requested, minimum_period);
+            if (initialize) {
+                auto duration = REFERENCE_TIME(std::ceil(
+                    double(period) * 10000000.0 / format->nSamplesPerSec));
+                HRESULT hr = client->Initialize(
+                    AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                    duration, duration, format, nullptr);
+                if (hr == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED) {
+                    UINT32 aligned = 0;
+                    check(client->GetBufferSize(&aligned), "Get aligned exclusive capture buffer");
+                    client.Reset();
+                    check(device->Activate(__uuidof(IAudioClient3), CLSCTX_ALL, nullptr,
+                                           reinterpret_cast<void**>(client.GetAddressOf())),
+                          "Reactivate aligned exclusive capture");
+                    duration = REFERENCE_TIME(std::ceil(
+                        double(aligned) * 10000000.0 / format->nSamplesPerSec));
+                    hr = client->Initialize(
+                        AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                        duration, duration, format, nullptr);
+                }
+                check(hr, "Initialize exclusive capture");
+            }
+            exclusive = true;
+            raw = true;  // Exclusive capture bypasses the shared audio-engine APO path.
+            if (!initialize) return;
+            event.value = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            if (!event.value) throw std::runtime_error("CreateEvent failed");
+            check(client->SetEventHandle(event.value), "Set exclusive capture event");
+            check(client->GetBufferSize(&buffer), "Get exclusive capture buffer");
+            period = buffer;
+            return;
+        }
         struct Candidate {
             ComPtr<IAudioClient3> client;
             WAVEFORMATEX* format = nullptr;
@@ -214,6 +353,7 @@ struct Endpoint {
             candidate->format = nullptr;
             floating = candidate->floating;
             period = candidate->period;
+            minimum_period = candidate->period;
             raw = candidate->raw;
         };
         bool periodicity_locked = false;
@@ -252,6 +392,8 @@ struct Endpoint {
                         AUDCLNT_STREAMFLAGS_EVENTCALLBACK, current->period, current->format, nullptr))) continue;
                 current->raw = blueprint->raw;
                 select(current);
+                minimum_period = blueprint->period;
+                period_locked = current->period > minimum_period;
                 break;
             }
         }
@@ -266,7 +408,7 @@ struct Endpoint {
         REFERENCE_TIME value = 0;
         return SUCCEEDED(client->GetStreamLatency(&value)) ? value / 10000.0 : -1;
     }
-    void start() { check(client->Start(), "Start shared stream"); started = true; }
+    void start() { check(client->Start(), "Start audio stream"); started = true; }
     float read(const BYTE* frame) const {
         // Some capture endpoints put a mono microphone's actual signal on a
         // channel other than 0 (e.g. Right) even while still negotiating a
@@ -290,12 +432,12 @@ struct Endpoint {
 };
 struct Engine {
     Apartment apartment; // Last member destroyed, after all COM interfaces.
-    Endpoint input, output;
+    Endpoint input, output, mirror;
     ComPtr<IAudioCaptureClient> capture;
-    ComPtr<IAudioRenderClient> render;
+    ComPtr<IAudioRenderClient> render, mirror_render;
     ComPtr<IAudioClock> clock;
     UINT64 clock_frequency = 0, written_frames = 0;
-    std::unique_ptr<shared_audio::MonitorBuffer> queue;
+    std::unique_ptr<shared_audio::MonitorBuffer> queue, mirror_queue;
     std::vector<float> source, processed;
     Statistics stats;
     Process process = nullptr;
@@ -315,20 +457,28 @@ struct Engine {
     // thread, with no other state that must be seen consistently with it.
     std::atomic<bool> raw_active{false};
     ~Engine() { if (scheduling) AvRevertMmThreadCharacteristics(scheduling); }
-    void open(const wchar_t* input_name, const wchar_t* output_name, uint32_t blocksize, float requested_gain,
+    void open(const wchar_t* input_name, const wchar_t* output_name, const wchar_t* mirror_name,
+              uint32_t blocksize, float requested_gain, bool input_exclusive,
               Info& info, bool initialize) {
         gain = requested_gain;
         if (!blocksize || blocksize > 8192) throw std::runtime_error("Invalid fixed processing buffer");
         ComPtr<IMMDeviceEnumerator> enumerator;
         check(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator)), "Create enumerator");
-        input.open(enumerator.Get(), eCapture, input_name, blocksize, initialize);
-        output.open(enumerator.Get(), eRender, output_name, blocksize, initialize);
+        input.open(enumerator.Get(), eCapture, input_name, blocksize, initialize, input_exclusive);
+        output.open(enumerator.Get(), eRender, output_name, blocksize, initialize, false);
+        if (mirror_name && *mirror_name)
+            mirror.open(enumerator.Get(), eRender, mirror_name, blocksize, initialize, false);
         info = {input.format->nSamplesPerSec, output.format->nSamplesPerSec, blocksize, input.period, output.period,
                 input.buffer, output.buffer, initialize ? input.latency() : -1, initialize ? output.latency() : -1,
-                input.raw ? 1u : 0u, output.raw ? 1u : 0u};
+                input.raw ? 1u : 0u, output.raw ? 1u : 0u,
+                input.minimum_period, output.minimum_period,
+                input.period_locked ? 1u : 0u, output.period_locked ? 1u : 0u,
+                input.exclusive ? 1u : 0u, output.exclusive ? 1u : 0u};
         if (!initialize) return;
         check(input.client->GetService(IID_PPV_ARGS(&capture)), "Get capture service");
         check(output.client->GetService(IID_PPV_ARGS(&render)), "Get render service");
+        if (mirror.client)
+            check(mirror.client->GetService(IID_PPV_ARGS(&mirror_render)), "Get virtual microphone feed service");
         if (FAILED(output.client->GetService(IID_PPV_ARGS(&clock))) ||
             FAILED(clock->GetFrequency(&clock_frequency)) || !clock_frequency) clock.Reset();
         const double ratio = double(info.sample_rate) / info.output_sample_rate;
@@ -340,9 +490,22 @@ struct Engine {
         // the app. Retain only the requested processing block (or less when
         // the endpoint period itself is shorter); spare capacity still
         // absorbs scheduling stalls without becoming intentional latency.
-        const size_t safety_frames = std::max<size_t>(2, std::min<size_t>(blocksize,
+        // Exclusive capture and shared render usually have different event
+        // quanta (for example 133 vs 441 frames). Retain one already-captured
+        // input quantum so the render engine never alternates between a short
+        // write and starvation. Shared/shared keeps the user's smaller target.
+        const size_t queue_target = input.exclusive ? input.period : blocksize;
+        const size_t safety_frames = std::max<size_t>(2, std::min<size_t>(queue_target,
             size_t(std::ceil(output.period * ratio))));
         queue = std::make_unique<shared_audio::MonitorBuffer>(capacity, ratio, safety_frames);
+        if (mirror.client) {
+            const double mirror_ratio = double(info.sample_rate) / mirror.format->nSamplesPerSec;
+            const size_t mirror_capacity = 2 * std::max(input.period,
+                UINT32(std::ceil(mirror.period * mirror_ratio))) + blocksize * 2;
+            mirror_queue = std::make_unique<shared_audio::MonitorBuffer>(
+                mirror_capacity, mirror_ratio, std::max<size_t>(2, std::min<size_t>(blocksize,
+                    size_t(std::ceil(mirror.period * mirror_ratio)))));
+        }
         // Capture cannot expose any part of a packet before the endpoint's
         // physical period completes. Process that already-complete packet in
         // one callback instead of crossing C++ -> Python once per smaller UI
@@ -366,12 +529,14 @@ struct Engine {
     void pump(uint32_t timeout) {
         const double entering = monotonic_seconds();
         stats.pump_gap_ms = pump_finished ? (entering - pump_finished) * 1000 : 0;
-        HANDLE events[] = {input.event.value, output.event.value};
-        if (WaitForMultipleObjects(2, events, FALSE, timeout) == WAIT_FAILED)
+        HANDLE events[] = {input.event.value, output.event.value, mirror.event.value};
+        const DWORD event_count = mirror.client ? 3 : 2;
+        if (WaitForMultipleObjects(event_count, events, FALSE, timeout) == WAIT_FAILED)
             throw std::runtime_error("Audio event wait failed");
         stats.event_wait_ms = (monotonic_seconds() - entering) * 1000;
         // A ready output block must not wait behind another capture/DSP burst.
         render_ready();
+        mirror_ready();
         UINT32 available = 0;
         check(capture->GetNextPacketSize(&available), "GetNextPacketSize");
         // Drain capture after either event, handing each completed packet to
@@ -411,6 +576,8 @@ struct Engine {
                 const double timestamp = flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR ? 0 : captured_qpc * 1e-7;
                 queue->push(processed.data(), count, timestamp > 0 ? timestamp + double(offset) / input.format->nSamplesPerSec : 0,
                             1.0 / input.format->nSamplesPerSec, received_at, monotonic_seconds());
+                if (mirror_queue)
+                    mirror_queue->push(processed.data(), count, 0, 0, received_at, monotonic_seconds());
                 offset += count;
             }
             check(capture->ReleaseBuffer(frames), "Capture ReleaseBuffer");
@@ -418,9 +585,29 @@ struct Engine {
             if (!ok) throw std::runtime_error("Microphone processing callback failed");
             stats.captured_frames += frames;
             render_ready();
+            mirror_ready();
             check(capture->GetNextPacketSize(&available), "GetNextPacketSize");
         }
         pump_finished = monotonic_seconds();
+    }
+    void mirror_ready() {
+        if (!mirror.client || !mirror_render || !mirror_queue) return;
+        UINT32 padding = 0;
+        check(mirror.client->GetCurrentPadding(&padding), "Get virtual microphone feed padding");
+        mirror_queue->nudge();
+        const UINT32 target = std::min(mirror.period, mirror.buffer);
+        const UINT32 ready = UINT32(mirror_queue->available());
+        const UINT32 count = padding < target ? std::min(target - padding, ready) : 0;
+        if (!count) return;
+        BYTE* data = nullptr;
+        check(mirror_render->GetBuffer(count, &data), "Virtual microphone feed GetBuffer");
+        for (UINT32 index = 0; index < count; ++index) {
+            float sample = 0;
+            mirror_queue->pop(sample);
+            mirror.write(data + index * mirror.format->nBlockAlign, sample);
+        }
+        check(mirror_render->ReleaseBuffer(count, 0), "Virtual microphone feed ReleaseBuffer");
+        if (!mirror.started) mirror.start();
     }
     void render_ready() {
         UINT32 padding = 0;
@@ -439,7 +626,10 @@ struct Engine {
         // case, so a fully-starved queue was previously invisible in the
         // stats even though it is the more severe starvation than a partial
         // shortfall.
-        if (padding < target && !count) ++stats.underruns;
+        // A low padding level is not itself an underrun: an input event can
+        // wake this pump just before its packet is drained below. Count only
+        // when the render engine has actually exhausted both sources.
+        if (!padding && !count) ++stats.underruns;
         if (count) {
             double presentation = 0;
             UINT64 position = 0, qpc = 0;
@@ -495,16 +685,20 @@ struct Engine {
 
 #define API extern "C" __declspec(dllexport)
 // Bump when exported structures change; prevent mixed DLL/Python layouts.
-API uint32_t __cdecl wm_abi_version() { return 4; }
-API void* __cdecl wm_open(const wchar_t* input, const wchar_t* output, uint32_t blocksize, float gain, Info* info, char* error, uint32_t size) {
+API uint32_t __cdecl wm_abi_version() { return 6; }
+API void* __cdecl wm_open(const wchar_t* input, const wchar_t* output, const wchar_t* mirror,
+                          uint32_t blocksize, float gain, uint32_t input_exclusive,
+                          Info* info, char* error, uint32_t size) {
     try {
         auto engine = std::make_unique<Engine>();
-        engine->open(input, output, blocksize, gain, *info, true);
+        engine->open(input, output, mirror, blocksize, gain, input_exclusive != 0, *info, true);
         return engine.release();
     } catch (const std::exception& failure) { error_text(error, size, failure); return nullptr; }
 }
-API int __cdecl wm_probe(const wchar_t* input, const wchar_t* output, uint32_t blocksize, float gain, Info* info, char* error, uint32_t size) {
-    try { Engine engine; engine.open(input, output, blocksize, gain, *info, false); return 1; }
+API int __cdecl wm_probe(const wchar_t* input, const wchar_t* output, const wchar_t* mirror,
+                         uint32_t blocksize, float gain, uint32_t input_exclusive,
+                         Info* info, char* error, uint32_t size) {
+    try { Engine engine; engine.open(input, output, mirror, blocksize, gain, input_exclusive != 0, *info, false); return 1; }
     catch (const std::exception& failure) { error_text(error, size, failure); return 0; }
 }
 API int __cdecl wm_start(void* handle, Process callback, char* error, uint32_t size) {

@@ -1,0 +1,259 @@
+diff --git a/audio/simpleaudiosample/Source/Filters/micarraywavtable.h b/audio/simpleaudiosample/Source/Filters/micarraywavtable.h
+index 5365603..9a2f899 100644
+--- a/audio/simpleaudiosample/Source/Filters/micarraywavtable.h
++++ b/audio/simpleaudiosample/Source/Filters/micarraywavtable.h
+@@ -20,7 +20,7 @@ Abstract:-
+ //
+ #define MICARRAY_RAW_CHANNELS                   2       // Channels for raw mode
+ #define MICARRAY_DEVICE_MAX_CHANNELS            2       // Max channels overall
+-#define MICARRAY_32_BITS_PER_SAMPLE_PCM         32      // 32 Bits Per Sample
++#define MICARRAY_32_BITS_PER_SAMPLE_PCM         16      // Matches the virtual feed render stream.
+ #define MICARRAY_RAW_SAMPLE_RATE                48000   // Raw sample rate
+ 
+ //
+@@ -32,7 +32,7 @@ Abstract:-
+ static
+ KSDATAFORMAT_WAVEFORMATEXTENSIBLE MicArrayPinSupportedDeviceFormats[] =
+ {
+-    // 48 KHz 32-bit 2 channels
++    // 48 KHz 16-bit 2 channels
+     {
+         {
+             sizeof(KSDATAFORMAT_WAVEFORMATEXTENSIBLE),
+@@ -48,12 +48,12 @@ KSDATAFORMAT_WAVEFORMATEXTENSIBLE MicArrayPinSupportedDeviceFormats[] =
+                 WAVE_FORMAT_EXTENSIBLE,
+                 2,
+                 48000,
+-                384000,
+-                8,
+-                32,
++                192000,
++                4,
++                16,
+                 sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX)
+             },
+-            32,
++            16,
+             KSAUDIO_SPEAKER_STEREO,
+             STATICGUIDOF(KSDATAFORMAT_SUBTYPE_PCM)
+         }
+diff --git a/audio/simpleaudiosample/Source/Main/Main.vcxproj b/audio/simpleaudiosample/Source/Main/Main.vcxproj
+index b569da4..8ae622d 100644
+--- a/audio/simpleaudiosample/Source/Main/Main.vcxproj
++++ b/audio/simpleaudiosample/Source/Main/Main.vcxproj
+@@ -91,6 +91,7 @@
+       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(DDK_INC_PATH);..</AdditionalIncludeDirectories>
+       <TreatWarningAsError>true</TreatWarningAsError>
+       <WarningLevel>Level4</WarningLevel>
++      <DisableSpecificWarnings>6387;28195;28182;28160;28193;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+       <PreprocessorDefinitions>%(PreprocessorDefinitions);_WIN32;UNICODE;_UNICODE;PC_IMPLEMENTATION</PreprocessorDefinitions>
+       <PreprocessorDefinitions>%(PreprocessorDefinitions);DEBUG_LEVEL=DEBUGLVL_TERSE</PreprocessorDefinitions>
+     </ClCompile>
+diff --git a/audio/simpleaudiosample/Source/Main/SimpleAudioSample.inx b/audio/simpleaudiosample/Source/Main/SimpleAudioSample.inx
+index db2b62c..0785d39 100644
+--- a/audio/simpleaudiosample/Source/Main/SimpleAudioSample.inx
++++ b/audio/simpleaudiosample/Source/Main/SimpleAudioSample.inx
+@@ -26,7 +26,7 @@ PETrust=true
+ %MfgName%=SIMPLEAUDIOSAMPLE,NT$ARCH$.10.0...22000
+ 
+ [SIMPLEAUDIOSAMPLE.NT$ARCH$.10.0...22000]
+-%SIMPLEAUDIOSAMPLE_SA.DeviceDesc%=SIMPLEAUDIOSAMPLE_SA, ROOT\SimpleAudioSample
++%SIMPLEAUDIOSAMPLE_SA.DeviceDesc%=SIMPLEAUDIOSAMPLE_SA, ROOT\ADVoiceVirtualAudio
+ 
+ [DestinationDirs]
+ SIMPLEAUDIOSAMPLE_SA.CopyList=13 ; 13=Package's DriverStore directory
+@@ -188,15 +188,15 @@ ProviderName = "TODO-Set-Provider"
+ MfgName      = "TODO-Set-Manufacturer"
+ MsCopyRight  = "TODO-Set-Copyright"
+ 
+-SIMPLEAUDIOSAMPLE_SA.DeviceDesc="Virtual Audio Device (WDM) - Simple Audio Sample"
+-SimpleAudioSample.SvcDesc="Virtual Audio Device (WDM) - Simple Audio Sample Driver"
++SIMPLEAUDIOSAMPLE_SA.DeviceDesc="A&D Voice Virtual Audio Bridge"
++SimpleAudioSample.SvcDesc="A&D Voice Virtual Audio Bridge Driver"
+ 
+ ;; friendly names
+-SIMPLEAUDIOSAMPLE.WaveSpeaker.szPname="Simple Audio Sample Wave Speaker"
+-SIMPLEAUDIOSAMPLE.TopologySpeaker.szPname="Simple Audio Sample Topology Speaker"
++SIMPLEAUDIOSAMPLE.WaveSpeaker.szPname="A&D Voice Virtual Microphone Feed"
++SIMPLEAUDIOSAMPLE.TopologySpeaker.szPname="A&D Voice Virtual Microphone Feed"
+ 
+-SIMPLEAUDIOSAMPLE.WaveMicArray1.szPname="Simple Audio Sample Wave Microphone Array - Front"
+-SIMPLEAUDIOSAMPLE.TopologyMicArray1.szPname="Simple Audio Sample Topology Microphone Array - Front"
++SIMPLEAUDIOSAMPLE.WaveMicArray1.szPname="A&D Voice Virtual Microphone"
++SIMPLEAUDIOSAMPLE.TopologyMicArray1.szPname="A&D Voice Virtual Microphone"
+ 
+-MicArray1CustomName= "Internal Microphone Array - Front"
++MicArray1CustomName= "A&D Voice Virtual Microphone"
+ 
+diff --git a/audio/simpleaudiosample/Source/Main/adapter.cpp b/audio/simpleaudiosample/Source/Main/adapter.cpp
+index a66ee5a..0743c9d 100644
+--- a/audio/simpleaudiosample/Source/Main/adapter.cpp
++++ b/audio/simpleaudiosample/Source/Main/adapter.cpp
+@@ -22,6 +22,7 @@ Abstract:
+ #include "definitions.h"
+ #include "endpoints.h"
+ #include "minipairs.h"
++#include "advoicebridge.h"
+ 
+ typedef void (*fnPcDriverUnload) (PDRIVER_OBJECT);
+ fnPcDriverUnload gPCDriverUnloadRoutine = NULL;
+@@ -258,6 +259,7 @@ DriverEntry
+     _In_  PUNICODE_STRING         RegistryPathName
+ )
+ {
++    AdVoiceBridgeInitialize();
+ /*++
+ 
+ Routine Description:
+diff --git a/audio/simpleaudiosample/Source/Main/minwavertstream.cpp b/audio/simpleaudiosample/Source/Main/minwavertstream.cpp
+index c189c93..2c87c20 100644
+--- a/audio/simpleaudiosample/Source/Main/minwavertstream.cpp
++++ b/audio/simpleaudiosample/Source/Main/minwavertstream.cpp
+@@ -4,6 +4,7 @@
+ #include "endpoints.h"
+ #include "minwavert.h"
+ #include "minwavertstream.h"
++#include "advoicebridge.h"
+ #define MINWAVERTSTREAM_POOLTAG 'SRWM'
+ 
+ #pragma warning (disable : 4127)
+@@ -1413,7 +1414,7 @@ ByteDisplacement - # of bytes to process.
+     {
+         ULONG runWrite = min(ByteDisplacement, m_ulDmaBufferSize - bufferOffset);
+         
+-        m_ToneGenerator.GenerateSine(m_pDmaBuffer + bufferOffset, runWrite);
++        AdVoiceBridgeRead(m_pDmaBuffer + bufferOffset, runWrite);
+            	
+         bufferOffset = (bufferOffset + runWrite) % m_ulDmaBufferSize;
+         ByteDisplacement -= runWrite;
+@@ -1446,6 +1447,7 @@ ByteDisplacement - # of bytes to process.
+     {
+         ULONG runWrite = min(ByteDisplacement, m_ulDmaBufferSize - bufferOffset);
+         m_SaveData.WriteData(m_pDmaBuffer + bufferOffset, runWrite);
++        AdVoiceBridgeWrite(m_pDmaBuffer + bufferOffset, runWrite);
+         bufferOffset = (bufferOffset + runWrite) % m_ulDmaBufferSize;
+         ByteDisplacement -= runWrite;
+     }
+diff --git a/audio/simpleaudiosample/Source/Utilities/Utilities.vcxproj b/audio/simpleaudiosample/Source/Utilities/Utilities.vcxproj
+index 5efe106..0561ae1 100644
+--- a/audio/simpleaudiosample/Source/Utilities/Utilities.vcxproj
++++ b/audio/simpleaudiosample/Source/Utilities/Utilities.vcxproj
+@@ -100,7 +100,7 @@
+       <PreprocessorDefinitions>%(PreprocessorDefinitions);_USE_WAVERT_;_NEW_DELETE_OPERATORS_</PreprocessorDefinitions>
+       <ExceptionHandling>
+       </ExceptionHandling>
+-      <DisableSpecificWarnings>4595;%(DisableSpecificWarnings)</DisableSpecificWarnings>
++      <DisableSpecificWarnings>4595;6340;6386;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+     </ClCompile>
+     <Midl>
+       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(DDK_INC_PATH);..</AdditionalIncludeDirectories>
+@@ -182,6 +182,7 @@
+   </ItemDefinitionGroup>
+   <ItemGroup>
+     <ClCompile Include="hw.cpp" />
++    <ClCompile Include="advoicebridge.cpp" />
+     <ClCompile Include="kshelper.cpp" />
+     <ClCompile Include="savedata.cpp" />
+     <ClCompile Include="tonegenerator.cpp" />
+diff --git a/audio/simpleaudiosample/Source/Utilities/advoicebridge.cpp b/audio/simpleaudiosample/Source/Utilities/advoicebridge.cpp
+new file mode 100644
+index 0000000..854f6b4
+--- /dev/null
++++ b/audio/simpleaudiosample/Source/Utilities/advoicebridge.cpp
+@@ -0,0 +1,69 @@
++#include "advoicebridge.h"
++
++namespace {
++constexpr ULONG Capacity = 48000 * 2 * sizeof(INT16) / 10;
++UCHAR g_data[Capacity]{};
++ULONG g_read = 0;
++ULONG g_write = 0;
++ULONG g_size = 0;
++KSPIN_LOCK g_lock{};
++
++struct Guard {
++    KIRQL oldIrql{};
++    bool atDpc = KeGetCurrentIrql() >= DISPATCH_LEVEL;
++    Guard() {
++        if (atDpc) KeAcquireSpinLockAtDpcLevel(&g_lock);
++        else KeAcquireSpinLock(&g_lock, &oldIrql);
++    }
++    ~Guard() {
++        if (atDpc) KeReleaseSpinLockFromDpcLevel(&g_lock);
++        else KeReleaseSpinLock(&g_lock, oldIrql);
++    }
++};
++}
++
++void AdVoiceBridgeInitialize() {
++    KeInitializeSpinLock(&g_lock);
++    g_read = g_write = g_size = 0;
++}
++
++void AdVoiceBridgeWrite(_In_reads_bytes_(byteCount) const UCHAR* source, _In_ ULONG byteCount) {
++    Guard guard;
++    if (byteCount >= Capacity) {
++        source += byteCount - Capacity;
++        byteCount = Capacity;
++        g_read = g_write = g_size = 0;
++    }
++    while (byteCount) {
++        const ULONG chunk = min(byteCount, Capacity - g_write);
++        RtlCopyMemory(g_data + g_write, source, chunk);
++        g_write = (g_write + chunk) % Capacity;
++        source += chunk;
++        byteCount -= chunk;
++        const ULONG free = Capacity - g_size;
++        if (chunk > free) g_read = (g_read + chunk - free) % Capacity;
++        g_size = min(Capacity, g_size + chunk);
++    }
++}
++
++ULONG AdVoiceBridgeRead(_Out_writes_bytes_(byteCount) UCHAR* target, _In_ ULONG byteCount) {
++    Guard guard;
++    const ULONG requested = byteCount;
++    ULONG available = min(byteCount, g_size);
++    const ULONG copied = available;
++    while (available) {
++        const ULONG chunk = min(available, Capacity - g_read);
++        RtlCopyMemory(target, g_data + g_read, chunk);
++        g_read = (g_read + chunk) % Capacity;
++        target += chunk;
++        available -= chunk;
++        g_size -= chunk;
++    }
++    RtlZeroMemory(target, requested - copied);
++    return copied;
++}
++
++void AdVoiceBridgeReset() {
++    Guard guard;
++    g_read = g_write = g_size = 0;
++}
+diff --git a/audio/simpleaudiosample/Source/Utilities/advoicebridge.h b/audio/simpleaudiosample/Source/Utilities/advoicebridge.h
+new file mode 100644
+index 0000000..72f347b
+--- /dev/null
++++ b/audio/simpleaudiosample/Source/Utilities/advoicebridge.h
+@@ -0,0 +1,8 @@
++#pragma once
++
++#include <ntddk.h>
++
++void AdVoiceBridgeInitialize();
++void AdVoiceBridgeWrite(_In_reads_bytes_(byteCount) const UCHAR* source, _In_ ULONG byteCount);
++ULONG AdVoiceBridgeRead(_Out_writes_bytes_(byteCount) UCHAR* target, _In_ ULONG byteCount);
++void AdVoiceBridgeReset();
+diff --git a/audio/simpleaudiosample/Source/Utilities/savedata.cpp b/audio/simpleaudiosample/Source/Utilities/savedata.cpp
+index 02c3f60..03968bb 100644
+--- a/audio/simpleaudiosample/Source/Utilities/savedata.cpp
++++ b/audio/simpleaudiosample/Source/Utilities/savedata.cpp
+@@ -517,7 +517,7 @@ CSaveData::Initialize
+     {
+         // Allocate data file name.
+         //
+-        RtlStringCchPrintfW(szTemp, MAX_PATH, L"%s_%s_%d.wav", DEFAULT_FILE_NAME, HOST_FILE_NAME, m_ulStreamId);
++        RtlStringCchCopyW(szTemp, MAX_PATH, L"ADVoiceCapture.wav");
+         m_FileName.Length = 0;
+         ntStatus = RtlStringCchLengthW (szTemp, sizeof(szTemp)/sizeof(szTemp[0]), &cLen);
+     }

@@ -37,7 +37,10 @@ from app.services.microphone_quality import (  # noqa: E402 - staged worker star
     StudioMicrophoneProcessor,
 )
 from app.services.monitor_relay_link import RelayLink  # noqa: E402
-from app.services.wasapi_monitor_stream import WasapiMonitorStream  # noqa: E402
+from app.services.wasapi_monitor_stream import (  # noqa: E402
+    MirroredDuplexStream,
+    WasapiMonitorStream,
+)
 
 _running = True
 _level = {"rms_db": -120.0, "clipping": False, "silent": True}
@@ -70,10 +73,9 @@ def _configure_realtime_python() -> None:
 
 def _stream_candidate(options: dict) -> dict:
     """No buffer or rate fallback -- the requested blocksize/sample rate are
-    used as-is. Every monitoring path (solo, recording, room) always opens
-    the device in shared mode, never exclusive: exclusive mode seizes the
-    device from every other app (and every other stream in this app), which
-    this project deliberately never asks for.
+    used as-is. The public candidate remains shared/plain. Native WASAPI may
+    separately request exclusive *capture* through ``input_exclusive`` while
+    render stays shared; it never seizes the speakers/radio endpoint.
     """
     rate = float(options["sample_rate"])
     blocksize = int(options["blocksize"])
@@ -105,7 +107,7 @@ def _emit(payload: dict) -> None: print(json.dumps(payload), flush=True)
 # loop every ~100ms runs *on* the realtime thread, right between audio
 # pumps. _queue_report hands the payload to a plain-priority thread instead;
 # put/get are pure Python object shuffling, cheap enough for the pump loop.
-_report_queue: "queue.Queue[dict]" = queue.Queue(maxsize=1)
+_report_queue: queue.Queue[dict] = queue.Queue(maxsize=1)
 
 
 def _queue_report(payload: dict) -> None:
@@ -324,12 +326,41 @@ def _configure_native_stream_target(stream, chosen_engine: str, relay) -> None:
             stream.set_raw(True)
 
 
+def _open_portaudio_stream(options, candidate, callback, statistics, failed):
+    engine = candidate.pop("_engine", "duplex")
+    if engine == "wasapi-split":
+        stream = WasapiMonitorStream(
+            sd,
+            candidate,
+            callback,
+            statistics,
+            failed,
+            mirror_device=options.get("virtual_output_device_name"),
+        )
+    elif options.get("virtual_output_device_name"):
+        stream = MirroredDuplexStream(
+            sd,
+            candidate,
+            callback,
+            statistics,
+            failed,
+            options["virtual_output_device_name"],
+        )
+    else:
+        stream = sd.Stream(**candidate, callback=callback)
+    return stream, engine
+
+
+def _read_options() -> dict:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    return json.loads(parser.parse_args().config)
+
+
 def main() -> int:
     global _live_params
     _configure_realtime_python()
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", required=True)
-    options = json.loads(parser.parse_args().config)
+    options = _read_options()
     gain = float(options["gain"])
     _live_params = _live_options(options, gain)
     threading.Thread(target=_read_live_updates, daemon=True).start()
@@ -364,7 +395,7 @@ def main() -> int:
                 failed.set()
 
         mode = candidate.pop("_mode")
-        engine = candidate.pop("_engine", "duplex")
+        engine = candidate.get("_engine", "duplex")
         try:
             if engine == "wasapi-native-shared":
                 _stage("load native WASAPI and open shared endpoints")
@@ -377,8 +408,9 @@ def main() -> int:
                 details = stream.diagnostics()
             else:
                 _stage("open PortAudio stream")
-                stream = (WasapiMonitorStream(sd, candidate, callback, statistics, failed)
-                          if engine == "wasapi-split" else sd.Stream(**candidate, callback=callback))
+                stream, engine = _open_portaudio_stream(
+                    options, candidate, callback, statistics, failed
+                )
                 _stage("start PortAudio stream")
                 stream.start()
                 details = _stream_diagnostics(stream, candidate, options, mode)

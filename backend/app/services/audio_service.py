@@ -119,6 +119,20 @@ _monitor_control = MonitorControl(execution_lock=hardware_lock)
 _requested_effects_disabled = False
 _hardware_suspended = False
 _known_device_names: dict[int, str] = {}
+_VIRTUAL_MICROPHONE_NAME = "A&D Voice Virtual Microphone"
+_VIRTUAL_MICROPHONE_FEED_NAME = "A&D Voice Virtual Microphone Feed"
+
+
+def _virtual_microphone_feed_name(devices) -> str | None:
+    """Return the bridge render endpoint only when its capture peer exists."""
+    feed = microphone = False
+    for device in devices.values() if isinstance(devices, dict) else devices:
+        if not _is_wasapi_device(device):
+            continue
+        name = str(device.get("name", "")).strip()
+        feed |= name == _VIRTUAL_MICROPHONE_FEED_NAME and int(device.get("max_output_channels", 0)) > 0
+        microphone |= name == _VIRTUAL_MICROPHONE_NAME and int(device.get("max_input_channels", 0)) > 0
+    return _VIRTUAL_MICROPHONE_FEED_NAME if feed and microphone else None
 
 
 def _asio_bridge_path() -> Path:
@@ -318,17 +332,30 @@ def _matching_wdmks_endpoints(
     devices, input_name: str, output_name: str
 ) -> tuple[int, int] | None:
     """Match WDM-KS pins to the selected Windows endpoints by hardware name."""
+    def endpoint_signature(name: str) -> str:
+        # WDM-KS commonly omits the product name and retains only a numbered
+        # physical pin ("Analogue 1/2"). Numbered labels are specific enough
+        # to bridge that naming gap; generic "Microphone" is not.
+        label = name.split("(", 1)[0].strip().casefold()
+        normalized = " ".join(re.findall(r"[\w]+", label))
+        return normalized if any(character.isdigit() for character in normalized) else ""
+
     result: list[int] = []
     for kind, selected_name in (("input", input_name), ("output", output_name)):
         capability = f"max_{kind}_channels"
         selected_tokens = _hardware_tokens(selected_name)
+        selected_signature = endpoint_signature(selected_name)
         candidates: list[tuple[int, int]] = []
         for index, device in enumerate(devices):
             if int(device.get(capability, 0)) < 1 or not _is_wdm_ks_device(device):
                 continue
-            overlap = selected_tokens & _hardware_tokens(str(device.get("name", "")))
-            if overlap:
-                candidates.append((len(overlap), index))
+            candidate_name = str(device.get("name", ""))
+            overlap = selected_tokens & _hardware_tokens(candidate_name)
+            signature_match = bool(
+                selected_signature and selected_signature == endpoint_signature(candidate_name)
+            )
+            if overlap or signature_match:
+                candidates.append((len(overlap) * 100 + int(signature_match), index))
         if not candidates:
             return None
         result.append(max(candidates)[1])
@@ -1057,10 +1084,16 @@ def _configure_monitoring(settings, *, adopt_driver_buffer: bool = False) -> Non
         return
     if settings.audio_driver == "auto" and not _monitor_relay_needed:
         devices = sd.query_devices() if _AUDIO_BACKEND_AVAILABLE else None
-        # "Windows Driver" is an explicit transport choice. Do not silently
-        # replace it with ASIO or WDM-KS: the latter can report a tiny nominal
-        # buffer while stopping as soon as another shared client opens, which
-        # is the same device-seizing behaviour as exclusive mode in practice.
+        # Windows Driver first tries native exclusive capture while render
+        # remains shared, so radio and other playback continue normally. If
+        # the microphone rejects every exclusive PCM/float format, fall back
+        # to coexistence-verified WDM-KS and finally fully shared WASAPI.
+        if devices is not None and _try_native_input_exclusive_monitor(
+            settings, devices=devices
+        ):
+            return
+        if devices is not None and _try_automatic_wdmks_monitor(settings, devices=devices):
+            return
         _start_shared_monitor(
             settings, driver=settings.audio_driver, relay_needed=False, devices=devices
         )
@@ -1100,7 +1133,7 @@ def _automatic_asio_context(settings, devices=None) -> tuple[list[str], str, str
     return list_asio_drivers(), input_name, output_name
 
 
-def _transport_preserves_shared_endpoints(settings) -> bool:
+def _transport_preserves_shared_endpoints(settings, *, verify_activity: bool = False) -> bool:
     """Prove that a direct transport did not seize Windows Shared.
 
     The ASIO bridge is already running when this is called. Opening both
@@ -1112,6 +1145,19 @@ def _transport_preserves_shared_endpoints(settings) -> bool:
 
     stream = None
     try:
+        callbacks_before = None
+        if verify_activity:
+            # Worker startup is acknowledged before its first periodic level
+            # report. Wait briefly for a real callback baseline; without one,
+            # coexistence cannot be proven and the fast path must be rejected.
+            for _ in range(5):
+                value = _monitor_control.snapshot().get("callback_count")
+                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                    callbacks_before = value
+                    break
+                time.sleep(0.05)
+            if callbacks_before is None:
+                return False
         stream = NativeWasapiStream(
             {
                 "input_device_name": settings.input_device_name or "",
@@ -1121,6 +1167,30 @@ def _transport_preserves_shared_endpoints(settings) -> bool:
             },
             {},
         )
+        if verify_activity:
+            def silence(_input, output, _frames, _time_info, _status):
+                output.fill(0)
+
+            # Opening a shared endpoint can return success while silently
+            # freezing a supposedly low-latency KS stream. Actually start and
+            # pump both shared endpoints, keep them alive long enough for two
+            # worker reports, and require multiple new KS callbacks.
+            stream.start(silence)
+            for _ in range(6):
+                stream.pump()
+            time.sleep(0.15)
+            callbacks_after = _monitor_control.snapshot().get("callback_count")
+            return (
+                isinstance(callbacks_after, int)
+                and not isinstance(callbacks_after, bool)
+                # A nominal 16-frame stream that advances only at the usual
+                # ~10 ms Windows cadence is not a low-latency stream; several
+                # drivers do exactly that while still reporting 0.36 ms.
+                # Thirty-two blocks inside this ~0.2 s simultaneous test
+                # requires real sub-6.25-ms callback delivery and therefore
+                # rejects both frozen and merely cosmetic tiny buffers.
+                and callbacks_after - callbacks_before >= 32
+            )
         return True
     except Exception as exc:
         logger.info("Direct audio transport rejected because Windows Shared could not coexist: %s", exc)
@@ -1170,6 +1240,31 @@ def _try_automatic_asio_monitor(settings, *, devices=None) -> bool:
     return False
 
 
+def _try_native_input_exclusive_monitor(settings, *, devices=None) -> bool:
+    """Use exclusive capture while keeping render/radio in Windows Shared."""
+    try:
+        _start_shared_monitor(
+            settings,
+            driver="auto",
+            devices=devices,
+            input_exclusive=True,
+        )
+        _monitor_control.publish(
+            transport_selection="native-input-exclusive-output-shared",
+            requested_mode="Windows Driver",
+            input_exclusive=True,
+            output_exclusive=False,
+        )
+        return True
+    except MonitorCancelled:
+        _stop_monitoring_process()
+        raise
+    except Exception as exc:
+        logger.info("Native exclusive microphone capture unavailable: %s", exc)
+        _stop_monitoring_process()
+        return False
+
+
 def _try_automatic_wdmks_monitor(settings, *, devices=None) -> bool:
     """Try WDM-KS only when its pins open and Windows Shared still coexists."""
     if not _AUDIO_BACKEND_AVAILABLE:
@@ -1186,7 +1281,7 @@ def _try_automatic_wdmks_monitor(settings, *, devices=None) -> bool:
             input_device_name=input_name,
             output_device_name=output_name,
         )
-        if not _transport_preserves_shared_endpoints(shared_probe):
+        if not _transport_preserves_shared_endpoints(shared_probe, verify_activity=True):
             raise RuntimeError("WDM-KS does not coexist with Windows Shared")
         _monitor_control.publish(
             transport_selection="automatic-wdmks",
@@ -1209,7 +1304,8 @@ def _try_automatic_wdmks_monitor(settings, *, devices=None) -> bool:
 
 
 def _start_shared_monitor(
-    settings, *, driver: str, relay_needed: bool = False, devices=None
+    settings, *, driver: str, relay_needed: bool = False, devices=None,
+    input_exclusive: bool = False,
 ) -> None:
     if not _AUDIO_BACKEND_AVAILABLE:
         raise RuntimeError("Audio backend is unavailable")
@@ -1261,6 +1357,8 @@ def _start_shared_monitor(
         raise RuntimeError("No output device is available for microphone monitoring")
     gain = max(0.0, min(4.0, settings.volume))
     wasapi = _is_wasapi_device(input_info)
+    if input_exclusive and not wasapi:
+        raise RuntimeError("Exclusive microphone capture requires a WASAPI endpoint")
     wasapi_mode = "shared" if wasapi else "plain"
     _monitor_control.publish(
         input_device=str(input_info.get("name", "")), output_device=str(output_info.get("name", "")),
@@ -1301,6 +1399,11 @@ def _start_shared_monitor(
     if wasapi:
         worker_options.update(native_shared=True, input_device_name=str(input_info["name"]),
                               output_device_name=str(output_info["name"]))
+        if input_exclusive:
+            worker_options["input_exclusive"] = True
+    virtual_feed = _virtual_microphone_feed_name(devices)
+    if virtual_feed and (wasapi or driver == "wdmks"):
+        worker_options["virtual_output_device_name"] = virtual_feed
     # The relay is a room-broadcast feature (see _open_monitor_relay) -- opening
     # it and keeping a live loopback connection running costs a numpy copy plus
     # a frame-encode on every single audio block, for the whole lifetime of the

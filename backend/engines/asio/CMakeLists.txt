@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 project(KaraokeAsioBridge LANGUAGES CXX)
+enable_testing()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -30,4 +31,7 @@ target_link_libraries(KaraokeAsioBridge PRIVATE ole32)
 # Independent shared-mode I/O library; the existing ASIO target is unchanged.
 add_library(KaraokeWasapi SHARED ../wasapi/monitor.cpp)
 target_link_libraries(KaraokeWasapi PRIVATE ole32 avrt ksuser)
-add_executable(WasapiBufferTests EXCLUDE_FROM_ALL ../wasapi/monitor_buffer_test.cpp)
+add_executable(WasapiBufferTests ../wasapi/monitor_buffer_test.cpp)
+add_executable(VirtualAudioBridgeTests ../virtual_audio/bridge_ring_test.cpp)
+add_test(NAME wasapi-monitor-buffer COMMAND WasapiBufferTests)
+add_test(NAME virtual-audio-bridge COMMAND VirtualAudioBridgeTests)

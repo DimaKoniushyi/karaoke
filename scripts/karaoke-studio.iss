@@ -28,7 +28,7 @@ OutputDir={#OutputDir}
 OutputBaseFilename={#MyAppName} Setup {#MyAppVersion}
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-PrivilegesRequired=lowest
+PrivilegesRequired=admin
 WizardStyle=modern
 ; Shown once before the wizard starts; Inno then localizes every built-in
 ; wizard string (Next/Back/Cancel, page titles, etc.) automatically for the
@@ -606,6 +606,35 @@ begin
   Result := False;
 end;
 
+procedure InstallVirtualAudioDriver;
+var
+  ResultCode: Integer;
+  PnpUtil: String;
+  DriverInf: String;
+begin
+  PnpUtil := ExpandConstant('{sys}\pnputil.exe');
+  DriverInf := ExpandConstant(
+    '{app}\resources\backend\drivers\ADVoiceVirtualAudio\ADVoiceVirtualAudio.inf'
+  );
+  if not FileExists(DriverInf) then
+    RaiseException('Пакет виртуального микрофона A&D Voice отсутствует.');
+  WizardForm.StatusLabel.Caption := 'Установка виртуального микрофона A&D Voice...';
+  if not Exec(
+    PnpUtil,
+    '/add-driver "' + DriverInf + '" /install',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  ) then
+    RaiseException('Не удалось запустить установку виртуального микрофона A&D Voice.');
+  if ResultCode <> 0 then
+    RaiseException(
+      'Windows отклонила драйвер виртуального микрофона A&D Voice. Код: ' +
+      IntToStr(ResultCode)
+    );
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
@@ -654,6 +683,8 @@ begin
 
     if not FileExists(ExpandConstant('{app}\{#MyAppExeName}')) then
       RaiseException('Runtime extraction completed, but the application executable is missing.');
+
+    InstallVirtualAudioDriver;
 
     if UpdateInstall then
     begin

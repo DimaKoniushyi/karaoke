@@ -11,7 +11,11 @@ class Info(ct.Structure):
     _fields_ = [(name, ct.c_uint32) for name in (
         "sample_rate", "output_sample_rate", "blocksize", "input_period", "output_period", "input_buffer", "output_buffer"
     )] + [(name, ct.c_double) for name in ("input_latency_ms", "output_latency_ms")] + [
-        (name, ct.c_uint32) for name in ("input_raw", "output_raw")
+        (name, ct.c_uint32) for name in (
+            "input_raw", "output_raw", "input_min_period", "output_min_period",
+            "input_period_locked", "output_period_locked", "input_exclusive",
+            "output_exclusive",
+        )
     ]
 
 
@@ -46,9 +50,10 @@ def load_library():
     except AttributeError as error:
         raise RuntimeError("Native WASAPI library is outdated; rebuild the native audio components") from error
     version.argtypes, version.restype = [], ct.c_uint32
-    if version() != 4:
+    if version() != 6:
         raise RuntimeError("Native WASAPI library version mismatch; rebuild the native audio components")
-    opening = [ct.c_wchar_p, ct.c_wchar_p, ct.c_uint32, ct.c_float, ct.POINTER(Info), ct.c_char_p, ct.c_uint32]
+    opening = [ct.c_wchar_p, ct.c_wchar_p, ct.c_wchar_p, ct.c_uint32, ct.c_float, ct.c_uint32,
+               ct.POINTER(Info), ct.c_char_p, ct.c_uint32]
     dll.wm_open.argtypes, dll.wm_open.restype = opening, ct.c_void_p
     dll.wm_probe.argtypes, dll.wm_probe.restype = opening, ct.c_int
     dll.wm_start.argtypes, dll.wm_start.restype = [ct.c_void_p, Process, ct.c_char_p, ct.c_uint32], ct.c_int
@@ -68,8 +73,10 @@ class NativeWasapiStream:
         # Empty names are allowed only for an explicitly requested system default.
         # Production supplies both resolved names; the DLL rejects ambiguity.
         self.handle = self.dll.wm_open(
-            options["input_device_name"], options["output_device_name"], options["blocksize"],
-            float(options.get("gain", 1.0)), ct.byref(self.info), self.error, len(self.error),
+            options["input_device_name"], options["output_device_name"],
+            options.get("virtual_output_device_name", ""), options["blocksize"],
+            float(options.get("gain", 1.0)), 1 if options.get("input_exclusive") else 0,
+            ct.byref(self.info), self.error, len(self.error),
         )
         self._check(self.handle)
 
@@ -137,12 +144,47 @@ class NativeWasapiStream:
                                 for name in TIMING_FIELDS for value in (getattr(self.stats, name),)})
 
     def diagnostics(self):
+        input_rate = self.info.sample_rate
+        output_rate = self.info.output_sample_rate
+        minimum_ms = (
+            self.info.input_min_period * 1000 / input_rate
+            + self.info.output_min_period * 1000 / output_rate
+            if input_rate and output_rate and self.info.input_min_period and self.info.output_min_period
+            else None
+        )
+        negotiated_ms = (
+            self.info.input_period * 1000 / input_rate
+            + self.info.output_period * 1000 / output_rate
+            if input_rate and output_rate and self.info.input_period and self.info.output_period
+            else None
+        )
+        period_locked = bool(self.info.input_period_locked or self.info.output_period_locked)
+        latency_limit = (
+            "engine-period-locked"
+            if period_locked and minimum_ms is not None and negotiated_ms is not None and negotiated_ms > minimum_ms
+            else "driver-period"
+            if minimum_ms is not None and minimum_ms > 15
+            else "shared-low-latency-capable"
+            if minimum_ms is not None
+            else "unknown"
+        )
         return {
-            "engine": "wasapi-native-shared", "host_api": "Windows WASAPI", "mode": "shared", "exclusive": False,
+            "engine": "wasapi-native-input-exclusive" if self.info.input_exclusive else "wasapi-native-shared",
+            "host_api": "Windows WASAPI",
+            "mode": "input-exclusive-output-shared" if self.info.input_exclusive else "shared",
+            "exclusive": False, "input_exclusive": bool(self.info.input_exclusive),
+            "output_exclusive": bool(self.info.output_exclusive),
             "input_raw": bool(self.info.input_raw), "output_raw": bool(self.info.output_raw),
             "blocksize": self.info.blocksize, "sample_rate": self.info.sample_rate,
             "output_sample_rate": self.info.output_sample_rate,
             "input_period_frames": self.info.input_period, "output_period_frames": self.info.output_period,
+            "input_min_period_frames": self.info.input_min_period,
+            "output_min_period_frames": self.info.output_min_period,
+            "input_period_locked": bool(self.info.input_period_locked),
+            "output_period_locked": bool(self.info.output_period_locked),
+            "minimum_period_latency_ms": minimum_ms,
+            "negotiated_period_latency_ms": negotiated_ms,
+            "latency_limit": latency_limit,
             "input_latency_ms": self.info.input_latency_ms if self.info.input_latency_ms > 0 else None,
             "output_latency_ms": self.info.output_latency_ms if self.info.output_latency_ms > 0 else None,
             "latency_source": "wasapi-stream-report",

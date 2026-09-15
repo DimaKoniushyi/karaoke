@@ -62,14 +62,84 @@ class MonitorQueue:
             self.free.append(block)
 
 
+class MirroredDuplexStream:
+    """A direct duplex monitor plus an asynchronous virtual-microphone feed.
+
+    The physical output stays in the original PortAudio duplex callback.  The
+    second output only consumes copies from a bounded queue, so a slow shared
+    virtual endpoint can drop its own frames but can never add latency to what
+    the singer hears.
+    """
+
+    def __init__(self, sd, candidate, callback, statistics, failed, mirror_device):
+        blocksize = int(candidate["blocksize"])
+        channels = int(candidate["channels"][1])
+        self.queue = MonitorQueue(blocksize, channels)
+        self.statistics = statistics
+
+        def local_callback(indata, outdata, frames, clocks, status):
+            callback(indata, outdata, frames, clocks, status)
+            if frames == blocksize:
+                self.queue.push(outdata)
+
+        def mirror_callback(outdata, frames, _clocks, status):
+            if frames != blocksize:
+                outdata.fill(0)
+                self.statistics["virtual_microphone_bad_block"] = int(frames)
+                return
+            complete = self.queue.pop(outdata)
+            if status or not complete:
+                self.statistics["virtual_microphone_underruns"] = self.queue.underruns
+
+        self.local = sd.Stream(**candidate, callback=local_callback)
+        self.mirror = sd.OutputStream(
+            samplerate=candidate["samplerate"],
+            blocksize=blocksize,
+            latency=candidate.get("latency", "low"),
+            channels=channels,
+            device=mirror_device,
+            callback=mirror_callback,
+        )
+
+    @property
+    def latency(self):
+        return self.local.latency
+
+    def start(self):
+        try:
+            self.mirror.start()
+            self.local.start()
+        except BaseException:
+            self.abort()
+            raise
+
+    def abort(self):
+        self._both("abort")
+
+    def close(self):
+        self._both("close")
+
+    def _both(self, method):
+        for stream in (self.local, self.mirror):
+            with contextlib.suppress(Exception):
+                getattr(stream, method)()
+
+
 class WasapiMonitorStream:
-    def __init__(self, sd, candidate, callback, statistics, failed):
+    def __init__(
+        self, sd, candidate, callback, statistics, failed, mirror_device=None
+    ):
         rate = float(candidate["samplerate"])
         blocksize = int(candidate["blocksize"])
         if blocksize <= 0:
             raise ValueError("Split WASAPI monitoring requires a fixed callback size")
         self.queue = MonitorQueue(blocksize, candidate["channels"][1])
-        self.input = self.output = None
+        self.mirror_queue = (
+            MonitorQueue(blocksize, candidate["channels"][1])
+            if mirror_device
+            else None
+        )
+        self.input = self.output = self.mirror = None
         self.statistics = statistics
         self.rate = rate
         self.started_at = None
@@ -86,6 +156,8 @@ class WasapiMonitorStream:
             try:
                 callback(indata, work, frames, clocks, status)
                 self.queue.push(work)
+                if self.mirror_queue is not None:
+                    self.mirror_queue.push(work)
             except Exception:
                 # PortAudio otherwise swallows callback errors and can leave the
                 # parent reporting a running stream with no microphone audio.
@@ -127,6 +199,15 @@ class WasapiMonitorStream:
                 queue_capacity_ms=round(self.queue.capacity * 1000 / rate, 2),
             )
 
+        def mirror_render(outdata, frames, _clocks, status):
+            if frames != blocksize:
+                outdata.fill(0)
+                statistics["virtual_microphone_bad_block"] = int(frames)
+                return
+            complete = self.mirror_queue.pop(outdata)
+            if status or not complete:
+                statistics["virtual_microphone_underruns"] = self.mirror_queue.underruns
+
         common = {key: value for key, value in candidate.items()
                   if key not in {"channels", "device", "extra_settings"}}
         try:
@@ -136,6 +217,14 @@ class WasapiMonitorStream:
             self.output = sd.OutputStream(**common, device=candidate["device"][1],
                                           channels=candidate["channels"][1],
                                           extra_settings=candidate["extra_settings"][1], callback=render)
+            if mirror_device:
+                self.mirror = sd.OutputStream(
+                    **common,
+                    device=mirror_device,
+                    channels=candidate["channels"][1],
+                    extra_settings=candidate["extra_settings"][1],
+                    callback=mirror_render,
+                )
         except BaseException:
             self.close()
             raise
@@ -147,6 +236,8 @@ class WasapiMonitorStream:
     def start(self):
         self.started_at = time.monotonic()
         try:
+            if self.mirror is not None:
+                self.mirror.start()
             self.input.start()
             self.output.start()
         except BaseException:
@@ -160,7 +251,7 @@ class WasapiMonitorStream:
         self._both("close")
 
     def _both(self, method):
-        for stream in (self.output, self.input):
+        for stream in (self.mirror, self.output, self.input):
             if stream is not None:
                 with contextlib.suppress(Exception):
                     getattr(stream, method)()
