@@ -331,9 +331,9 @@ def _pump_reports(stream, chosen_engine: str, failed: threading.Event, statistic
         )
         level_report = (
             {
-                "rms_db": -120.0,
-                "clipping": False,
-                "silent": True,
+                "rms_db": statistics.get("raw_rms_db", -120.0),
+                "clipping": statistics.get("raw_peak", 0.0) >= 0.99,
+                "silent": statistics.get("raw_rms_db", -120.0) < -50.0,
                 "real_latency_ms": None,
             }
             if raw_engaged

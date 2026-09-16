@@ -48,6 +48,7 @@ struct Statistics {
     double output_clock_lead_ms = -1, render_submit_ms = 0, render_padding_ms = 0;
     double capture_processing_ms = 0, event_wait_ms = 0, pump_gap_ms = 0;
     double resample_ratio = -1;
+    double raw_rms_db = -120, raw_peak = 0;
 };
 static double monotonic_seconds() {
     static const double frequency = [] { LARGE_INTEGER value; QueryPerformanceFrequency(&value); return double(value.QuadPart); }();
@@ -514,6 +515,7 @@ struct Engine {
     // per block on the audio thread and only ever toggled by a single writer
     // thread, with no other state that must be seen consistently with it.
     std::atomic<bool> raw_active{false};
+    double raw_level_power = 0, raw_level_peak = 0;
     ~Engine() { if (scheduling) AvRevertMmThreadCharacteristics(scheduling); }
     void open(const wchar_t* input_name, const wchar_t* output_name, const wchar_t* mirror_name,
               uint32_t blocksize, float requested_gain, bool input_exclusive,
@@ -687,8 +689,22 @@ struct Engine {
                     // block at all, just gain and a hard clip, matching the
                     // same clamp the Python "dry_monitor" bypass applies.
                     const float current_gain = gain.load(std::memory_order_relaxed);
-                    for (uint32_t index = 0; index < count; ++index)
+                    double power = 0, peak = 0;
+                    for (uint32_t index = 0; index < count; ++index) {
                         processed[index] = std::clamp(source[index] * current_gain, -1.0f, 1.0f);
+                        power += double(processed[index]) * processed[index];
+                        peak = std::max(peak, double(std::abs(processed[index])));
+                    }
+                    // Measure the exact native signal that reaches render.
+                    // This stays on the existing pump thread: no Python DSP
+                    // callback or extra capture stream is needed for the UI.
+                    const double duration = double(count) / input.format->nSamplesPerSec;
+                    const double rms_alpha = 1 - std::exp(-duration / 0.07);
+                    raw_level_power += (power / count - raw_level_power) * rms_alpha;
+                    raw_level_peak = std::max(peak, raw_level_peak * std::exp(-duration / 0.15));
+                    stats.raw_rms_db = raw_level_power > 0
+                        ? 10 * std::log10(raw_level_power) : -120;
+                    stats.raw_peak = raw_level_peak;
                 } else if (!process(source.data(), processed.data(), count)) {
                     ok = false;
                     break;
@@ -862,7 +878,7 @@ struct Engine {
 
 #define API extern "C" __declspec(dllexport)
 // Bump when exported structures change; prevent mixed DLL/Python layouts.
-API uint32_t __cdecl wm_abi_version() { return 7; }
+API uint32_t __cdecl wm_abi_version() { return 8; }
 API void* __cdecl wm_open(const wchar_t* input, const wchar_t* output, const wchar_t* mirror,
                           uint32_t blocksize, float gain, uint32_t input_exclusive,
                           Info* info, char* error, uint32_t size) {

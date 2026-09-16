@@ -26,7 +26,9 @@ TIMING_FIELDS = ("capture_delivery_ms", "program_residence_ms", "queue_residence
 class Statistics(ct.Structure):
     _fields_ = [(name, ct.c_uint64) for name in (
         "captured_frames", "rendered_frames", "dropped_frames", "underruns", "discontinuities", "queued_frames"
-    )] + [(name, ct.c_double) for name in ("stream_latency_ms", *TIMING_FIELDS, "resample_ratio")]
+    )] + [(name, ct.c_double) for name in (
+        "stream_latency_ms", *TIMING_FIELDS, "resample_ratio", "raw_rms_db", "raw_peak"
+    )]
 
 
 Process = ct.CFUNCTYPE(ct.c_int, ct.POINTER(ct.c_float), ct.POINTER(ct.c_float), ct.c_uint32)
@@ -50,7 +52,7 @@ def load_library():
     except AttributeError as error:
         raise RuntimeError("Native WASAPI library is outdated; rebuild the native audio components") from error
     version.argtypes, version.restype = [], ct.c_uint32
-    if version() != 7:
+    if version() != 8:
         raise RuntimeError("Native WASAPI library version mismatch; rebuild the native audio components")
     opening = [ct.c_wchar_p, ct.c_wchar_p, ct.c_wchar_p, ct.c_uint32, ct.c_float, ct.c_uint32,
                ct.POINTER(Info), ct.c_char_p, ct.c_uint32]
@@ -88,6 +90,7 @@ class NativeWasapiStream:
     def __init__(self, options, statistics):
         self.dll = load_library()
         self.info, self.stats = Info(), Statistics()
+        self.stats.raw_rms_db = -120.0
         self.error = ct.create_string_buffer(1024)
         self.statistics, self.callback = statistics, None
         # Empty names are allowed only for an explicitly requested system default.
@@ -159,6 +162,10 @@ class NativeWasapiStream:
             queue_ms=round(self.stats.queued_frames * 1000 / self.info.sample_rate, 3),
             captured_frames=self.stats.captured_frames, rendered_frames=self.stats.rendered_frames,
             stream_latency_ms=round(self.stats.stream_latency_ms, 3) if self.stats.stream_latency_ms > 0 else None,
+            raw_rms_db=(round(self.stats.raw_rms_db, 1)
+                        if math.isfinite(self.stats.raw_rms_db) else -120.0),
+            raw_peak=(max(0.0, min(1.0, self.stats.raw_peak))
+                      if math.isfinite(self.stats.raw_peak) else 0.0),
         )
         self.statistics.update({name: round(value, 3) if math.isfinite(value) and value >= 0 else None
                                 for name in TIMING_FIELDS for value in (getattr(self.stats, name),)})

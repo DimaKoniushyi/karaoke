@@ -786,6 +786,38 @@ def test_native_raw_mode_reports_sanitized_level_instead_of_stale_python_values(
     capsys.readouterr()
 
 
+def test_native_raw_monitor_reports_live_input_level_without_python_dsp(monkeypatch, dll, capsys):
+    import json
+    import sys
+
+    config = {**options(), "sample_rate": 48000, "input_device_id": 1, "output_device_id": 2,
+              "output_channels": 2, "gain": 1, "wasapi_mode": "shared", "native_shared": True,
+              "dry_monitor": 1}
+    monkeypatch.setattr(sys, "argv", ["monitor_worker", "--config", json.dumps(config)])
+    monkeypatch.setattr(monitor_worker, "_running", True)
+    monkeypatch.setattr(monitor_worker.threading, "Thread", Mock())
+    callback_factory = Mock(return_value=Mock())
+    monkeypatch.setattr(monitor_worker, "_audio_callback", callback_factory)
+    monkeypatch.setattr(monitor_worker.sd, "Stream", Mock(side_effect=AssertionError("must not fall back")))
+    monkeypatch.setattr(monitor_worker, "_report_queue", monitor_worker.queue.Queue(maxsize=1))
+
+    def pump(_handle, _timeout, stats, _error, _size):
+        stats._obj.raw_rms_db = -18.0
+        stats._obj.raw_peak = 0.3
+        monitor_worker.time.sleep(0.11)
+        monitor_worker._running = False
+        return 1
+
+    dll.wm_pump.side_effect = pump
+    assert monitor_worker.main() == 0
+    report = monitor_worker._report_queue.get_nowait()
+    assert report["event"] == "level"
+    assert report["rms_db"] == -18.0
+    assert report["silent"] is False
+    assert report["clipping"] is False
+    capsys.readouterr()
+
+
 def test_native_raw_mode_is_never_armed_when_a_relay_is_attached(monkeypatch, dll, capsys):
     import json
     import sys
