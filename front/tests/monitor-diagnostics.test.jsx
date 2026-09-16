@@ -86,12 +86,8 @@ test("native shared uses timestamp latency, not allocated buffer estimates", () 
       })}
     />
   );
-  // The native WASAPI engine's stream_latency_ms is itself a hardware-clock
-  // -timestamped capture-to-playback measurement (see monitor.cpp's
-  // render_ready()), not a coarser allocated-buffer guess -- it earns the
-  // same "measured" label and tooltip as real_latency_ms, not the vaguer
-  // "estimate" wording, and it must never fall back to the buffer estimate.
-  expect(screen.getByText("Реальная задержка (микрофон → наушники): 22.669 мс").title).toContain(
+  // Device timestamps do not prove the acoustic mic-to-headphone delay.
+  expect(screen.getByText("Оценка задержки (микрофон → выход): 22.669 мс").title).toContain(
     "Измерено по временным меткам аудиодрайвера"
   );
   expect(screen.queryByText(/46.900/)).toBeNull();
@@ -107,7 +103,7 @@ test("measured monitoring latency includes active effect history", () => {
       })}
     />
   );
-  expect(screen.getByText("Реальная задержка (микрофон → наушники): 28.669 мс").title).toContain(
+  expect(screen.getByText("Оценка задержки (микрофон → выход): 28.669 мс").title).toContain(
     "алгоритмическую задержку активных эффектов"
   );
 });

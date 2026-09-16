@@ -178,6 +178,12 @@ if "%PREPARE_ONLY%"=="1" (
 )
 
 echo.
+echo Checking fully shared WASAPI acoustic baseline on the default devices...
+echo The running monitor may select a different transport.
+"%PY%" "%ROOT%backend\tools\acoustic_latency.py"
+if errorlevel 1 echo [WARN] Acoustic latency check was unavailable; startup will continue.
+
+echo.
 echo ============================================================
 echo  Starting A^&D Voice
 echo ============================================================

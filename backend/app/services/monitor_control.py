@@ -3,8 +3,10 @@
 import json
 import logging
 import math
+import statistics
 import threading
 import time
+from collections import deque
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,7 @@ class MonitorControl:
         self.real_latency_logged_at = 0.0
         self.monitor_diagnostics_logged_at = 0.0
         self.monitor_diagnostics_previous = {}
+        self.endpoint_latency_observations = deque(maxlen=256)
         self.status = {"state": "idle", "fallback_count": 0, "glitch_fallback_count": 0}
 
     def _begin(self, state, details):
@@ -46,6 +49,7 @@ class MonitorControl:
         self.live = None
         self.monitor_diagnostics_logged_at = 0.0
         self.monitor_diagnostics_previous = {}
+        self.endpoint_latency_observations.clear()
         self.status = {
             "state": state, "fallback_count": 0, "glitch_fallback_count": 0,
             "requested_at": time.monotonic(), **details,
@@ -107,6 +111,12 @@ class MonitorControl:
                     if key in message:
                         self.status[key] = message[key]
                 stream_latency = message.get("stream_latency_ms")
+                endpoint_latency = (stream_latency if isinstance(stream_latency, (int, float))
+                                    and math.isfinite(stream_latency) and stream_latency > 0
+                                    else message.get("real_latency_ms"))
+                if (isinstance(endpoint_latency, (int, float)) and
+                        math.isfinite(endpoint_latency) and endpoint_latency > 0):
+                    self.endpoint_latency_observations.append(endpoint_latency)
                 now = time.monotonic()
                 if (self.status.get("state") == "running" and
                         now - self.monitor_diagnostics_logged_at >= 5.0):
@@ -123,6 +133,27 @@ class MonitorControl:
                                 if isinstance(previous, (int, float)) and not isinstance(previous, bool)
                                 else current
                             )
+                    interval = now - self.monitor_diagnostics_logged_at
+                    if self.monitor_diagnostics_logged_at > 0 and interval > 0:
+                        payload["diagnostic_interval_ms"] = round(interval * 1000)
+                        for counter, name in (("captured_frames", "capture_rate_frames_per_sec"),
+                                              ("rendered_frames", "render_rate_frames_per_sec")):
+                            if counter in self.monitor_diagnostics_previous and isinstance(
+                                    payload.get(f"delta_{counter}"), (int, float)):
+                                payload[name] = round(payload[f"delta_{counter}"] / interval)
+                    if self.endpoint_latency_observations:
+                        observations = sorted(self.endpoint_latency_observations)
+                        payload["endpoint_latency_samples"] = len(observations)
+                        payload["endpoint_latency_p50_ms"] = round(statistics.median(observations), 3)
+                        payload["endpoint_latency_p95_ms"] = round(
+                            observations[math.ceil(len(observations) * .95) - 1], 3)
+                        payload["endpoint_latency_source"] = (
+                            "wasapi-device-timestamps"
+                            if str(self.status.get("engine", "")).startswith("wasapi-native-")
+                            else "portaudio-stream-timestamps")
+                        # Endpoint timestamps cannot include an unobserved
+                        # headphone/air/microphone acoustic loopback path.
+                        payload["acoustic_roundtrip_ms"] = None
                     self.monitor_diagnostics_previous = {
                         key: payload[key] for key in _DIAGNOSTIC_COUNTERS if key in payload
                     }
@@ -185,6 +216,7 @@ class MonitorControl:
                 if event == "started":
                     self.latency_breakdown_logged_at = 0.0
                     self.real_latency_logged_at = 0.0
+                    self.endpoint_latency_observations.clear()
                     # A rejected automatic transport can emit an error before
                     # the next candidate (normally shared WASAPI) starts. The
                     # successful start is authoritative; retaining the stale

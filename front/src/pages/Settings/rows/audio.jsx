@@ -11,10 +11,10 @@ export default function audioRows({ settings: { audio }, run, tr = translateSave
   const output = status?.output_latency_ms;
   const known = [input, output].every((value) => Number.isFinite(value) && value >= 0);
   const source = status?.latency_source === "asio-driver-report" ? "driver" : "estimate";
-  // Priority: an actually-measured mic-to-speaker round trip beats the
-  // driver-reported input+output estimate, which is a coarser fallback for
-  // hosts/engines that don't report a real measurement at all. Two engines
-  // can supply the measured figure -- real_latency_ms (PortAudio engines,
+  // Prefer the timestamped endpoint path over the coarser driver-reported
+  // input+output estimate. This is not an acoustic loopback measurement: a
+  // headset may add unreported delay beyond the driver timestamps. Two engines
+  // can supply the endpoint figure -- real_latency_ms (PortAudio engines,
   // timestamped via inputBufferAdcTime/outputBufferDacTime) and
   // stream_latency_ms for the native WASAPI engine (timestamped via the
   // device's own audio clock in monitor.cpp's render_ready()) -- both cover

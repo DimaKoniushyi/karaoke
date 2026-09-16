@@ -1122,18 +1122,9 @@ def _configure_monitoring(settings, *, adopt_driver_buffer: bool = False) -> Non
             settings, devices=devices, relay_needed=_monitor_relay_needed
         ):
             return
-        # A 10-ms shared capture plus a 10-ms shared renderer cannot meet the
-        # monitoring target even when their phases are aligned. Keep render
-        # fully shared (radio, karaoke and every other application continue
-        # to play), but let the selected microphone expose its shorter native
-        # capture period. The native engine synchronizes that capture start to
-        # the observed shared render clock; if the endpoint rejects exclusive
-        # capture this helper closes it and we retain the ordinary shared
-        # fallback below.
-        if devices is not None and _try_native_input_exclusive_monitor(
-            settings, devices=devices, relay_needed=_monitor_relay_needed
-        ):
-            return
+        # Windows Driver promises shared capture and shared rendering. A slow
+        # endpoint must remain shared even if exclusive capture could report
+        # a shorter period; that would silently change the selected mode.
         _start_shared_monitor(
             settings, driver=settings.audio_driver,
             relay_needed=_monitor_relay_needed, devices=devices
@@ -1487,6 +1478,13 @@ def _start_shared_monitor(
                 f"({_host_api_name(input_info)} vs {_host_api_name(output_info)}); "
                 "select matching devices in audio settings."
             )
+    if driver == "auto" and not (
+        _is_wasapi_device(input_info) and _is_wasapi_device(output_info)
+    ):
+        raise RuntimeError(
+            "Windows Driver requires a WASAPI microphone and output device; "
+            "select available Windows devices or choose another audio mode explicitly."
+        )
     output_channels = min(2, int(output_info["max_output_channels"]))
     if output_channels < 1:
         raise RuntimeError("No output device is available for microphone monitoring")

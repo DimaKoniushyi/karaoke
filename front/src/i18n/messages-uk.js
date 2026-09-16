@@ -689,7 +689,7 @@ export const ukMessages = {
   "settings.audio.monitor.compact.driver": "Затримка драйвера: {0} мс · вхід {1} · вихід {2}",
   "settings.audio.monitor.compact.estimate": "Затримка (оцінка): {0} мс · вхід {1} · вихід {2}",
   "settings.audio.monitor.compact.unavailable": "Затримка: немає даних",
-  "settings.audio.monitor.compact.measured": "Реальна затримка (мікрофон → навушники): {0} мс",
+  "settings.audio.monitor.compact.measured": "Оцінка затримки (мікрофон → вихід): {0} мс",
   "settings.audio.monitor.compact.negotiatedPeriod": "Реальний період пристрою: вхід {0}, вихід {1} семплів @ {2} Гц",
   "settings.audio.monitor.compact.measuredTooltip":
     "Часові мітки аудіодрайвера для шляху від захоплення до відтворення плюс консервативна алгоритмічна затримка активних ефектів. Точність залежить від міток драйвера; це не фізичний вимір шлейфом вихід→вхід.",

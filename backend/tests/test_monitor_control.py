@@ -609,6 +609,48 @@ def test_running_monitor_prints_copyable_full_diagnostics_with_counter_deltas(co
     assert payload["delta_queue_underruns"] == 1
 
 
+def test_running_monitor_automatically_logs_capture_and_render_rates(control, caplog, monkeypatch):
+    control.event(control.token, {
+        "event": "started", "engine": "wasapi-native-input-exclusive",
+        "sample_rate": 44100, "output_sample_rate": 44100,
+    })
+    control.monitor_diagnostics_logged_at = 100.0
+    control.monitor_diagnostics_previous = {"captured_frames": 1000, "rendered_frames": 1000}
+    monkeypatch.setattr("app.services.monitor_control.time.monotonic", lambda: 105.0)
+    with caplog.at_level("INFO", logger="app.services.monitor_control"):
+        control.event(control.token, {
+            "event": "level", "captured_frames": 221500, "rendered_frames": 211000,
+            "queue_dropped_frames": 9500, "queue_underruns": 3,
+        })
+    record = next(item.message for item in caplog.records
+                  if item.message.startswith("AUDIO_MONITOR_DIAGNOSTICS "))
+    payload = json.loads(record.removeprefix("AUDIO_MONITOR_DIAGNOSTICS "))
+    assert payload["diagnostic_interval_ms"] == 5000
+    assert payload["capture_rate_frames_per_sec"] == 44100
+    assert payload["render_rate_frames_per_sec"] == 42000
+
+
+def test_running_monitor_logs_endpoint_latency_distribution_without_claiming_acoustic_roundtrip(
+        control, caplog, monkeypatch):
+    control.event(control.token, {"event": "started", "engine": "wasapi-native-input-exclusive"})
+    clock = [101.0]
+    monkeypatch.setattr("app.services.monitor_control.time.monotonic", lambda: clock[0])
+    control.monitor_diagnostics_logged_at = 100.0
+    with caplog.at_level("INFO", logger="app.services.monitor_control"):
+        for latency in (14.0, 15.0, 16.0, 20.0):
+            control.event(control.token, {"event": "level", "stream_latency_ms": latency})
+        clock[0] = 105.0
+        control.event(control.token, {"event": "level", "stream_latency_ms": 15.0})
+    record = next(item.message for item in caplog.records
+                  if item.message.startswith("AUDIO_MONITOR_DIAGNOSTICS "))
+    payload = json.loads(record.removeprefix("AUDIO_MONITOR_DIAGNOSTICS "))
+    assert payload["endpoint_latency_samples"] == 5
+    assert payload["endpoint_latency_p50_ms"] == 15.0
+    assert payload["endpoint_latency_p95_ms"] == 20.0
+    assert payload["endpoint_latency_source"] == "wasapi-device-timestamps"
+    assert payload["acoustic_roundtrip_ms"] is None
+
+
 def test_start_shared_monitor_opens_a_relay_and_passes_its_port_to_the_worker(control, monkeypatch):
     monkeypatch.setattr(audio_service, "_monitor_relay", None)
     devices = [

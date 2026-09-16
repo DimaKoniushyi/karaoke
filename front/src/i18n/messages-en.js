@@ -687,7 +687,7 @@ export const enMessages = {
   "settings.audio.monitor.compact.driver": "Driver latency: {0} ms · input {1} · output {2}",
   "settings.audio.monitor.compact.estimate": "Latency (estimate): {0} ms · input {1} · output {2}",
   "settings.audio.monitor.compact.unavailable": "Latency: unavailable",
-  "settings.audio.monitor.compact.measured": "Measured latency (mic → headphones): {0} ms",
+  "settings.audio.monitor.compact.measured": "Estimated latency (mic → output): {0} ms",
   "settings.audio.monitor.compact.negotiatedPeriod": "Actual device period: input {0}, output {1} samples @ {2} Hz",
   "settings.audio.monitor.compact.measuredTooltip":
     "Audio-driver timestamps for capture-to-playback plus a conservative algorithmic delay for active effects. Accuracy depends on driver timestamps; this is not a physical output-to-input loopback measurement.",

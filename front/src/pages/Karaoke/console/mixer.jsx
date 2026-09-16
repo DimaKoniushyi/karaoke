@@ -1,5 +1,5 @@
-import { Fragment } from "react";
 import { Mic } from "lucide-react";
+import { Fragment } from "react";
 import { translateSaved as t } from "../../../i18n/runtime";
 import { Grid, RotaryKnob, Slider, Stack, Switch, Typography } from "../../../theme/ui";
 // Paired with EFFECT_FIELDS by array index below (knob/slider column pairs
@@ -49,9 +49,6 @@ export default function MixerPanel({ audio, preferences }) {
       <Stack direction="row" align="center" gap="var(--space-2)">
         <Mic aria-hidden />
         <Typography variant="caption"><strong>{t("karaoke.mixer")}</strong></Typography>
-        <Typography variant="caption" tone="muted">
-          {percent(Math.max(0, Math.min(1, Number(audio.microphoneLevel) || 0)))}%
-        </Typography>
         <Switch
           size="sm"
           variant="plain"
@@ -59,15 +56,6 @@ export default function MixerPanel({ audio, preferences }) {
           checked={!!audio.monitoringEnabled}
           onChange={audio.onMonitoringChange}
         />
-        {audio.monitoringEnabled && (
-          <Switch
-            size="sm"
-            variant="plain"
-            label={t("karaoke.listenDryVoice")}
-            checked={!!audio.dryMonitor}
-            onChange={audio.onDryMonitorChange}
-          />
-        )}
       </Stack>
 
       <Grid columns={EFFECT_FIELDS.length + MIXER_FIELDS.length} gap="var(--space-2)" align="end">
