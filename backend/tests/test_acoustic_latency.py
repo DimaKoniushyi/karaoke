@@ -23,6 +23,13 @@ def test_extended_acoustic_probe_places_pulses_throughout_duration():
     assert positions[-1] > 9 * 48_000
 
 
+def test_native_acoustic_probes_use_the_requested_duration_for_repeated_pulses():
+    source = (Path(__file__).resolve().parents[1] / "tools/acoustic_latency.py").read_text(encoding="utf-8")
+    for name in ("run_native_shared_probe", "run_native_monitor_loopback"):
+        section = source.split(f"def {name}(", 1)[1].split("\ndef ", 1)[0]
+        assert "positions = probe_positions(rate, duration)" in section
+
+
 def test_detect_pulse_returns_acoustic_delay_for_a_clear_echo():
     rate = 48_000
     rng = np.random.default_rng(7)
@@ -59,11 +66,9 @@ def test_detect_pulse_rejects_noise_without_echo():
     assert detect_pulse(pulse, noise, rate, output_time=.1, capture_start_time=0) is None
 
 
-def test_start_dev_runs_the_bounded_acoustic_check_automatically():
+def test_start_dev_does_not_play_acoustic_probe_pulses_before_app_launch():
     source = (Path(__file__).resolve().parents[2] / "start-dev.bat").read_text(encoding="utf-8-sig")
-    assert source.index("backend\\tools\\acoustic_latency.py") > source.index('if "%PREPARE_ONLY%"=="1" (')
-    assert source.index("backend\\tools\\acoustic_latency.py") < source.index("Starting A^&D Voice")
-    assert "fully shared WASAPI acoustic baseline" in source
+    assert "backend\\tools\\acoustic_latency.py" not in source
 
 
 def test_acoustic_probe_uses_only_fully_shared_wasapi(monkeypatch):
@@ -130,6 +135,37 @@ def test_acoustic_probe_can_request_exclusive_wasapi_on_both_endpoints(monkeypat
     with pytest.raises(StopProbe):
         acoustic_latency.run_probe(39, 30, transport="wasapi-exclusive")
     assert observed["extra_settings"] == ({"exclusive": True}, {"exclusive": True})
+
+
+def test_split_exclusive_acoustic_probe_uses_separate_event_streams(monkeypatch):
+    from app.services import wasapi_monitor_stream
+
+    class StopProbe(Exception):
+        pass
+
+    monkeypatch.setattr(acoustic_latency.sd, "query_devices", lambda _index: {
+        "name": "headset", "default_samplerate": 48_000,
+        "max_output_channels": 2,
+    })
+    monkeypatch.setattr(acoustic_latency.sd, "WasapiSettings",
+                        lambda *, exclusive: {"exclusive": exclusive})
+
+    def split_stream(_sd, options, _callback, _stats, _failed):
+        assert options["blocksize"] == 128
+        assert options["extra_settings"] == ({"exclusive": True}, {"exclusive": True})
+        raise StopProbe
+
+    monkeypatch.setattr(wasapi_monitor_stream, "WasapiMonitorStream", split_stream)
+    with pytest.raises(StopProbe):
+        acoustic_latency.run_split_exclusive_probe(36, 34, blocksize=128)
+
+
+def test_split_exclusive_monitor_probe_requires_a_direct_acoustic_baseline(monkeypatch):
+    monkeypatch.setattr(acoustic_latency, "run_split_exclusive_probe",
+                        lambda *_args, **_kwargs: {"status": "unavailable"})
+    result = acoustic_latency.run_split_exclusive_monitor_loopback(36, 34)
+    assert result["status"] == "unavailable"
+    assert result["reason"] == "device_roundtrip_unavailable"
 
 
 def test_acoustic_probe_can_compare_exclusive_capture_with_shared_render(monkeypatch):
@@ -297,7 +333,7 @@ def test_automatic_acoustic_probe_uses_native_shared_stream(monkeypatch, capsys)
     }])
     monkeypatch.setattr(acoustic_latency.sd, "query_devices", lambda index: {"name": f"device-{index}"})
     observed = []
-    monkeypatch.setattr(acoustic_latency, "run_native_shared_probe", lambda *args: (
+    monkeypatch.setattr(acoustic_latency, "run_native_shared_probe", lambda *args, **_kwargs: (
         observed.append(args) or {"status": "unavailable", "reason": "test"}))
     monkeypatch.setattr(acoustic_latency, "run_probe", lambda *_: pytest.fail("PortAudio probe used"))
     monkeypatch.setattr("sys.argv", ["acoustic_latency.py"])
@@ -320,6 +356,8 @@ def test_native_probe_reports_render_activity_when_no_acoustic_echo_is_detected(
             self.stats["rendered_frames"] = self.stats.get("rendered_frames", 0) + 480
             self.stats["output_clock_lead_ms"] = 24.0
             self.stats["queue_ms"] = 1.0
+            self.stats["glitch_count"] = 2
+            self.stats["queue_underruns"] = 3
         def diagnostics(self):
             return {"minimum_period_latency_ms": 13.0,
                     "negotiated_period_latency_ms": 13.0,
@@ -342,6 +380,8 @@ def test_native_probe_reports_render_activity_when_no_acoustic_echo_is_detected(
     assert result["negotiated_period_latency_ms"] == 13.0
     assert result["output_clock_lead_ms"] == 24.0
     assert result["queue_ms"] == 1.0
+    assert result["glitch_count"] == 2
+    assert result["queue_underruns"] == 3
     assert result["input_exclusive"] is False
     assert result["output_exclusive"] is False
 
@@ -451,6 +491,52 @@ def test_native_monitor_loopback_measures_a_second_acoustic_echo(
         assert abs(result["acoustic_monitor_ms"] - hardware_roundtrip / 48) <= .03
         assert result["acoustic_device_roundtrip_ms"] == 20.0
         assert result["input_exclusive"] is False
+
+
+def test_native_monitor_controls_are_silent_without_software_return(monkeypatch):
+    rate, delay = 48_000, 960
+
+    class FakeStream:
+        def __init__(self, _options, stats):
+            self.info = type("Info", (), {"sample_rate": rate})()
+            self.stats = stats
+            self.emitted = np.zeros(0, dtype=np.float32)
+            self.position = 0
+
+        def start(self, callback):
+            self.callback = callback
+
+        def pump(self):
+            frames = 480
+            source = np.zeros((frames, 1), dtype=np.float32)
+            for index in range(frames):
+                heard = self.position + index - delay
+                if 0 <= heard < len(self.emitted):
+                    source[index, 0] = self.emitted[heard]
+            output = np.zeros_like(source)
+            self.callback(source, output, frames, None, None)
+            self.emitted = np.concatenate((self.emitted, output[:, 0]))
+            self.position += frames
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("app.services.native_wasapi.NativeWasapiStream", FakeStream)
+    monkeypatch.setattr(acoustic_latency, "run_native_shared_probe", lambda *_args, **_kwargs: {
+        "status": "measured", "acoustic_roundtrip_ms": 20.0,
+    })
+    clock = [0.0]
+    def monotonic():
+        clock[0] += .01
+        return clock[0]
+    monkeypatch.setattr(acoustic_latency.time, "monotonic", monotonic)
+
+    result = acoustic_latency.run_native_monitor_loopback(
+        "microphone", "speakers", duration=3.0, alternate_controls=True,
+    )
+    assert result["status"] == "measured"
+    assert result["acoustic_monitor_ms"] == pytest.approx(20.0, abs=.03)
+    assert len(result["monitor_off_delays_ms"]) == 0
 
 
 def test_native_monitor_loopback_rejects_first_echo_without_return(monkeypatch):

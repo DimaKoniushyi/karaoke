@@ -14,6 +14,7 @@ import { applyTheme } from "../../utils/theme";
 import { findMatchingBrowserOutput } from "../Karaoke/utils/audio-settings";
 
 const MME_SENTINEL = "mme";
+const RAZER_EXCLUSIVE_SENTINEL = "wasapi-exclusive";
 const emit = (detail) => dispatchEvent(new CustomEvent(AUDIO_SETTINGS_CHANGED_EVENT, { detail }));
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const useOpenPoll = (open, fn, interval, fallback) =>
@@ -171,13 +172,12 @@ function useAudio(open) {
     setBusy(true);
     try {
       const enabled = !!values.monitoring_enabled && !retry;
-      // Settings is the device-check path: play the microphone exactly as it
-      // arrives (apart from the volume slider), without karaoke/room effects.
-      // Other monitoring entry points intentionally retain their effects.
+      // Keep the existing dry device check for other drivers. The persistent
+      // Razer mode is used for singing, so retain its enabled effects.
       const saved = await (
         enabled
           ? api.stopDirectMonitoring()
-          : api.startDirectMonitoring({ disabledEffects: true })
+          : api.startDirectMonitoring({ disabledEffects: values.audio_driver !== "wasapi-exclusive" })
       );
 
       merge({ monitoring_enabled: !enabled });
@@ -192,16 +192,26 @@ function useAudio(open) {
   const selectDriver = (name) =>
     queue("driver", async () => {
       try {
-        // The dropdown's visible value is bound to asio_driver_name (see
-        // audio.jsx), not audio_driver -- "auto" and "mme" would otherwise
-        // both display as "" and be indistinguishable in the UI. MME_SENTINEL
-        // is a reserved, non-empty stand-in stored in that field for "mme"
-        // mode; nothing on the backend reads asio_driver_name unless
-        // audio_driver is actually "asio", so this is safe there too.
-        const driver = name === MME_SENTINEL ? "mme" : name ? "asio" : "auto";
+        // This existing selector binds to asio_driver_name. A sentinel keeps
+        // the Razer choice visible after the backend saves audio_driver.
+        const driver =
+          name === MME_SENTINEL
+            ? "mme"
+            : name === RAZER_EXCLUSIVE_SENTINEL
+              ? "wasapi-exclusive"
+              : name
+                ? "asio"
+                : "auto";
         const saved = await api.updateAudioSettings({
           audio_driver: driver,
-          asio_driver_name: driver === "asio" ? name : driver === "mme" ? MME_SENTINEL : ""
+          asio_driver_name:
+            driver === "asio"
+              ? name
+              : driver === "mme"
+                ? MME_SENTINEL
+                : driver === "wasapi-exclusive"
+                  ? RAZER_EXCLUSIVE_SENTINEL
+                  : ""
         });
         merge(saved);
         emit(saved);
@@ -236,6 +246,7 @@ function useAudio(open) {
       drivers: [
         { value: "", label: tr("settings.audio.wasapiMode.options.shared") },
         { value: MME_SENTINEL, label: "MME" },
+        { value: RAZER_EXCLUSIVE_SENTINEL, label: "Razer · WASAPI exclusive" },
         ...(asio.data ?? []).map(({ name }) => ({ value: name, label: `ASIO · ${name}` }))
       ],
       inputs: createInputDeviceOptions(inputs.data, values.input_device_id),

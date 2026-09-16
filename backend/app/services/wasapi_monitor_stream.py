@@ -145,6 +145,11 @@ class WasapiMonitorStream:
         self.started_at = None
         self.late_underruns = 0
         self.primed = False
+        # Exclusive render begins with silence while input/output endpoints
+        # synchronize. Fade the first real samples in place so that a live
+        # microphone signal cannot jump abruptly from zero to full amplitude.
+        self.fade_curve = np.linspace(0.0, 1.0, max(2, int(rate * .005)), dtype=np.float32)
+        self.fade_remaining = len(self.fade_curve)
         work = np.zeros((blocksize, candidate["channels"][1]), dtype=np.float32)
 
         def capture(indata, frames, clocks, status):
@@ -181,6 +186,13 @@ class WasapiMonitorStream:
                 self.queue.underruns += 1
                 self.queue.last_wait_ms = None
                 complete = False
+            if complete and self.fade_remaining:
+                offset = len(self.fade_curve) - self.fade_remaining
+                count = min(frames, self.fade_remaining)
+                outdata[:count] *= self.fade_curve[offset:offset + count, None]
+                self.fade_remaining -= count
+            elif not complete:
+                self.fade_remaining = len(self.fade_curve)
             now = time.monotonic()
             if status:
                 statistics["glitch_count"] = statistics.get("glitch_count", 0) + 1

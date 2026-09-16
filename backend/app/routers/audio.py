@@ -42,6 +42,12 @@ def start_direct_monitoring(db: Session = Depends(get_db), disabled_effects: boo
         return audio_service.set_monitoring_enabled(db, True, disabled_effects=disabled_effects, background=True)
 
 
+@router.post("/direct-monitor/media-active")
+def set_direct_monitor_media_active(active: bool, db: Session = Depends(get_db)):
+    with http_error(RuntimeError, 503):
+        return audio_service.set_shared_media_active(db, "radio", active)
+
+
 @router.post("/direct-monitor/stop", response_model=schemas.AudioSettingsOut)
 def stop_direct_monitoring(db: Session = Depends(get_db)):
     # Callers may immediately open recording/WebRTC capture after this response.

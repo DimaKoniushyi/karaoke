@@ -17,6 +17,11 @@ export const audioApi = {
       method: "POST",
       timeoutMs: DIRECT_MONITOR_START_TIMEOUT_MS
     }),
+  setDirectMonitorMediaActive: (active) =>
+    request(`/audio/direct-monitor/media-active?active=${Boolean(active)}`, {
+      method: "POST",
+      timeoutMs: 5_000
+    }),
   stopDirectMonitoring: () => request("/audio/direct-monitor/stop", { method: "POST" }),
   setDirectMonitorDry: (enabled) =>
     request(`/audio/direct-monitor/dry?enabled=${enabled}`, { method: "POST" }),

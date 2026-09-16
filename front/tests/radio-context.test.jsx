@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { installFrameQueue, suppressWindowErrors } from "./helpers/browser.mjs";
 import { same, notCalled, calledTimes, verify } from "./helpers/assertions.mjs";
-const mocks = vi.hoisted(() => ({ updateUiPreferences: vi.fn() }));
+const mocks = vi.hoisted(() => ({ updateUiPreferences: vi.fn(), setDirectMonitorMediaActive: vi.fn() }));
 vi.mock("../src/api/client", () => ({ api: mocks }));
 let RADIO_STATIONS;
 let RadioProvider;
@@ -52,6 +52,7 @@ beforeEach(async () => {
   localStorage.clear();
   store({ stationId: "poptron", volume: 0.45, enabled: false });
   mocks.updateUiPreferences.mockReset().mockResolvedValue({});
+  mocks.setDirectMonitorMediaActive.mockReset().mockResolvedValue({});
   vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => {});
   vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(function pause() {
     Object.defineProperty(this, "paused", { configurable: true, value: true });
@@ -210,6 +211,22 @@ describe("radio context", () => {
     await act(async () => Promise.resolve());
     expect(hook.result.current.isPlaying).toBe(true);
   });
+  test("releases exclusive monitoring before radio playback", async () => {
+    const hook = renderHook(() => useRadio(), { wrapper });
+    await act(async () => hook.result.current.turnOn());
+    expect(mocks.setDirectMonitorMediaActive).toHaveBeenCalledWith(true);
+    expect(mocks.setDirectMonitorMediaActive.mock.invocationCallOrder[0]).toBeLessThan(
+      HTMLMediaElement.prototype.play.mock.invocationCallOrder[0]
+    );
+    act(() => hook.result.current.turnOff());
+    expect(mocks.setDirectMonitorMediaActive).toHaveBeenLastCalledWith(false);
+  });
+  test("radio still plays when the monitor backend is unavailable", async () => {
+    mocks.setDirectMonitorMediaActive.mockRejectedValueOnce(new Error("backend offline"));
+    const hook = renderHook(() => useRadio(), { wrapper });
+    await act(async () => expect(await hook.result.current.turnOn()).toBe(true));
+    expect(HTMLMediaElement.prototype.play).toHaveBeenCalled();
+  });
   test("exposes pending playback state and applies startup options", async () => {
     let resolvePlay;
     HTMLMediaElement.prototype.play.mockImplementationOnce(function playPending() {
@@ -226,6 +243,7 @@ describe("radio context", () => {
     act(() => {
       pending = hook.result.current.turnOn({ remember: false });
     });
+    await act(async () => Promise.resolve());
     same([hook.result.current.error, ""], [hook.result.current.isLoading, true], [document.querySelector("audio").volume, 0.45]);
     resolvePlay();
     await act(async () => expect(await pending).toBe(true));
@@ -241,6 +259,7 @@ describe("radio context", () => {
     act(() => {
       pending = hook.result.current.turnOn({ analyse: false, fadeIn: true, remember: false });
     });
+    await act(async () => Promise.resolve());
     expect(document.querySelector("audio").volume).toBe(0);
     resolveFade();
     await act(async () => expect(await pending).toBe(true));
@@ -333,6 +352,7 @@ describe("radio context", () => {
     act(() => {
       oldPlayback = hook.result.current.turnOn({ analyse: false });
     });
+    await act(async () => Promise.resolve());
     expect(hook.result.current.isLoading).toBe(true);
     act(() => hook.result.current.setStation("indiepop"));
     await act(async () => Promise.resolve());
@@ -559,6 +579,7 @@ describe("radio context", () => {
     );
     const hook = renderHook(() => useRadio(), { wrapper });
     const pending = hook.result.current.turnOn();
+    await act(async () => Promise.resolve());
     fireEvent.error(document.querySelector("audio"));
     expect(hook.result.current.error).toBe("");
     act(() => hook.result.current.turnOff({ remember: false }));
@@ -657,6 +678,7 @@ describe("radio context", () => {
     );
     const blockedHook = renderHook(() => useRadio(), { wrapper });
     const blockedPlayback = blockedHook.result.current.turnOn({ fadeIn: true });
+    await act(async () => Promise.resolve());
     blockedHook.unmount();
     const blocked = new Error("gesture required");
     blocked.name = "NotAllowedError";
@@ -670,6 +692,7 @@ describe("radio context", () => {
     );
     const failedHook = renderHook(() => useRadio(), { wrapper });
     const failedPlayback = failedHook.result.current.turnOn();
+    await act(async () => Promise.resolve());
     failedHook.unmount();
     rejectFailed(new Error("late"));
     await expect(failedPlayback).resolves.toBe(false);
@@ -686,12 +709,14 @@ describe("radio context", () => {
       .mockResolvedValue(undefined);
     const hook = renderHook(() => useRadio(), { wrapper });
     const older = hook.result.current.turnOn();
+    await act(async () => Promise.resolve());
     const newer = hook.result.current.turnOn();
     await expect(newer).resolves.toBe(true);
     expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(2);
     rejectFirst(new Error("old mirror"));
     await expect(older).resolves.toBe(false);
     expect(HTMLMediaElement.prototype.play).toHaveBeenCalledTimes(2);
+    expect(mocks.setDirectMonitorMediaActive).toHaveBeenLastCalledWith(true);
   });
   test("does not try another mirror after recording suspension", async () => {
     let rejectPlay;
@@ -702,6 +727,7 @@ describe("radio context", () => {
     );
     const hook = renderHook(() => useRadio(), { wrapper });
     const pending = hook.result.current.turnOn({ analyse: false });
+    await act(async () => Promise.resolve());
     act(() => hook.result.current.setRecordingActive(true));
     rejectPlay(new Error("offline"));
     await expect(pending).resolves.toBe(false);

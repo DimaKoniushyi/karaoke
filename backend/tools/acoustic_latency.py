@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -142,6 +143,184 @@ def run_probe(input_device, output_device, *, duration=1.8,
             "note": "Clock estimate and duplex sample offset; not a two-echo monitor measurement"}
 
 
+def run_split_exclusive_probe(input_device, output_device, *, duration=5.0,
+                              blocksize=128):
+    """Measure one physical speaker-to-microphone return with split exclusive I/O.
+
+    Both endpoints are event driven. Output is a quiet coded pulse, never
+    captured speech; microphone samples exist only in process memory.
+    """
+    from app.services.wasapi_monitor_stream import WasapiMonitorStream
+
+    input_info, output_info = sd.query_devices(input_device), sd.query_devices(output_device)
+    rate = int(output_info["default_samplerate"])
+    if abs(input_info["default_samplerate"] - rate) > 1:
+        raise RuntimeError("Input and output default sample rates differ")
+    pulse = make_probe_pulse()
+    positions = probe_positions(rate, duration)
+    captured, errors = [], []
+    current_frame = [0]
+    statistics, failed = {}, threading.Event()
+
+    def callback(indata, outdata, frames, _timing, status):
+        if status:
+            errors.append(str(status))
+        captured.append(indata[:, 0].copy())
+        outdata.fill(0)
+        for position in positions:
+            begin = max(position - current_frame[0], 0)
+            end = min(position + len(pulse) - current_frame[0], frames)
+            if begin < end:
+                offset = max(current_frame[0] - position, 0)
+                outdata[begin:end, :] = pulse[offset:offset + end - begin, None]
+        current_frame[0] += frames
+
+    options = {
+        "device": (input_device, output_device), "samplerate": rate,
+        "channels": (1, min(2, output_info["max_output_channels"])),
+        "dtype": "float32", "blocksize": blocksize,
+        "latency": blocksize / rate,
+        "extra_settings": (sd.WasapiSettings(exclusive=True),
+                           sd.WasapiSettings(exclusive=True)),
+    }
+    stream = WasapiMonitorStream(sd, options, callback, statistics, failed)
+    try:
+        stream.start()
+        time.sleep(duration)
+    finally:
+        stream.abort()
+        stream.close()
+    activity = {
+        "queue_underruns_after_start": statistics.get("queue_underruns_after_start"),
+        "queue_dropped_frames": statistics.get("queue_dropped_frames"),
+        "glitch_count": statistics.get("glitch_count", 0),
+        "callback_errors": errors[:3],
+        "callback_failed": failed.is_set(),
+    }
+    if failed.is_set() or errors or not captured:
+        return {"status": "unavailable", "reason": "audio_stream_glitch", **activity}
+    microphone = np.concatenate(captured)
+    matches = [detect_pulse(pulse, microphone, rate, position / rate, 0)
+               for position in positions]
+    detected_indices = [index for index, match in enumerate(matches) if match is not None]
+    good = [match for match in matches if match is not None]
+    delays = [match["latency_ms"] for match in good]
+    consistent = consistent_echoes(delays)
+    if len(good) < math.ceil(len(positions) * .75) or not consistent:
+        return {"status": "unavailable", "reason": "pulse_not_reliably_detected",
+                "detected": len(good), "emitted": len(positions),
+                "pulse_delays_ms": delays, "detected_indices": detected_indices,
+                "pulse_correlations": [match["correlation"] for match in good], **activity}
+    return {"status": "measured", "acoustic_roundtrip_ms": round(float(np.median(consistent)), 3),
+            "pulse_delays_ms": delays, "detected": len(good), "emitted": len(positions),
+            "detected_indices": detected_indices,
+            "pulse_correlations": [match["correlation"] for match in good],
+            "sample_rate": rate, "input_device": input_info["name"],
+            "output_device": output_info["name"],
+            "transport": "wasapi-split-exclusive", **activity}
+
+
+def run_split_exclusive_monitor_loopback(input_device, output_device, *,
+                                         duration=10.0, blocksize=128,
+                                         baseline=None):
+    """Compare alternating monitor-on/off returns on one microphone timeline."""
+    from app.services.wasapi_monitor_stream import WasapiMonitorStream
+
+    if baseline is None:
+        baseline = run_split_exclusive_probe(
+            input_device, output_device, duration=min(duration, 10.0), blocksize=blocksize,
+        )
+    if baseline.get("status") != "measured":
+        return {"status": "unavailable", "reason": "device_roundtrip_unavailable",
+                "baseline": baseline}
+    rate = baseline["sample_rate"]
+    pulse = make_probe_pulse()
+    positions = probe_positions(rate, duration)
+    first_window = int(round((baseline["acoustic_roundtrip_ms"] - 6) * rate / 1000))
+    last_window = int(round((baseline["acoustic_roundtrip_ms"] + 12) * rate / 1000))
+    captured, errors = [], []
+    current_frame = [0]
+    statistics, failed = {}, threading.Event()
+
+    def callback(indata, outdata, frames, _timing, status):
+        if status:
+            errors.append(str(status))
+        captured.append(indata[:, 0].copy())
+        outdata.fill(0)
+        for ordinal, position in enumerate(positions):
+            begin = max(position - current_frame[0], 0)
+            end = min(position + len(pulse) - current_frame[0], frames)
+            if begin < end:
+                offset = max(current_frame[0] - position, 0)
+                outdata[begin:end, :] = pulse[offset:offset + end - begin, None]
+            # Odd pulses are controls: acoustic reflections remain, while the
+            # software monitor return is deliberately absent.
+            if ordinal % 2:
+                continue
+            gate_begin = max(position + first_window - current_frame[0], 0)
+            gate_end = min(position + last_window - current_frame[0], frames)
+            if gate_begin < gate_end:
+                outdata[gate_begin:gate_end, :] += np.clip(
+                    indata[gate_begin:gate_end, :1] * 2, -.25, .25
+                )
+        current_frame[0] += frames
+
+    options = {
+        "device": (input_device, output_device), "samplerate": rate,
+        "channels": (1, min(2, sd.query_devices(output_device)["max_output_channels"])),
+        "dtype": "float32", "blocksize": blocksize,
+        "latency": blocksize / rate,
+        "extra_settings": (sd.WasapiSettings(exclusive=True),
+                           sd.WasapiSettings(exclusive=True)),
+    }
+    stream = WasapiMonitorStream(sd, options, callback, statistics, failed)
+    try:
+        stream.start()
+        time.sleep(duration)
+    finally:
+        stream.abort()
+        stream.close()
+    activity = {
+        "queue_underruns_after_start": statistics.get("queue_underruns_after_start"),
+        "queue_dropped_frames": statistics.get("queue_dropped_frames"),
+        "glitch_count": statistics.get("glitch_count", 0),
+        "callback_errors": errors[:3], "callback_failed": failed.is_set(),
+    }
+    if failed.is_set() or errors or not captured:
+        return {"status": "unavailable", "reason": "audio_stream_glitch",
+                "baseline": baseline, **activity}
+    microphone = np.concatenate(captured)
+    on_delays, off_delays, first_count = [], [], 0
+    for ordinal, position in enumerate(positions):
+        first = detect_pulse(pulse, microphone, rate, position / rate, 0,
+                             maximum_delay_ms=baseline["acoustic_roundtrip_ms"] + 15)
+        if first is None:
+            continue
+        first_count += 1
+        first_at = position / rate + first["latency_ms"] / 1000
+        second = detect_pulse(pulse, microphone, rate, first_at + .008, 0,
+                              maximum_delay_ms=80, minimum_correlation=.2)
+        if second is not None:
+            (off_delays if ordinal % 2 else on_delays).append(
+                round(8 + second["latency_ms"], 3)
+            )
+    required_on = math.ceil(math.ceil(len(positions) / 2) * .75)
+    consistent_on = consistent_echoes(on_delays)
+    consistent_off = consistent_echoes(off_delays)
+    result = {"baseline": baseline, "monitor_on_delays_ms": on_delays,
+              "monitor_off_delays_ms": off_delays, "first_echoes": first_count,
+              "emitted": len(positions), **activity}
+    if len(consistent_on) < required_on:
+        return {"status": "unavailable", "reason": "monitor_echo_not_reliably_detected",
+                **result}
+    candidate = float(np.median(consistent_on))
+    if consistent_off and abs(float(np.median(consistent_off)) - candidate) < 8:
+        return {"status": "unavailable", "reason": "echo_matches_room_reflection",
+                **result}
+    return {"status": "measured", "acoustic_monitor_ms": round(candidate, 3),
+            "transport": "wasapi-split-exclusive", **result}
+
+
 def run_portaudio_monitor_loopback(input_device, output_device, *,
                                    transport="wasapi-exclusive", duration=1.8,
                                    blocksize=0, effects=None):
@@ -258,7 +437,7 @@ def run_native_shared_probe(input_name, output_name, *, duration=1.8,
     try:
         rate = stream.info.sample_rate
         pulse = make_probe_pulse()
-        positions = [int(rate * second) for second in (.3, .7, 1.1)]
+        positions = probe_positions(rate, duration)
         captured = []
         processed_frames = [0]
 
@@ -276,11 +455,18 @@ def run_native_shared_probe(input_name, output_name, *, duration=1.8,
         stream.start(callback)
         started = time.monotonic()
         stream_latencies = []
+        output_leads = []
+        queue_times = []
         while time.monotonic() - started < duration:
             stream.pump()
             current_latency = statistics.get("stream_latency_ms")
             if isinstance(current_latency, (int, float)) and math.isfinite(current_latency) and current_latency > 0:
                 stream_latencies.append(current_latency)
+            for field, samples in (("output_clock_lead_ms", output_leads),
+                                   ("queue_ms", queue_times)):
+                value = statistics.get(field)
+                if isinstance(value, (int, float)) and math.isfinite(value) and value >= 0:
+                    samples.append(value)
         if not captured:
             return {"status": "unavailable", "reason": "no_microphone_samples"}
         microphone = np.concatenate(captured)
@@ -289,11 +475,21 @@ def run_native_shared_probe(input_name, output_name, *, duration=1.8,
             "captured_frames": statistics.get("captured_frames", 0),
             "rendered_frames": statistics.get("rendered_frames", 0),
             "queue_dropped_frames": statistics.get("queue_dropped_frames", 0),
+            "queue_underruns": statistics.get("queue_underruns", 0),
+            "glitch_count": statistics.get("glitch_count", 0),
             "queue_ms": statistics.get("queue_ms"),
+            "queue_p10_ms": round(float(np.percentile(queue_times, 10)), 3) if queue_times else None,
+            "queue_p90_ms": round(float(np.percentile(queue_times, 90)), 3) if queue_times else None,
             "output_clock_lead_ms": statistics.get("output_clock_lead_ms"),
+            "output_clock_lead_p10_ms": round(float(np.percentile(output_leads, 10)), 3) if output_leads else None,
+            "output_clock_lead_p90_ms": round(float(np.percentile(output_leads, 90)), 3) if output_leads else None,
             "program_residence_ms": statistics.get("program_residence_ms"),
             "stream_latency_ms": statistics.get("stream_latency_ms"),
             "stream_latency_p50_ms": (round(float(np.median(stream_latencies)), 3)
+                                      if stream_latencies else None),
+            "stream_latency_p10_ms": (round(float(np.percentile(stream_latencies, 10)), 3)
+                                      if stream_latencies else None),
+            "stream_latency_p90_ms": (round(float(np.percentile(stream_latencies, 90)), 3)
                                       if stream_latencies else None),
             "microphone_peak": round(float(np.max(np.abs(microphone))), 4),
         }
@@ -311,7 +507,9 @@ def run_native_shared_probe(input_name, output_name, *, duration=1.8,
         delays = np.array([match["latency_ms"] for match in good])
         if float(np.max(delays) - np.min(delays)) > 8:
             return {"status": "unavailable", "reason": "inconsistent_pulse_delays",
-                    "detected": len(good), **activity}
+                    "detected": len(good),
+                    "pulse_delays_ms": [match["latency_ms"] for match in good],
+                    **activity}
         acoustic_ms = round(float(np.median(delays)), 3)
         stream_ms = activity["stream_latency_p50_ms"]
         unreported_ms = (round(acoustic_ms - stream_ms, 3)
@@ -330,7 +528,7 @@ def run_native_shared_probe(input_name, output_name, *, duration=1.8,
 
 def run_native_monitor_loopback(input_name, output_name, *, duration=1.8,
                                 effects=None, input_exclusive=False,
-                                blocksize=16):
+                                blocksize=16, alternate_controls=False):
     """Measure a dry microphone-monitor echo, not just speaker-to-mic return.
 
     The first, low-level code reaches the microphone from the speaker. Only
@@ -371,7 +569,7 @@ def run_native_monitor_loopback(input_name, output_name, *, duration=1.8,
         else:
             process_effects = None
         pulse = make_probe_pulse()
-        positions = [int(rate * second) for second in (.3, .7, 1.1)]
+        positions = probe_positions(rate, duration)
         first_window = int(round((baseline_ms - 8) * rate / 1000))
         # Opening the second stream can shift a shared endpoint's event phase
         # by one 10-ms period. Keep the gate wide enough to pass that first
@@ -389,12 +587,14 @@ def run_native_monitor_loopback(input_name, output_name, *, duration=1.8,
                 monitor_source = processed[:, 0]
             else:
                 monitor_source = source[:, 0]
-            for position in positions:
+            for ordinal, position in enumerate(positions):
                 pulse_start = max(position - processed_frames[0], 0)
                 pulse_end = min(position + len(pulse) - processed_frames[0], frames)
                 if pulse_start < pulse_end:
                     offset = max(processed_frames[0] - position, 0)
                     output[pulse_start:pulse_end, 0] = pulse[offset:offset + pulse_end - pulse_start]
+                if alternate_controls and ordinal % 2:
+                    continue
                 gate_start = max(position + first_window - processed_frames[0], 0)
                 gate_end = min(position + last_window - processed_frames[0], frames)
                 if gate_start < gate_end:
@@ -411,11 +611,13 @@ def run_native_monitor_loopback(input_name, output_name, *, duration=1.8,
             return {"status": "unavailable", "reason": "no_microphone_samples"}
         if statistics.get("queue_dropped_frames", 0):
             return {"status": "unavailable", "reason": "audio_frames_dropped",
-                    "queue_dropped_frames": statistics["queue_dropped_frames"]}
+                    "queue_dropped_frames": statistics["queue_dropped_frames"],
+                    "queue_underruns": statistics.get("queue_underruns", 0),
+                    "glitch_count": statistics.get("glitch_count", 0)}
         microphone = np.concatenate(captured)
-        first_delays, monitor_delays, correlations = [], [], []
+        first_delays, monitor_delays, control_delays, correlations = [], [], [], []
         first_detected = 0
-        for position in positions:
+        for ordinal, position in enumerate(positions):
             first = detect_pulse(
                 pulse, microphone, rate, position / rate, 0,
                 maximum_delay_ms=baseline_ms + 20,
@@ -430,24 +632,42 @@ def run_native_monitor_loopback(input_name, output_name, *, duration=1.8,
                                   minimum_correlation=.2)
             if second is None:
                 continue
-            first_delays.append(first["latency_ms"])
-            monitor_delays.append(round(8 + second["latency_ms"], 3))
-            correlations.append(second["correlation"])
-        if len(monitor_delays) < 2:
+            delay = round(8 + second["latency_ms"], 3)
+            if alternate_controls and ordinal % 2:
+                control_delays.append(delay)
+            else:
+                first_delays.append(first["latency_ms"])
+                monitor_delays.append(delay)
+                correlations.append(second["correlation"])
+        required = (math.ceil(math.ceil(len(positions) / 2) * .75)
+                    if alternate_controls else 2)
+        if len(monitor_delays) < required:
             return {"status": "unavailable", "reason": "second_echo_not_reliably_detected",
                     "detected": len(monitor_delays), "first_detected": first_detected,
+                    "monitor_off_delays_ms": control_delays,
                     "acoustic_device_roundtrip_ms": baseline_ms,
                     "microphone_peak": round(float(np.max(np.abs(microphone))), 4),
-                    "queue_dropped_frames": statistics.get("queue_dropped_frames")}
+                    "queue_dropped_frames": statistics.get("queue_dropped_frames"),
+                    "queue_underruns": statistics.get("queue_underruns", 0),
+                    "glitch_count": statistics.get("glitch_count", 0)}
         consistent = consistent_echoes(monitor_delays)
         if not consistent:
             return {"status": "unavailable", "reason": "inconsistent_monitor_echo",
-                    "monitor_delays_ms": monitor_delays}
+                    "monitor_delays_ms": monitor_delays,
+                    "monitor_off_delays_ms": control_delays}
+        if alternate_controls:
+            control_cluster = consistent_echoes(control_delays)
+            if control_cluster and abs(float(np.median(control_cluster))
+                                       - float(np.median(consistent))) < 8:
+                return {"status": "unavailable", "reason": "echo_matches_room_reflection",
+                        "monitor_delays_ms": monitor_delays,
+                        "monitor_off_delays_ms": control_delays}
         return {"status": "measured",
                 "acoustic_monitor_ms": round(float(np.median(consistent)), 3),
                 "acoustic_device_roundtrip_ms": baseline_ms,
                 "first_echo_delays_ms": first_delays,
                 "monitor_delays_ms": monitor_delays,
+                "monitor_off_delays_ms": control_delays,
                 "consistent_echo_count": len(consistent),
                 "second_echo_correlations": correlations,
                 "sample_rate": rate, "input_device": input_name,
@@ -456,7 +676,9 @@ def run_native_monitor_loopback(input_name, output_name, *, duration=1.8,
                 "effect_latency_ms": statistics.get("effect_latency_ms"),
                 "input_exclusive": input_exclusive,
                 "output_exclusive": False,
-                "queue_dropped_frames": statistics.get("queue_dropped_frames")}
+                "queue_dropped_frames": statistics.get("queue_dropped_frames"),
+                "queue_underruns": statistics.get("queue_underruns", 0),
+                "glitch_count": statistics.get("glitch_count", 0)}
     finally:
         monitor_worker._live_params = previous_params
         stream.close()
@@ -466,6 +688,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=int)
     parser.add_argument("--output", type=int)
+    parser.add_argument("--duration", type=float, default=1.8,
+                        help="Seconds to probe with repeated quiet pulses")
     parser.add_argument("--monitor-loopback", action="store_true",
                         help="Measure a gated two-echo dry monitor path; place mic near speaker")
     parser.add_argument("--effects-stress", action="store_true",
@@ -486,9 +710,9 @@ def main():
                    if args.effects_stress else None)
         hybrid = {"input_exclusive": True} if args.input_exclusive else {}
         result = (run_native_monitor_loopback(
-            input_name, output_name, effects=effects, **hybrid,
+            input_name, output_name, effects=effects, duration=args.duration, **hybrid,
         ) if args.monitor_loopback else run_native_shared_probe(
-            input_name, output_name, **hybrid,
+            input_name, output_name, duration=args.duration, **hybrid,
         ))
     except Exception as error:
         result = {"status": "unavailable", "reason": str(error)}

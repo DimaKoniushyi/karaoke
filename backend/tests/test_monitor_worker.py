@@ -105,6 +105,18 @@ def test_each_mode_uses_only_its_selected_configuration():
             assert candidate.get("_engine") != "wasapi-split"
 
 
+def test_selected_exclusive_mode_uses_split_event_stream_with_both_endpoints_exclusive(monkeypatch):
+    requested = []
+    monkeypatch.setattr(monitor_worker.sd, "WasapiSettings",
+                        lambda **kwargs: requested.append(kwargs) or kwargs)
+    candidate = monitor_worker._stream_candidate({
+        **options(), "wasapi_mode": "exclusive", "blocksize": 96,
+    })
+    assert candidate["_engine"] == "wasapi-split"
+    assert candidate["blocksize"] == 96
+    assert requested == [{"exclusive": True}, {"exclusive": True}]
+
+
 def test_main_reports_a_hard_error_when_the_only_candidate_fails(monkeypatch, capsys):
     configure_argv(monkeypatch, options())
     monkeypatch.setattr(monitor_worker, "_running", False)
@@ -119,15 +131,17 @@ def test_main_reports_a_hard_error_when_the_only_candidate_fails(monkeypatch, ca
     }
 
 
-def test_exclusive_request_rejected_without_opening_hardware(monkeypatch, capsys):
+def test_exclusive_request_reports_device_open_failure_without_duplex_fallback(monkeypatch, capsys):
     configure_argv(monkeypatch, {**options(), "wasapi_mode": "exclusive"})
     monkeypatch.setattr(monitor_worker, "_running", False)
     monkeypatch.setattr(monitor_worker.sd, "InputStream", Mock(side_effect=RuntimeError("separate endpoints rejected")), raising=False)
     monkeypatch.setattr(monitor_worker.sd, "Stream", Mock())
     assert monitor_worker.main() == 1
-    monitor_worker.sd.InputStream.assert_not_called()
+    monitor_worker.sd.InputStream.assert_called_once()
     monitor_worker.sd.Stream.assert_not_called()
-    assert json.loads(capsys.readouterr().out) == {"event": "error", "message": "Unsupported WASAPI mode"}
+    assert json.loads(capsys.readouterr().out.splitlines()[-1]) == {
+        "event": "error", "message": "separate endpoints rejected",
+    }
 
 
 def test_input_exclusive_request_rejected_without_switching_engine(monkeypatch, capsys):

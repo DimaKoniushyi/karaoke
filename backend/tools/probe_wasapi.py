@@ -92,6 +92,22 @@ def probe_native(config):
 def probe(config):
     if config["kind"] == "native":
         return probe_native(config)
+    from app.services import monitor_worker
+    previous_params = monitor_worker._live_params
+    try:
+        if config.get("effects"):
+            monitor_worker._live_params = {
+                **previous_params,
+                **{name: float(value) for name, value in config["effects"].items()},
+                "dry_monitor": 0.0,
+                "local_monitoring_enabled": 1.0,
+            }
+        return _probe_portaudio(config)
+    finally:
+        monitor_worker._live_params = previous_params
+
+
+def _probe_portaudio(config):
     frames_seen, capture_age, render_lead = [], [], []
     glitches = 0
     started = time.monotonic()

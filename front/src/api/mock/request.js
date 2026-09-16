@@ -170,6 +170,9 @@ export async function mockRequest(path, options = {}) {
       glitch_fallback_count: 0
     };
   }
+  if (pathname === "/audio/direct-monitor/media-active") {
+    return { shared_media_active: url.searchParams.get("active") === "true" };
+  }
   if (pathname === "/audio/direct-monitor/start" || pathname === "/audio/direct-monitor/stop") {
     store.audioSettings.monitoring_enabled = pathname.endsWith("/start");
     return clone(store.audioSettings);

@@ -76,11 +76,25 @@ def test_application_history_merges_and_sorts_processing_and_recordings():
 def test_player_router_forwards_song_identity_and_payload(monkeypatch):
     song, database, calls = SimpleNamespace(id='song'), Mock(), {'get_sync_data': {'sync': True}, 'get_timeline': {'timeline': True}, 'get_state': 'state', 'seek': 'seek', 'set_playing': 'playing', 'stop': 'stopped'}
     for name, result in calls.items(): monkeypatch.setattr(player.player_service, name, Mock(return_value=result))
+    media = Mock()
+    monkeypatch.setattr(player.audio_service, "set_shared_media_active", media)
     assert (player.get_sync(song) == {'sync': True}) and (player.get_timeline(song) == {'timeline': True}) and (player.get_position(song, database) == 'state') and (player.seek(song, schemas.SeekRequest(position_sec=2.5), database) == 'seek') and (player.pause(song, database) == 'playing')
     player.player_service.set_playing.assert_called_with(database, "song", False)
     assert player.resume(song, database) == "playing"
     player.player_service.set_playing.assert_called_with(database, "song", True)
     assert player.stop(song, database) == "stopped"
+    assert [item.args for item in media.call_args_list] == [
+        (database, "karaoke:song", False),
+        (database, "karaoke:song", True),
+        (database, "karaoke:song", False),
+    ]
+
+
+def test_karaoke_playback_continues_if_monitor_reconfiguration_fails(monkeypatch):
+    song, database = SimpleNamespace(id="song"), Mock()
+    monkeypatch.setattr(player.audio_service, "set_shared_media_active", Mock(side_effect=RuntimeError("audio busy")))
+    monkeypatch.setattr(player.player_service, "set_playing", Mock(return_value="playing"))
+    assert player.resume(song, database) == "playing"
 
 
 def test_diagnostics_router_forwards_all_services(monkeypatch):

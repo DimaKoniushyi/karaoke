@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { api } from "../../api/client";
 import { closeAudioContextQuietly } from "../../utils/audio-context";
 
 export default function useRadioLifecycle({
@@ -24,6 +25,7 @@ export default function useRadioLifecycle({
       cancelVolumeFade();
       stopAnalysis();
       audio?.pause();
+      api.setDirectMonitorMediaActive(false).catch(() => {});
       audio?.removeAttribute("src");
       audio?.load();
       const context = audioContextRef.current;

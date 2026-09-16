@@ -74,16 +74,15 @@ def _configure_realtime_python() -> None:
 
 def _stream_candidate(options: dict) -> dict:
     """No buffer or rate fallback -- the requested blocksize/sample rate are
-    used as-is. The public candidate remains shared/plain. Native WASAPI may
-    separately request exclusive *capture* through ``input_exclusive`` while
-    render stays shared; it never seizes the speakers/radio endpoint.
+    used as-is. Normal monitoring remains shared/plain. Only the explicit,
+    selected exclusive mode requests exclusive input and output.
     """
     rate = float(options["sample_rate"])
     blocksize = int(options["blocksize"])
     if blocksize <= 0:
         raise ValueError("A fixed positive monitoring buffer is required")
     mode = options.get("wasapi_mode", "shared")
-    if mode not in {"shared", "plain"}:
+    if mode not in {"shared", "plain", "exclusive"}:
         raise ValueError("Unsupported WASAPI mode")
     candidate = {
         "samplerate": rate, "blocksize": blocksize, "latency": blocksize / rate,
@@ -91,7 +90,13 @@ def _stream_candidate(options: dict) -> dict:
         "device": (int(options["input_device_id"]), int(options["output_device_id"])),
         "_mode": mode,
     }
-    if mode != "plain":
+    if mode == "exclusive":
+        candidate["extra_settings"] = (
+            sd.WasapiSettings(exclusive=True),
+            sd.WasapiSettings(exclusive=True),
+        )
+        candidate["_engine"] = "wasapi-split"
+    elif mode != "plain":
         candidate["extra_settings"] = (
             sd.WasapiSettings(exclusive=False, auto_convert=True),
             sd.WasapiSettings(exclusive=False, auto_convert=True),
@@ -128,6 +133,8 @@ def _stream_diagnostics(stream, candidate, options, mode):
         "blocksize": candidate.get("blocksize", 0), "sample_rate": candidate.get("samplerate", options["sample_rate"]),
         "latency": candidate.get("latency", "low"), "mode": mode,
         "engine": "wasapi-split" if isinstance(stream, WasapiMonitorStream) else "duplex",
+        "input_exclusive": mode == "exclusive",
+        "output_exclusive": mode == "exclusive",
     }
     # WASAPI PortAudio derives these estimates from allocated buffer capacity,
     # not an observed mic-to-output transit time. Keep their provenance explicit.

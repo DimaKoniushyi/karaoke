@@ -360,15 +360,16 @@ def test_cancelled_launch_does_not_spawn_a_process(control, monkeypatch, tmp_pat
     launch.assert_not_called()
 
 
-def test_wasapi_always_opens_shared_with_correct_labels(monkeypatch):
+def test_wasapi_shared_and_selected_exclusive_have_correct_labels(monkeypatch):
     monkeypatch.setattr(monitor_worker.sd, "WasapiSettings", lambda **kwargs: kwargs)
     base = {"sample_rate": 48000, "output_channels": 2, "input_device_id": 0,
             "output_device_id": 1, "blocksize": 128, "wasapi_mode": "shared"}
     shared = monitor_worker._stream_candidate(base)
     assert shared["extra_settings"] == ({"exclusive": False, "auto_convert": True}, {"exclusive": False, "auto_convert": True})
-    for mode in ("exclusive", "input-exclusive"):
-        with pytest.raises(ValueError, match="Unsupported WASAPI mode"):
-            monitor_worker._stream_candidate({**base, "wasapi_mode": mode})
+    exclusive = monitor_worker._stream_candidate({**base, "wasapi_mode": "exclusive"})
+    assert exclusive["extra_settings"] == ({"exclusive": True}, {"exclusive": True})
+    with pytest.raises(ValueError, match="Unsupported WASAPI mode"):
+        monitor_worker._stream_candidate({**base, "wasapi_mode": "input-exclusive"})
     details = monitor_worker._stream_diagnostics(SimpleNamespace(latency=(.004, .006)), shared, base, "shared")
     assert details["input_latency_ms"] == 4 and details["output_latency_ms"] == 6
 

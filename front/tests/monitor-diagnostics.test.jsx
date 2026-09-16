@@ -20,6 +20,7 @@ const audio = (status = {}, rest = {}) => ({
   options: {
     drivers: [
       { value: "", label: "WASAPI shared" },
+      { value: "wasapi-exclusive", label: "Razer · WASAPI exclusive" },
       { value: "Studio ASIO", label: "ASIO · Studio ASIO" }
     ]
   },
@@ -134,13 +135,12 @@ test("fixed buffer keeps its existing behavior", async () => {
   await waitFor(() => expect(state.update).toHaveBeenCalledWith("buffer_size", 256));
 });
 
-test("driver selector offers ASIO and shared, no exclusive", async () => {
+test("driver selector offers the persistent Razer mode", async () => {
   const state = audio();
   render(<AudioFields audio={state} />);
   fireEvent.click(screen.getByRole("button", { name: "Режим звука" }));
-  expect(screen.queryByRole("option", { name: /Эксклюзив/ })).toBeNull();
-  fireEvent.click(screen.getByRole("option", { name: "ASIO · Studio ASIO" }));
-  await waitFor(() => expect(state.selectDriver).toHaveBeenCalledWith("Studio ASIO"));
+  fireEvent.click(screen.getByRole("option", { name: "Razer · WASAPI exclusive" }));
+  await waitFor(() => expect(state.selectDriver).toHaveBeenCalledWith("wasapi-exclusive"));
   expect(state.update).not.toHaveBeenCalled();
 });
 

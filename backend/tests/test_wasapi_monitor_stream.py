@@ -89,7 +89,8 @@ def test_split_stream_preserves_routes_and_copies_processed_audio():
     sd.InputStream.call_args.kwargs["callback"](np.ones((128, 1)), 128, None, None)
     output = np.empty((128, 2), dtype=np.float32)
     sd.OutputStream.call_args.kwargs["callback"](output, 128, None, None)
-    assert np.all(output == 1)
+    assert output[0, 0] == 0 and 0 < output[-1, 0] < 1
+    assert np.all(output[:, 0] == output[:, 1])
     assert not restart.is_set()
     assert stats["queue_frames"] == 128
     assert stats["queue_capacity_ms"] == 11.61
@@ -99,6 +100,23 @@ def test_split_stream_preserves_routes_and_copies_processed_audio():
         endpoint.start.assert_called_once()
         endpoint.abort.assert_called_once()
         endpoint.close.assert_called_once()
+
+
+def test_split_stream_fades_in_first_audible_frames_to_avoid_startup_click():
+    stream, sd, _, _ = setup_stream()
+    stream.start()
+    capture = sd.InputStream.call_args.kwargs["callback"]
+    render = sd.OutputStream.call_args.kwargs["callback"]
+    for _ in range(2):
+        capture(np.ones((128, 1), dtype=np.float32), 128, None, None)
+    output = np.empty((128, 2), dtype=np.float32)
+    render(output, 128, None, None)
+    assert output[0, 0] == 0
+    assert 0 < output[-1, 0] < 1
+    for _ in range(4):
+        capture(np.ones((128, 1), dtype=np.float32), 128, None, None)
+        render(output, 128, None, None)
+    assert np.all(output == 1)
 
 
 def test_split_keeps_selected_configuration_despite_sustained_empty_queue(monkeypatch):
@@ -133,9 +151,9 @@ def test_split_primes_one_spare_block_and_reprimes_after_starvation():
     assert not output.any() and stream.queue.size == 128
     capture(np.ones((128, 1)) * 2, 128, None, None)
     render(output, 128, None, None)
-    assert np.all(output == 1)
+    assert output[0, 0] == 0 and 0 < output[-1, 0] < 1
     render(output, 128, None, None)
-    assert np.all(output == 2)
+    assert 0 < output[0, 0] < 2 and output[-1, 0] == 2
     render(output, 128, None, None)
     assert not output.any() and not stream.primed
     assert not restart.is_set()
@@ -220,7 +238,7 @@ def test_split_stream_feeds_virtual_microphone_without_consuming_local_queue():
     sd.OutputStream.call_args_list[0].kwargs["callback"](physical, 64, None, None)
     sd.OutputStream.call_args_list[1].kwargs["callback"](virtual, 64, None, None)
 
-    assert np.all(physical == 3)
+    assert physical[0, 0] == 0 and 0 < physical[-1, 0] < 3
     assert np.all(virtual == 3)
     assert sd.OutputStream.call_args_list[1].kwargs["device"] == (
         "A&D Voice Virtual Microphone Feed"

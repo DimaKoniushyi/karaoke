@@ -174,3 +174,41 @@ def test_plain_host_probe_does_not_attach_wasapi_stream_settings(monkeypatch):
     assert "extra_settings" not in observed
     assert result["reported_latency_seconds"] == (0.001, 0.001)
     stream.close.assert_called_once()
+
+
+def test_split_probe_runs_requested_effects_and_restores_live_settings(monkeypatch):
+    from app.services import monitor_worker
+
+    original = monitor_worker._live_params
+    observed = {}
+    monkeypatch.setattr(monitor_worker, "_live_params", {**original, "octave": 0.0})
+
+    def make_callback(*_args):
+        def callback(_source, _output, _frames, _clocks, _status):
+            observed["octave"] = monitor_worker._live_params["octave"]
+        return callback
+
+    class FakeStream:
+        latency = (0.003, 0.003)
+        input = output = object()
+        def __init__(self, _sd, _candidate, callback, _stats, _failed):
+            self.callback = callback
+        def start(self):
+            self.callback(np.zeros((128, 1), dtype=np.float32),
+                          np.zeros((128, 2), dtype=np.float32), 128, None, None)
+        def abort(self):
+            pass
+        def close(self):
+            pass
+
+    monkeypatch.setattr(monitor_worker, "_audio_callback", make_callback)
+    monkeypatch.setattr(probe_wasapi, "WasapiMonitorStream", FakeStream)
+    monkeypatch.setattr(probe_wasapi.sd, "WasapiSettings", lambda **_kwargs: object())
+    monkeypatch.setattr(probe_wasapi, "host_buffer_frames", lambda _stream: {})
+    monkeypatch.setattr(probe_wasapi.time, "sleep", lambda _duration: None)
+    probe_wasapi.probe({"kind": "split", "mode": "exclusive", "input": 1,
+                       "output": 2, "rate": 48_000, "blocksize": 128,
+                       "latency": 128 / 48_000, "duration": 0, "dsp": True,
+                       "effects": {"octave": -0.5}})
+    assert observed["octave"] == -0.5
+    assert monitor_worker._live_params["octave"] == 0.0

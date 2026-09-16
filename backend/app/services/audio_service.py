@@ -118,6 +118,8 @@ logger = logging.getLogger(__name__)
 _monitor_control = MonitorControl(execution_lock=hardware_lock)
 _requested_effects_disabled = False
 _hardware_suspended = False
+_shared_media_lock = threading.Lock()
+_shared_media_sources: set[str] = set()
 _known_device_names: dict[int, str] = {}
 _VIRTUAL_MICROPHONE_NAME = "A&D Voice Virtual Microphone"
 _VIRTUAL_MICROPHONE_FEED_NAME = "A&D Voice Virtual Microphone Feed"
@@ -738,12 +740,20 @@ def _normalized_settings_patch(
         updates.get("audio_driver", settings.audio_driver),
         updates.get("asio_driver_name", settings.asio_driver_name),
     )
-    if driver not in {"auto", "asio", "mme"}:
+    if driver not in {"auto", "asio", "mme", "wasapi-exclusive"}:
         raise RuntimeError("Unsupported audio driver")
-    # ASIO is an explicit mode, not an automatic preference.  Remove its
-    # persisted name as soon as another mode is selected so a stale driver
-    # cannot leak into device resolution, diagnostics, or a later restart.
-    if driver != "asio" and asio_name:
+    if driver == "wasapi-exclusive":
+        if "audio_driver" in changed_fields and "buffer_size" not in changed_fields:
+            updates["buffer_size"] = 96
+            changed_fields.add("buffer_size")
+        elif int(updates.get("buffer_size", settings.buffer_size)) < 96:
+            raise RuntimeError("Exclusive WASAPI needs at least 96 frames for stable monitoring")
+    # Preserve the selector's non-ASIO sentinel for the exclusive choice;
+    # clear a stale named ASIO driver when returning to shared output.
+    if driver == "wasapi-exclusive" and asio_name != "wasapi-exclusive":
+        updates["asio_driver_name"] = "wasapi-exclusive"
+        changed_fields.add("asio_driver_name")
+    elif driver != "asio" and asio_name:
         updates["asio_driver_name"] = None
         changed_fields.add("asio_driver_name")
         asio_name = None
@@ -924,6 +934,25 @@ def suspend_monitoring() -> None:
         _stop_monitoring_process()
 
 
+def set_shared_media_active(db: Session, source: str, active: bool) -> dict:
+    """Release an exclusive monitor before browser playback starts."""
+    if not source or len(source) > 128:
+        raise RuntimeError("Invalid media source")
+    with _shared_media_lock:
+        previous = source in _shared_media_sources
+        if active:
+            _shared_media_sources.add(source)
+        else:
+            _shared_media_sources.discard(source)
+    if previous != active:
+        settings = get_settings(db)
+        if settings.audio_driver == "wasapi-exclusive" and settings.monitoring_enabled and not _hardware_suspended:
+            configure_monitoring(settings)
+    with _shared_media_lock:
+        shared_media_active = bool(_shared_media_sources)
+    return {"shared_media_active": shared_media_active}
+
+
 def resume_monitoring(settings) -> None:
     """Reapply persisted monitoring after the desktop window is restored."""
     global _hardware_suspended
@@ -1086,6 +1115,17 @@ def _configure_monitoring(settings, *, adopt_driver_buffer: bool = False) -> Non
     if not settings.monitoring_enabled:
         _monitor_control.publish(state="idle")
         return
+    with _shared_media_lock:
+        shared_media_active = bool(_shared_media_sources)
+    if settings.audio_driver == "wasapi-exclusive" and not (_monitor_relay_needed or shared_media_active):
+        try:
+            _start_shared_monitor(settings, driver="auto", output_exclusive=True)
+            return
+        except MonitorCancelled:
+            raise
+        except Exception as exc:
+            logger.warning("Exclusive WASAPI failed; restoring shared Windows audio: %s", exc)
+            _monitor_control.event(None, {"event": "fallback", "cause": "exclusive-start", "message": str(exc)})
     if settings.audio_driver == "asio":
         try:
             _start_asio_monitor(settings, adopt_driver_buffer=adopt_driver_buffer)
@@ -1114,7 +1154,7 @@ def _configure_monitoring(settings, *, adopt_driver_buffer: bool = False) -> Non
             )
             _start_shared_monitor(settings, driver="auto", relay_needed=_monitor_relay_needed)
         return
-    if settings.audio_driver == "auto":
+    if settings.audio_driver in {"auto", "wasapi-exclusive"}:
         devices = sd.query_devices() if _AUDIO_BACKEND_AVAILABLE else None
         # If the selected endpoints themselves expose a <=16-ms fully shared
         # path, use the preflighted native route and publish that capability.
@@ -1126,7 +1166,7 @@ def _configure_monitoring(settings, *, adopt_driver_buffer: bool = False) -> Non
         # endpoint must remain shared even if exclusive capture could report
         # a shorter period; that would silently change the selected mode.
         _start_shared_monitor(
-            settings, driver=settings.audio_driver,
+            settings, driver="auto",
             relay_needed=_monitor_relay_needed, devices=devices
         )
         return
@@ -1431,7 +1471,7 @@ def _try_automatic_wdmks_monitor(settings, *, devices=None) -> bool:
 
 def _start_shared_monitor(
     settings, *, driver: str, relay_needed: bool = False, devices=None,
-    input_exclusive: bool = False,
+    input_exclusive: bool = False, output_exclusive: bool = False,
 ) -> None:
     if not _AUDIO_BACKEND_AVAILABLE:
         raise RuntimeError("Audio backend is unavailable")
@@ -1492,7 +1532,9 @@ def _start_shared_monitor(
     wasapi = _is_wasapi_device(input_info)
     if input_exclusive and not wasapi:
         raise RuntimeError("Exclusive microphone capture requires a WASAPI endpoint")
-    wasapi_mode = "shared" if wasapi else "plain"
+    if output_exclusive and (not wasapi or relay_needed or driver != "auto"):
+        raise RuntimeError("Exclusive WASAPI requires a standalone endpoint pair")
+    wasapi_mode = "exclusive" if output_exclusive else "shared" if wasapi else "plain"
     _monitor_control.publish(
         input_device=str(input_info.get("name", "")), output_device=str(output_info.get("name", "")),
         host_api=_host_api_name(input_info), requested_blocksize=settings.buffer_size,
@@ -1536,12 +1578,13 @@ def _start_shared_monitor(
         "wasapi_mode": wasapi_mode,
     }
     if wasapi:
-        worker_options.update(native_shared=True, input_device_name=str(input_info["name"]),
+        worker_options.update(native_shared=not output_exclusive,
+                              input_device_name=str(input_info["name"]),
                               output_device_name=str(output_info["name"]))
         if input_exclusive:
             worker_options["input_exclusive"] = True
     virtual_feed = _virtual_microphone_feed_name(devices)
-    if virtual_feed and (wasapi or driver == "wdmks"):
+    if virtual_feed and not output_exclusive and (wasapi or driver == "wdmks"):
         worker_options["virtual_output_device_name"] = virtual_feed
     # The relay is a room-broadcast feature (see _open_monitor_relay) -- opening
     # it and keeping a live loopback connection running costs a numpy copy plus

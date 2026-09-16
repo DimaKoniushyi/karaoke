@@ -16,6 +16,7 @@ from tests._shared import patch_attrs, patch_many, raises
 def reset_process_wide_audio_state(monkeypatch):
     """These globals intentionally persist in production, but not between tests."""
     monkeypatch.setattr(audio_service, "_monitor_relay_needed", False)
+    monkeypatch.setattr(audio_service, "_shared_media_sources", set())
     monkeypatch.setattr(
         audio_service,
         "_signal_probe_cache",
@@ -43,6 +44,34 @@ def settings(**changes):
     }
     values.update(changes)
     return models.AudioSettings(**values)
+
+
+def test_persistent_exclusive_driver_is_a_valid_saved_audio_mode():
+    changes, fields = audio_service._normalized_settings_patch(
+        settings(audio_driver="auto"), {"audio_driver": "wasapi-exclusive"},
+        resolve_devices=False,
+    )
+    assert changes["audio_driver"] == "wasapi-exclusive"
+    assert "audio_driver" in fields
+    assert changes["buffer_size"] == 96
+    with pytest.raises(RuntimeError, match="96"):
+        audio_service._normalized_settings_patch(
+            settings(audio_driver="wasapi-exclusive", buffer_size=96),
+            {"buffer_size": 64}, resolve_devices=False,
+        )
+
+
+def test_media_playback_switches_persistent_exclusive_monitor_to_shared(monkeypatch):
+    profile = settings(audio_driver="wasapi-exclusive", monitoring_enabled=True, buffer_size=96)
+    configure = Mock()
+    monkeypatch.setattr(audio_service, "get_settings", lambda db: profile)
+    monkeypatch.setattr(audio_service, "configure_monitoring", configure)
+    audio_service.set_shared_media_active(Mock(), "radio", True)
+    assert "radio" in audio_service._shared_media_sources
+    configure.assert_called_once_with(profile)
+    audio_service.set_shared_media_active(Mock(), "radio", False)
+    assert "radio" not in audio_service._shared_media_sources
+    assert configure.call_count == 2
 
 
 def test_new_audio_profile_defaults_to_the_verified_low_latency_buffer():
@@ -309,6 +338,22 @@ def test_configure_monitoring_routes_auto_and_asio(monkeypatch):
                 "input_device_name": "Selected microphone",
                 "output_device_name": "Selected speakers",
         }
+
+    audio_service.configure_monitoring(
+        settings(audio_driver="wasapi-exclusive", monitoring_enabled=True,
+                 buffer_size=96, reverb=0.8, echo=0.6)
+    )
+    audition = worker.call_args.args[0]
+    assert audition["wasapi_mode"] == "exclusive"
+    assert audition["native_shared"] is False
+    assert audition["blocksize"] == 96
+    assert (audition["reverb"], audition["echo"]) == (0.8, 0.6)
+    audio_service._shared_media_sources.add("radio")
+    audio_service.configure_monitoring(
+        settings(audio_driver="wasapi-exclusive", monitoring_enabled=True, buffer_size=96)
+    )
+    assert worker.call_args.args[0]["wasapi_mode"] == "shared"
+    audio_service._shared_media_sources.clear()
 
     monkeypatch.setattr(audio_service, "_monitor_effects_disabled", True)
     audio_service.configure_monitoring(

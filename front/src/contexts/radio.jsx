@@ -269,6 +269,12 @@ export function RadioProvider({ children }) {
       let lastError = null;
       streamAttemptRef.current = true;
       try {
+        audio.volume = fadeIn ? 0 : volumeRef.current;
+        // The saved Razer mode owns the endpoint exclusively. The existing
+        // media-active contract swaps monitoring to shared before audio.play().
+        // Radio must keep working when the optional local monitor backend is
+        // offline; in that case no backend stream can own the output device.
+        await api.setDirectMonitorMediaActive(true).catch(() => {});
         // Try every mirror sequentially. Previously onError switched the stream
         // while the original audio.play() promise was still pending, so that
         // rejected promise could overwrite a successful fallback with an error.
@@ -276,6 +282,7 @@ export function RadioProvider({ children }) {
           for (let index = startIndex; index < targetStation.streams.length; index += 1) {
             if (playbackVersion !== playbackVersionRef.current || suspendedRef.current) {
               audio.pause();
+              if (suspendedRef.current) await api.setDirectMonitorMediaActive(false);
               return false;
             }
             try {
@@ -284,6 +291,7 @@ export function RadioProvider({ children }) {
               await audio.play();
               if (playbackVersion !== playbackVersionRef.current || suspendedRef.current) {
                 audio.pause();
+                if (suspendedRef.current) await api.setDirectMonitorMediaActive(false);
                 return false;
               }
               pendingStartupPlaybackRef.current = false;
@@ -304,6 +312,8 @@ export function RadioProvider({ children }) {
                 pendingStartupPlaybackRef.current = true;
                 setPlaying(false);
                 setError("");
+                if (playbackVersion === playbackVersionRef.current)
+                  await api.setDirectMonitorMediaActive(false);
                 return false;
               }
             }
@@ -320,6 +330,8 @@ export function RadioProvider({ children }) {
         }
         throw lastError || new Error(NO_STREAM_ERROR);
       } catch (reason) {
+        if (playbackVersion === playbackVersionRef.current)
+          await api.setDirectMonitorMediaActive(false).catch(() => {});
         setPlaying(false);
         setError(
           reason.message
@@ -340,6 +352,7 @@ export function RadioProvider({ children }) {
       playbackVersionRef.current = createVersion();
       cancelVolumeFade();
       audioRef.current.pause();
+      api.setDirectMonitorMediaActive(false).catch(() => {});
       setPlaying(false);
       setLoading(false);
       if (remember) persist({ enabled: false });
@@ -427,6 +440,7 @@ export function RadioProvider({ children }) {
       return;
     }
     setPlaying(false);
+    api.setDirectMonitorMediaActive(false).catch(() => {});
     setLoading(false);
     setError(translateSaved("radio.temporarilyUnavailable", { 0: station.name }));
     stopAnalysis();

@@ -87,7 +87,8 @@ def test_windows_recording_keeps_native_shared_monitor_instead_of_portaudio_dupl
     stop.assert_not_called()
 
 
-def test_windows_recording_reuses_native_monitor_capture_instead_of_reopening_busy_microphone(monkeypatch):
+@pytest.mark.parametrize("driver", ["auto", "wasapi-exclusive"])
+def test_windows_recording_reuses_native_monitor_capture_instead_of_reopening_busy_microphone(monkeypatch, driver):
     """Exclusive low-latency WASAPI capture must also be the recording source.
 
     Opening a second PortAudio InputStream against that endpoint fails on real
@@ -95,7 +96,7 @@ def test_windows_recording_reuses_native_monitor_capture_instead_of_reopening_bu
     """
     database, body = Mock(), start_body()
     song = SimpleNamespace(id="song")
-    settings = audio_settings(audio_driver="auto", monitoring_enabled=True)
+    settings = audio_settings(audio_driver=driver, monitoring_enabled=True)
     capture_relay = (Mock(), Mock())
     configure = Mock()
     start = Mock(return_value="session")

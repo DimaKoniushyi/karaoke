@@ -44,6 +44,14 @@ test("reads the existing settings context and persists only the changed key", as
   });
 });
 
+test("audio driver choices include the Razer exclusive mode", () => {
+  const { result } = renderHook(() => useSettings(false));
+  expect(result.current.audio.options.drivers).toContainEqual({
+    value: "wasapi-exclusive",
+    label: "Razer · WASAPI exclusive"
+  });
+});
+
 test("keyboard lighting persists false and zero without replacing them with null", async () => {
   state.save.mockResolvedValue({
     keyboard_lighting_enabled: false,
@@ -90,7 +98,7 @@ test("queued writes ignore stale responses and recover after a rejected request"
   expect(state.update.mock.lastCall[0]({}).online_name).toBe("Four");
 });
 
-test("selectDriver maps the dropdown's three modes to distinct backend values", async () => {
+test("selectDriver maps shared, MME, Razer and ASIO to distinct backend values", async () => {
   const { result } = renderHook(() => useSettings(false));
 
   state.updateAudio.mockResolvedValueOnce({ audio_driver: "auto", asio_driver_name: "" });
@@ -103,6 +111,17 @@ test("selectDriver maps the dropdown's three modes to distinct backend values", 
   state.updateAudio.mockResolvedValueOnce({ audio_driver: "mme", asio_driver_name: "mme" });
   await act(async () => result.current.audio.selectDriver("mme"));
   expect(state.updateAudio).toHaveBeenLastCalledWith({ audio_driver: "mme", asio_driver_name: "mme" });
+
+  state.updateAudio.mockResolvedValueOnce({
+    audio_driver: "wasapi-exclusive",
+    asio_driver_name: "wasapi-exclusive",
+    buffer_size: 96
+  });
+  await act(async () => result.current.audio.selectDriver("wasapi-exclusive"));
+  expect(state.updateAudio).toHaveBeenLastCalledWith({
+    audio_driver: "wasapi-exclusive",
+    asio_driver_name: "wasapi-exclusive"
+  });
 
   state.updateAudio.mockResolvedValueOnce({
     audio_driver: "asio",
@@ -124,4 +143,15 @@ test("settings monitoring starts a dry path without effects", async () => {
   expect(state.startMonitor).toHaveBeenCalledOnce();
   expect(state.startMonitor).toHaveBeenCalledWith({ disabledEffects: true });
   expect(state.stopMonitor).not.toHaveBeenCalled();
+});
+
+test("Razer monitoring in Settings retains enabled effects", async () => {
+  state.updateAudio.mockResolvedValueOnce({
+    audio_driver: "wasapi-exclusive", asio_driver_name: "wasapi-exclusive", buffer_size: 96
+  });
+  state.startMonitor.mockResolvedValueOnce({ monitoring_enabled: true });
+  const { result } = renderHook(() => useSettings(false));
+  await act(async () => result.current.audio.selectDriver("wasapi-exclusive"));
+  await act(async () => result.current.audio.monitor());
+  expect(state.startMonitor).toHaveBeenCalledWith({ disabledEffects: false });
 });

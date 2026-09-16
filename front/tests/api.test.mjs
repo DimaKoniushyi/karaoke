@@ -240,6 +240,7 @@ describe("API domains", () => {
       [audioApi.getAudioSettings, "/audio/settings"],
       [() => audioApi.updateAudioSettings({ latency: 1 }), "/audio/settings", "POST", { latency: 1 }],
       [audioApi.startDirectMonitoring, "/audio/direct-monitor/start?disabled_effects=false", "POST"],
+      [() => audioApi.setDirectMonitorMediaActive(true), "/audio/direct-monitor/media-active?active=true", "POST"],
       [audioApi.stopDirectMonitoring, "/audio/direct-monitor/stop", "POST"],
       [audioApi.getSignalQuality, "/audio/signal-quality"],
       [() => playerApi.getSync("a/b"), "/player/a%2Fb/sync"],

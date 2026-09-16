@@ -177,10 +177,10 @@ def start_recording(body: schemas.RecordingStartRequest, db: DatabaseSession):
         )
         capture_relay = (
             audio_service.subscribe_monitor_capture()
-            if keep_native_monitor and settings.audio_driver == "auto"
+            if keep_native_monitor and settings.audio_driver in {"auto", "wasapi-exclusive"}
             else None
         )
-        if keep_native_monitor and settings.audio_driver == "auto" and capture_relay is None:
+        if keep_native_monitor and settings.audio_driver in {"auto", "wasapi-exclusive"} and capture_relay is None:
             raise RuntimeError("Native microphone capture is unavailable for recording")
         session_id = recording_service.start_recording(
             song_id=song.id,
